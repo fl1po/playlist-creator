@@ -3,6 +3,10 @@ node_modules
 .env
 package-lock.json
 spotify-config.json
+user-config.json
+trusted-artists.json
+batch-cache.json
+batch-p1p2-progress.json
 build
 dist
 .DS_Store

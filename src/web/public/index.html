@@ -1,0 +1,1330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spotify Automation</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='16' fill='%23121212'/><path d='M8 22.5C8 24.43 9.57 26 11.5 26S15 24.43 15 22.5 13.43 19 11.5 19 8 20.57 8 22.5Z' fill='%231DB954'/><rect x='14' y='6' width='3' height='17' rx='1.5' fill='%231DB954'/><path d='M17 6c3.5 0 7 1.5 7 5s-2 4-4 4' stroke='%231DB954' stroke-width='2.5' fill='none' stroke-linecap='round'/></svg>">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #121212; color: #e0e0e0; min-height: 100vh;
+  }
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 24px; background: #181818; border-bottom: 1px solid #282828;
+  }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header h1 span { color: #1DB954; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #999; }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #555; transition: background 0.3s;
+  }
+  .status-dot.connected { background: #1DB954; }
+  .status-dot.error { background: #e74c3c; }
+
+  main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+
+  .cards {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px; margin-bottom: 24px;
+  }
+  .card {
+    background: #181818; border: 1px solid #282828; border-radius: 8px;
+    padding: 20px; transition: border-color 0.2s;
+  }
+  .card:hover { border-color: #383838; }
+  .card h2 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+  .card-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+  button {
+    background: #1DB954; color: #000; border: none; border-radius: 20px;
+    padding: 8px 20px; font-size: 13px; font-weight: 600; cursor: pointer;
+    transition: background 0.2s, opacity 0.2s;
+  }
+  button:hover { background: #1ed760; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.secondary {
+    background: #333; color: #e0e0e0;
+  }
+  button.secondary:hover { background: #444; }
+  button.secondary.active { background: #1DB954; color: #000; }
+  button.danger { background: #e74c3c; }
+
+  .hint { font-size: 12px; color: #666; margin-top: 8px; line-height: 1.4; }
+  button.danger:hover { background: #c0392b; }
+
+  input[type="text"] {
+    background: #282828; border: 1px solid #383838; border-radius: 4px;
+    color: #e0e0e0; padding: 8px 12px; font-size: 13px; flex: 1; min-width: 0;
+  }
+  input[type="text"]::placeholder { color: #666; }
+  input[type="text"]:focus { outline: none; border-color: #1DB954; }
+
+  label.toggle {
+    display: flex; align-items: center; gap: 6px; font-size: 13px; color: #999; cursor: pointer;
+  }
+  label.toggle input { accent-color: #1DB954; }
+
+  .progress-bar {
+    width: 100%; height: 4px; background: #282828; border-radius: 2px;
+    margin-top: 12px; overflow: hidden; display: none;
+  }
+  .progress-bar.visible { display: block; }
+  .progress-bar .fill {
+    height: 100%; background: #1DB954; border-radius: 2px;
+    transition: width 0.3s ease;
+    width: 0%;
+    background-size: 200% 100%;
+  }
+  .progress-bar.fetching .fill {
+    background: linear-gradient(90deg, #1DB954 25%, #5fffaa 50%, #1DB954 75%);
+    background-size: 300% 100%;
+    animation: shimmer 2s linear infinite;
+  }
+  .progress-text {
+    font-size: 12px; color: #999; margin-top: 6px; display: none;
+  }
+  .progress-text.visible { display: block; }
+
+  /* Segmented progress bar for total fill progress */
+  .segmented-bar {
+    display: none; gap: 2px; margin-top: 12px; height: 6px;
+  }
+  .segmented-bar.visible { display: flex; }
+  .segmented-bar .seg {
+    flex: 1; background: #282828; border-radius: 2px; overflow: hidden;
+    position: relative;
+  }
+  .segmented-bar .seg .seg-fill {
+    height: 100%; width: 0%; background: #1DB954; border-radius: 2px;
+    transition: width 0.3s ease;
+    background-size: 200% 100%;
+  }
+  .segmented-bar .seg.done .seg-fill { width: 100%; }
+  .segmented-bar .seg.active { background: #1a3a25; }
+  .segmented-bar .seg.active .seg-fill { background: #1DB954; }
+  .segmented-bar.fetching .seg.active .seg-fill {
+    background: linear-gradient(90deg, #1DB954 25%, #5fffaa 50%, #1DB954 75%);
+    background-size: 300% 100%;
+    animation: shimmer 2s linear infinite;
+  }
+
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* Artist search status marks */
+  tr.artist-searched td { background: rgba(29, 185, 84, 0.06); }
+  tr.artist-searched td:first-child { border-left: 2px solid rgba(29, 185, 84, 0.3); }
+  tr.artist-active td { background: rgba(29, 185, 84, 0.15); }
+  tr.artist-active td:first-child { border-left: 2px solid #1DB954; }
+
+  .results {
+    margin-top: 12px; font-size: 13px; max-height: 300px;
+    overflow-y: auto; display: none;
+  }
+  .results.visible { display: block; }
+  .result-item {
+    padding: 8px 0; border-bottom: 1px solid #282828;
+  }
+  .result-item:last-child { border-bottom: none; }
+  .result-item .name { font-weight: 600; }
+  .result-item .meta { color: #999; font-size: 12px; margin-top: 2px; }
+
+  /* Artist table */
+  .artist-table-wrap { margin-top: 12px; max-height: 400px; overflow-y: auto; display: none; }
+  .artist-table-wrap.visible { display: block; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 6px 8px; border-bottom: 1px solid #383838; color: #999; font-weight: 500; position: sticky; top: 0; background: #181818; }
+  td { padding: 6px 8px; border-bottom: 1px solid #222; }
+  td[title] { cursor: help; text-decoration: underline dotted #555; text-underline-offset: 3px; }
+  tr:hover td { background: #1a1a1a; }
+  .priority-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 600;
+  }
+  .priority-badge.p1 { background: #1DB954; color: #000; }
+  .priority-badge.p2 { background: #2d6a4f; color: #e0e0e0; }
+  .priority-badge.p3 { background: #333; color: #999; }
+
+  /* Log panel */
+  .log-panel {
+    background: #0d0d0d; border: 1px solid #282828; border-radius: 8px;
+    padding: 12px; height: 280px; overflow-y: auto; font-family: 'SF Mono', Monaco, Consolas, monospace;
+    font-size: 12px; line-height: 1.6;
+  }
+  .log-entry { white-space: pre-wrap; word-break: break-word; }
+  .log-entry .ts { color: #555; }
+  .log-entry.info { color: #aaa; }
+  .log-entry.success { color: #1DB954; }
+  .log-entry.warn { color: #f1c40f; }
+  .log-entry.error { color: #e74c3c; }
+  .log-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px;
+  }
+  .log-header h2 { font-size: 14px; }
+  .log-header button { padding: 4px 12px; font-size: 12px; }
+
+  /* Auth overlay */
+  .auth-overlay {
+    position: fixed; inset: 0; z-index: 100;
+    background: #121212; display: flex; align-items: center; justify-content: center;
+  }
+  .auth-overlay.hidden { display: none; }
+  .auth-card {
+    text-align: center; max-width: 400px; padding: 48px 32px;
+  }
+  .auth-card h1 { font-size: 28px; margin-bottom: 8px; }
+  .auth-card h1 span { color: #1DB954; }
+  .auth-card p { color: #999; font-size: 14px; margin-bottom: 32px; line-height: 1.5; }
+  .auth-card button { font-size: 15px; padding: 12px 32px; }
+  .auth-card .auth-status { margin-top: 16px; font-size: 13px; color: #666; }
+  .auth-card .auth-status.error { color: #e74c3c; }
+
+  /* Settings gear button */
+  .gear-btn {
+    background: none; border: none; cursor: pointer;
+    padding: 6px 8px; color: #999; transition: color 0.2s;
+    font-size: 16px; line-height: 1; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .gear-btn:hover { color: #e0e0e0; background: #282828; }
+
+  /* Settings modal */
+  .settings-overlay {
+    position: fixed; inset: 0; z-index: 200;
+    background: rgba(0,0,0,0.7); display: flex; align-items: flex-start; justify-content: center;
+    padding: 40px 16px; overflow-y: auto;
+  }
+  .settings-overlay.hidden { display: none; }
+  .settings-panel {
+    background: #181818; border: 1px solid #282828; border-radius: 12px;
+    width: 100%; max-width: 640px; padding: 24px;
+  }
+  .settings-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 20px;
+  }
+  .settings-header h2 { font-size: 18px; font-weight: 600; }
+  .settings-close {
+    background: none; border: none; color: #999; font-size: 20px;
+    cursor: pointer; padding: 4px 8px; border-radius: 4px;
+  }
+  .settings-close:hover { color: #e0e0e0; background: #282828; }
+
+  .settings-section { margin-bottom: 24px; }
+  .settings-section h3 {
+    font-size: 14px; font-weight: 600; margin-bottom: 12px;
+    color: #1DB954; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .settings-section p.desc { font-size: 12px; color: #666; margin-bottom: 10px; }
+
+  .settings-row {
+    display: flex; gap: 8px; align-items: center; margin-bottom: 8px;
+  }
+  .settings-row label {
+    font-size: 13px; color: #999; min-width: 90px; flex-shrink: 0;
+  }
+  .settings-row input[type="text"],
+  .settings-row input[type="number"] {
+    background: #282828; border: 1px solid #383838; border-radius: 4px;
+    color: #e0e0e0; padding: 6px 10px; font-size: 13px; flex: 1; min-width: 0;
+  }
+  .settings-row input:focus { outline: none; border-color: #1DB954; }
+  .settings-row .pick-btn {
+    background: #333; color: #e0e0e0; padding: 6px 12px; font-size: 12px;
+    border-radius: 4px; cursor: pointer; border: none; white-space: nowrap;
+  }
+  .settings-row .pick-btn:hover { background: #444; }
+
+  /* Tag editor */
+  .tag-editor { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  .tag-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: #282828; border: 1px solid #383838; border-radius: 12px;
+    padding: 3px 8px 3px 10px; font-size: 12px;
+  }
+  .tag-chip .tag-remove {
+    background: none; border: none; color: #666; cursor: pointer;
+    font-size: 14px; line-height: 1; padding: 0;
+  }
+  .tag-chip .tag-remove:hover { color: #e74c3c; }
+  .tag-add-row { display: flex; gap: 6px; }
+  .tag-add-row input {
+    background: #282828; border: 1px solid #383838; border-radius: 4px;
+    color: #e0e0e0; padding: 4px 8px; font-size: 12px; flex: 1; min-width: 0;
+  }
+  .tag-add-row input:focus { outline: none; border-color: #1DB954; }
+  .tag-add-row button {
+    padding: 4px 10px; font-size: 12px; border-radius: 4px;
+  }
+
+  /* Editorial / external source list */
+  .list-item {
+    display: flex; gap: 8px; align-items: center;
+    padding: 6px 0; border-bottom: 1px solid #222;
+    font-size: 13px;
+  }
+  .list-item:last-child { border-bottom: none; }
+  .list-item .list-name { flex: 1; }
+  .list-item .list-id { color: #666; font-size: 11px; font-family: monospace; }
+  .list-item .remove-btn {
+    background: none; border: none; color: #666; cursor: pointer;
+    font-size: 16px; padding: 0 4px;
+  }
+  .list-item .remove-btn:hover { color: #e74c3c; }
+
+  /* External source fields */
+  .ext-source {
+    background: #1a1a1a; border: 1px solid #282828; border-radius: 6px;
+    padding: 10px; margin-bottom: 8px;
+  }
+  .ext-source .settings-row { margin-bottom: 6px; }
+  .ext-source .settings-row:last-child { margin-bottom: 0; }
+  .ext-source-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px;
+  }
+  .ext-source-header span { font-size: 13px; font-weight: 600; }
+
+  .settings-footer {
+    display: flex; gap: 8px; justify-content: flex-end;
+    padding-top: 16px; border-top: 1px solid #282828;
+  }
+
+  .welcome-banner {
+    background: #1a3a25; border: 1px solid #1DB954; border-radius: 8px;
+    padding: 12px 16px; margin-bottom: 16px; font-size: 13px; color: #1DB954;
+  }
+
+  /* Playlist picker modal */
+  .picker-overlay {
+    position: fixed; inset: 0; z-index: 300;
+    background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center;
+    padding: 40px 16px;
+  }
+  .picker-overlay.hidden { display: none; }
+  .picker-panel {
+    background: #181818; border: 1px solid #282828; border-radius: 12px;
+    width: 100%; max-width: 480px; max-height: 70vh; display: flex; flex-direction: column;
+  }
+  .picker-header {
+    display: flex; gap: 8px; align-items: center;
+    padding: 16px; border-bottom: 1px solid #282828;
+  }
+  .picker-header input {
+    background: #282828; border: 1px solid #383838; border-radius: 4px;
+    color: #e0e0e0; padding: 8px 12px; font-size: 13px; flex: 1;
+  }
+  .picker-header input:focus { outline: none; border-color: #1DB954; }
+  .picker-list {
+    flex: 1; overflow-y: auto; padding: 8px;
+  }
+  .picker-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 12px; border-radius: 4px; cursor: pointer; font-size: 13px;
+  }
+  .picker-item:hover { background: #282828; }
+  .picker-item .pl-name { font-weight: 500; }
+  .picker-item .pl-count { color: #666; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div class="auth-overlay" id="authOverlay">
+  <div class="auth-card">
+    <h1><span>Spotify</span> Automation</h1>
+    <p id="authDesc" style="display:none;">Connect your Spotify account to get started.</p>
+    <button id="authConnectBtn" onclick="authenticate()" style="display:none;">Connect with Spotify</button>
+    <div class="auth-status" id="authStatus">Checking authentication...</div>
+  </div>
+</div>
+
+<header>
+  <h1><span>Spotify</span> Automation</h1>
+  <div class="status">
+    <button class="gear-btn" onclick="openSettings()" title="Settings">&#9881;</button>
+    <button class="secondary" id="authBtn" onclick="authenticate()" style="display:none;">Authenticate</button>
+    <button class="danger" id="stopBtn" onclick="stopTask()" style="display:none;">Stop</button>
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">Connecting...</span>
+  </div>
+</header>
+
+<main>
+  <div class="cards">
+
+    <!-- Fill Playlists -->
+    <div class="card">
+      <h2>Fill Playlists</h2>
+      <div class="card-row">
+        <button id="fillBtn" onclick="startFill()">Fill Playlists</button>
+        <label class="toggle" title="Ignore cache and reprocess all dates from scratch">
+          <input type="checkbox" id="freshToggle"> Fresh mode
+        </label>
+      </div>
+      <p class="hint">Create weekly playlists with new releases from P1 &amp; P2 artists. Fresh mode ignores the cache and reprocesses all dates.</p>
+      <div class="progress-text" id="fillCurrentProgressText"></div>
+      <div class="progress-bar" id="fillCurrentProgress"><div class="fill" id="fillCurrentProgressFill"></div></div>
+      <div class="progress-text" id="fillTotalProgressText"></div>
+      <div class="segmented-bar" id="fillSegBar"></div>
+    </div>
+
+    <!-- Recalculate -->
+    <div class="card">
+      <h2>Recalculate Priorities</h2>
+      <div class="card-row">
+        <button id="recalcBtn" onclick="startRecalc()">Recalculate</button>
+      </div>
+      <p class="hint">Scan All Weekly and Best of All Weekly playlists to recalculate artist scores and priority tiers (P1-P4).</p>
+      <div class="progress-bar" id="recalcProgress"><div class="fill" id="recalcProgressFill"></div></div>
+      <div class="progress-text" id="recalcProgressText"></div>
+    </div>
+
+    <!-- Find Artist -->
+    <div class="card">
+      <h2>Find Artist</h2>
+      <div class="card-row">
+        <input type="text" id="artistQuery" placeholder="Artist name..." onkeydown="if(event.key==='Enter')findArtist()">
+        <button onclick="findArtist()">Search</button>
+      </div>
+      <p class="hint">Look up an artist's priority, score, popularity, and playlist stats. Searches by partial name match.</p>
+      <div class="results" id="artistResults"></div>
+    </div>
+
+    <!-- Clear Playlist -->
+    <div class="card">
+      <h2>Clear Playlist</h2>
+      <div class="card-row">
+        <input type="text" id="clearName" placeholder="Playlist name..." onkeydown="if(event.key==='Enter')clearPlaylist()">
+        <button class="danger" onclick="clearPlaylist()">Clear</button>
+      </div>
+      <p class="hint">Remove all tracks from a playlist by its exact name. Asks for confirmation before clearing.</p>
+    </div>
+
+  </div>
+
+  <!-- Log Panel -->
+  <div>
+    <div class="log-header">
+      <h2>Live Log</h2>
+      <button class="secondary" onclick="clearLog()">Clear</button>
+    </div>
+    <div class="log-panel" id="logPanel"></div>
+  </div>
+
+  <!-- List Artists -->
+  <div class="card" style="margin-top: 24px;">
+    <h2>Artists</h2>
+    <p class="hint">Filter by priority tier. P1 (score 60+) and P2 (25-59) are used for playlist fills. P3 (10-24) are tracked but not filled. Sorted by score within each tier.</p>
+    <div class="card-row" style="margin-top: 8px;">
+      <button class="secondary active" id="filterP1" onclick="toggleFilter(1)">P1</button>
+      <button class="secondary active" id="filterP2" onclick="toggleFilter(2)">P2</button>
+      <button class="secondary" id="filterP3" onclick="toggleFilter(3)">P3</button>
+      <span id="artistCount" style="font-size:13px;color:#999;margin-left:auto;"></span>
+    </div>
+    <div class="artist-table-wrap" id="artistTableWrap">
+      <table>
+        <thead><tr><th>Name</th><th>Priority</th><th>Score</th><th>AW</th><th>BoAW</th></tr></thead>
+        <tbody id="artistTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<!-- Settings Modal -->
+<div class="settings-overlay hidden" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">
+  <div class="settings-panel">
+    <div class="settings-header">
+      <h2>Settings</h2>
+      <button class="settings-close" onclick="closeSettings()">&times;</button>
+    </div>
+    <div class="welcome-banner hidden" id="welcomeBanner">
+      Configure your source playlists to get started.
+    </div>
+
+    <!-- Section 1: Source Playlists -->
+    <div class="settings-section">
+      <h3>Source Playlists</h3>
+      <p class="desc">The playlists used to calculate artist priorities.</p>
+      <div class="settings-row">
+        <label>All Weekly</label>
+        <input type="text" id="cfgAwName" readonly placeholder="Not set">
+        <button class="pick-btn" onclick="pickPlaylist('aw')">Change</button>
+      </div>
+      <div class="settings-row">
+        <label style="display:none">ID</label>
+        <input type="text" id="cfgAwId" style="font-family:monospace;font-size:11px;color:#666" readonly>
+      </div>
+      <div class="settings-row">
+        <label>Best of AW</label>
+        <input type="text" id="cfgBoawName" readonly placeholder="Not set">
+        <button class="pick-btn" onclick="pickPlaylist('boaw')">Change</button>
+      </div>
+      <div class="settings-row">
+        <label style="display:none">ID</label>
+        <input type="text" id="cfgBoawId" style="font-family:monospace;font-size:11px;color:#666" readonly>
+      </div>
+    </div>
+
+    <!-- Section 2: Editorial Playlists -->
+    <div class="settings-section">
+      <h3>Editorial Playlists</h3>
+      <p class="desc">Additional playlists scanned for new releases from popular artists.</p>
+      <div id="editorialList"></div>
+      <button class="secondary" style="margin-top:8px;font-size:12px;padding:4px 12px;" onclick="pickPlaylist('editorial')">+ Add Playlist</button>
+
+      <h3 style="margin-top:16px;">External Playlist Sources</h3>
+      <p class="desc">Curators whose playlists are matched by date and name pattern.</p>
+      <div id="extSourceList"></div>
+      <button class="secondary" style="margin-top:8px;font-size:12px;padding:4px 12px;" onclick="addExtSource()">+ Add Source</button>
+    </div>
+
+    <!-- Section 3: Genre Filters -->
+    <div class="settings-section">
+      <h3>Genre Filters</h3>
+      <p class="desc">Used when evaluating editorial playlist artists. Accepted genres pass, rejected genres block.</p>
+      <div style="margin-bottom:12px;">
+        <label style="font-size:12px;color:#1DB954;display:block;margin-bottom:4px;">Accepted Genres</label>
+        <div class="tag-editor" id="acceptedTags"></div>
+        <div class="tag-add-row">
+          <input type="text" id="acceptedInput" placeholder="Add genre..." onkeydown="if(event.key==='Enter'){addTag('accepted');event.preventDefault();}">
+          <button class="secondary" style="padding:4px 10px;font-size:12px;" onclick="addTag('accepted')">Add</button>
+        </div>
+      </div>
+      <div>
+        <label style="font-size:12px;color:#e74c3c;display:block;margin-bottom:4px;">Rejected Genres</label>
+        <div class="tag-editor" id="rejectedTags"></div>
+        <div class="tag-add-row">
+          <input type="text" id="rejectedInput" placeholder="Add genre..." onkeydown="if(event.key==='Enter'){addTag('rejected');event.preventDefault();}">
+          <button class="secondary" style="padding:4px 10px;font-size:12px;" onclick="addTag('rejected')">Add</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 4: Scoring -->
+    <div class="settings-section">
+      <h3>Scoring</h3>
+      <p class="desc">Weights and thresholds for artist priority calculation.</p>
+      <div class="settings-row">
+        <label>AW Weight</label>
+        <input type="number" id="cfgAwWeight" min="1" step="1" style="max-width:80px;">
+      </div>
+      <div class="settings-row">
+        <label>BoAW Weight</label>
+        <input type="number" id="cfgBoawWeight" min="1" step="1" style="max-width:80px;">
+      </div>
+      <div class="settings-row">
+        <label>P1 Threshold</label>
+        <input type="number" id="cfgP1" min="1" step="1" style="max-width:80px;">
+      </div>
+      <div class="settings-row">
+        <label>P2 Threshold</label>
+        <input type="number" id="cfgP2" min="1" step="1" style="max-width:80px;">
+      </div>
+      <div class="settings-row">
+        <label>P3 Threshold</label>
+        <input type="number" id="cfgP3" min="1" step="1" style="max-width:80px;">
+      </div>
+      <div class="settings-row">
+        <label>P4 Threshold</label>
+        <input type="number" id="cfgP4" min="1" step="1" style="max-width:80px;">
+      </div>
+      <div class="settings-row" style="margin-top:12px;">
+        <label>Min Popularity</label>
+        <input type="number" id="cfgMinPop" min="0" max="100" step="1" style="max-width:80px;">
+      </div>
+      <div class="settings-row">
+        <label>Min Followers</label>
+        <input type="number" id="cfgMinFollowers" min="0" step="1000" style="max-width:120px;">
+      </div>
+    </div>
+
+    <div class="settings-footer">
+      <button class="secondary" onclick="resetConfig()">Reset to Defaults</button>
+      <button onclick="saveConfig()">Save Settings</button>
+    </div>
+  </div>
+</div>
+
+<!-- Playlist Picker Modal -->
+<div class="picker-overlay hidden" id="pickerOverlay" onclick="if(event.target===this)closePicker()">
+  <div class="picker-panel">
+    <div class="picker-header">
+      <input type="text" id="pickerSearch" placeholder="Filter playlists..." oninput="onPickerInput()">
+      <button class="settings-close" onclick="closePicker()">&times;</button>
+    </div>
+    <div class="picker-list" id="pickerList">
+      <div style="padding:20px;text-align:center;color:#666;">Loading playlists...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────
+let ws;
+let activeFilters = new Set([1, 2]);
+let busy = false;
+
+// ── Fill progress state ──────────────────────────────────────────
+let fillState = { totalDates: 0, currentDate: 0, totalArtists: 0, currentArtist: 0, dates: [] };
+let searchedArtists = new Set();
+let currentSearchArtist = null;
+
+function setFetching(active) {
+  const methods = active ? 'add' : 'remove';
+  document.getElementById('fillCurrentProgress').classList[methods]('fetching');
+  document.getElementById('fillSegBar').classList[methods]('fetching');
+  document.getElementById('recalcProgress').classList[methods]('fetching');
+}
+
+function buildSegBar(dates) {
+  const bar = document.getElementById('fillSegBar');
+  bar.innerHTML = '';
+  for (let i = 0; i < dates.length; i++) {
+    const seg = document.createElement('div');
+    seg.className = 'seg';
+    seg.title = dates[i];
+    seg.innerHTML = '<div class="seg-fill"></div>';
+    bar.appendChild(seg);
+  }
+  bar.classList.add('visible');
+}
+
+function updateFillProgress() {
+  const { totalDates, currentDate, totalArtists, currentArtist } = fillState;
+  if (!totalDates) return;
+  const bar = document.getElementById('fillSegBar');
+  const segs = bar.children;
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    const fill = seg.querySelector('.seg-fill');
+    if (i < currentDate) {
+      seg.className = 'seg done';
+      fill.style.width = '100%';
+    } else if (i === currentDate) {
+      seg.className = 'seg active';
+      fill.style.width = totalArtists ? `${(currentArtist / totalArtists * 100).toFixed(1)}%` : '0%';
+    } else {
+      seg.className = 'seg';
+      fill.style.width = '0%';
+    }
+  }
+  const txt = document.getElementById('fillTotalProgressText');
+  txt.classList.add('visible');
+  txt.textContent = `Overall: ${currentDate}/${totalDates} dates`;
+}
+
+// ── WebSocket ────────────────────────────────────────────────────
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}`);
+
+  ws.onopen = () => {
+    document.getElementById('statusDot').className = 'status-dot connected';
+    document.getElementById('statusText').textContent = 'Connected';
+    log('success', 'WebSocket connected');
+  };
+
+  ws.onclose = () => {
+    document.getElementById('statusDot').className = 'status-dot error';
+    document.getElementById('statusText').textContent = 'Disconnected';
+    log('warn', 'WebSocket disconnected — reconnecting in 3s...');
+    setTimeout(connect, 3000);
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    handleMessage(msg);
+  };
+}
+
+function handleMessage({ type, data }) {
+  switch (type) {
+    case 'status':
+      busy = data.busy;
+      updateButtons();
+      if (data.task) document.getElementById('statusText').textContent = `Running: ${data.task}`;
+      else document.getElementById('statusText').textContent = 'Connected';
+      break;
+
+    case 'log':
+      log(data.level, data.message);
+      if (busy && (data.message.includes('Rate limited') || data.message.includes('sleeping') || data.message.includes('Pausing') || data.message.includes('waiting'))) {
+        setFetching(false);
+      }
+      break;
+
+    // Fill events
+    case 'fill:start':
+      fillState = { totalDates: data.dates.length, currentDate: 0, totalArtists: 0, currentArtist: 0, dates: data.dates };
+      log('info', `Fill started — ${data.dates.length} dates to process`);
+      log('info', `Dates: ${data.dates.join(', ')}`);
+      showProgress('fillCurrent', 0, 1, 'Starting...');
+      buildSegBar(data.dates);
+      updateFillProgress();
+      setFetching(true);
+      break;
+    case 'fill:progress':
+      fillState.currentDate = data.index;
+      fillState.currentArtist = 0;
+      log('info', `[${data.index + 1}/${data.total}] Processing: ${data.date}`);
+      showProgress('fillCurrent', 0, 1, `${data.date}: starting...`);
+      updateFillProgress();
+      setFetching(true);
+      break;
+    case 'fill:releaseFound':
+      log('info', `  Found: ${data.artist} — ${data.release} (${data.type})${data.source ? ` [${data.source}]` : ''}`);
+      break;
+    case 'fill:dateComplete': {
+      fillState.currentArtist = fillState.totalArtists;
+      showProgress('fillCurrent', 1, 1, `${data.date}: done — ${data.tracksAdded} tracks`);
+      updateFillProgress();
+      setFetching(false);
+      log('success', `  ${data.date}: ${data.tracksAdded} tracks added (${data.albumsCount} albums, ${data.singlesCount} singles, ${data.skippedCount} skipped)`);
+      if (data.playlistUrl) log('info', `  URL: ${data.playlistUrl}`);
+      break;
+    }
+    case 'fill:error':
+      log('error', `Fill error [${data.date}]: ${data.message}`);
+      setFetching(false);
+      break;
+    case 'fill:complete': {
+      setFetching(false);
+      searchedArtists = new Set();
+      currentSearchArtist = null;
+      clearArtistMarks();
+      hideProgress('fillCurrent');
+      const segBar = document.getElementById('fillSegBar');
+      const totalTxt = document.getElementById('fillTotalProgressText');
+      setTimeout(() => { segBar.classList.remove('visible'); totalTxt.classList.remove('visible'); }, 1500);
+      const totalTracks = data.results.reduce((s, r) => s + (r.tracksAdded || 0), 0);
+      const skipped = data.results.filter(r => r.skipped).length;
+      const errors = data.results.filter(r => r.error).length;
+      log('success', `Fill complete — ${data.duration.toFixed(1)} min`);
+      log('success', `  ${data.results.length} dates: ${data.results.length - skipped - errors} created, ${skipped} skipped, ${errors} errors`);
+      log('success', `  Total tracks added: ${totalTracks}`);
+      loadArtists();
+      break;
+    }
+    case 'fill:searchProgress':
+      if (!fillState.totalArtists) fillState.totalArtists = data.total;
+      fillState.currentArtist = data.searched;
+      if (data.artist) {
+        searchedArtists.add(data.artist);
+        currentSearchArtist = data.artist;
+        markArtistRow(data.artist, 'searched');
+      }
+      showProgress('fillCurrent', data.searched, data.total, `Searching artists: ${data.searched}/${data.total}`);
+      updateFillProgress();
+      setFetching(true);
+      if (data.searched % 50 === 0 || data.searched === data.total) {
+        log('info', `  Searched ${data.searched}/${data.total} artists`);
+      }
+      break;
+
+    case 'fill:searchedArtists':
+      searchedArtists = new Set(data);
+      currentSearchArtist = null;
+      // Re-apply marks to existing table rows
+      for (const name of searchedArtists) markArtistRow(name, 'done');
+      break;
+
+    // Recalc events
+    case 'recalc:scanStart':
+      log('info', `Scanning ${data.playlist}...`);
+      setFetching(true);
+      break;
+    case 'recalc:scanProgress':
+      if (data.total) {
+        showProgress('recalc', data.offset, data.total, `${data.playlist}: ${data.offset}/${data.total}`);
+        setFetching(true);
+      } else if (data.artists) {
+        log('info', `${data.playlist}: ${data.artists} artists, ${data.tracks} tracks`);
+      }
+      break;
+    case 'recalc:complete':
+      setFetching(false);
+      hideProgress('recalc');
+      log('success', `Priorities: P1=${data.p1Count} P2=${data.p2Count} P3=${data.p3Count} P4=${data.p4Count}`);
+      loadArtists();
+      break;
+    case 'recalc:topArtists':
+      break;
+
+    // Lookup — results rendered from HTTP response in findArtist()
+    case 'lookup:result':
+      break;
+
+    // Clear
+    case 'clear:complete':
+      log('success', `Cleared ${data.cleared} tracks from "${data.name}"`);
+      break;
+
+    // Auth
+    case 'auth':
+      setAuthenticated(data.authenticated);
+      if (!data.authenticated && data.url) {
+        window.open(data.url, '_blank');
+      }
+      break;
+
+    case 'reload':
+      location.reload();
+      break;
+  }
+}
+
+// ── Actions ──────────────────────────────────────────────────────
+async function startFill() {
+  shouldScrollToLog = true;
+  const fresh = document.getElementById('freshToggle').checked;
+  const res = await api('POST', '/api/fill', { fresh });
+  if (!res.ok) log('error', res.error || 'Failed to start fill');
+}
+
+async function startRecalc() {
+  shouldScrollToLog = true;
+  const res = await api('POST', '/api/recalculate');
+  if (!res.ok) log('error', res.error || 'Failed to start recalculation');
+}
+
+async function stopTask() {
+  const btn = document.getElementById('stopBtn');
+  btn.disabled = true;
+  btn.textContent = 'Stopping...';
+  const res = await api('POST', '/api/stop');
+  if (!res.ok) log('error', res.error || 'Failed to stop');
+}
+
+async function authenticate() {
+  document.getElementById('authStatus').textContent = 'Opening Spotify login...';
+  document.getElementById('authStatus').className = 'auth-status';
+  const res = await api('GET', '/api/auth');
+  if (res.url) {
+    window.open(res.url, '_blank');
+    document.getElementById('authStatus').textContent = 'Waiting for authorization — complete login in the opened tab...';
+  }
+}
+
+function setAuthenticated(ok) {
+  const overlay = document.getElementById('authOverlay');
+  const authBtn = document.getElementById('authBtn');
+  if (ok) {
+    overlay.classList.add('hidden');
+    authBtn.style.display = 'none';
+  } else {
+    overlay.classList.remove('hidden');
+    authBtn.style.display = '';
+    document.getElementById('authDesc').style.display = '';
+    document.getElementById('authConnectBtn').style.display = '';
+    document.getElementById('authStatus').textContent = 'Token expired or invalid — please re-authenticate.';
+    document.getElementById('authStatus').className = 'auth-status error';
+  }
+}
+
+async function checkAuth() {
+  document.getElementById('authStatus').textContent = 'Checking authentication...';
+  const res = await api('GET', '/api/auth/status');
+  setAuthenticated(res.authenticated);
+}
+
+let searchPending = false;
+async function findArtist() {
+  if (searchPending) return;
+  const input = document.getElementById('artistQuery');
+  const query = input.value.trim();
+  if (!query) return;
+  const container = document.getElementById('artistResults');
+  container.innerHTML = '';
+  container.classList.remove('visible');
+  searchPending = true;
+  log('info', `Searching for "${query}"...`);
+  const res = await api('POST', '/api/find-artist', { query });
+  searchPending = false;
+  if (res.error) {
+    log('error', res.error);
+    return;
+  }
+  if (res.results?.length) {
+    container.classList.add('visible');
+    for (const r of res.results) {
+      const div = document.createElement('div');
+      div.className = 'result-item';
+      const pLabel = r.data.priority ? `P${r.data.priority}` : 'N/A';
+      const rankStr = r.priorityRank ? ` #${r.priorityRank}/${r.priorityGroupSize}` : '';
+      div.innerHTML = `<div class="name">${esc(r.name)}</div>
+        <div class="meta">${pLabel}${rankStr} &middot; Score: ${r.data.score} &middot; AW: ${r.data.allWeekly} &middot; BoAW: ${r.data.bestOfAllWeekly}</div>
+        <div class="meta">Recency: AW +${r.data.recencyBonusAW} &middot; BoAW +${r.data.recencyBonusBoAW}</div>`;
+      container.appendChild(div);
+    }
+  } else {
+    log('warn', `No results for "${query}"`);
+  }
+}
+
+async function clearPlaylist() {
+  const input = document.getElementById('clearName');
+  const name = input.value.trim();
+  if (!name) return;
+  if (!confirm(`Clear all tracks from "${name}"?`)) return;
+  shouldScrollToLog = true;
+  const res = await api('POST', '/api/clear', { name });
+  if (!res.ok) log('error', res.error || 'Failed to clear');
+}
+
+async function loadArtists() {
+  const countEl = document.getElementById('artistCount');
+  countEl.textContent = 'Loading...';
+  const priorities = [...activeFilters].join(',');
+  const res = await api('GET', `/api/artists?priorities=${priorities}&sort=score`);
+  if (!res.ok) { countEl.textContent = ''; log('error', res.error || 'Failed to load artists'); return; }
+
+  const tbody = document.getElementById('artistTableBody');
+  tbody.innerHTML = '';
+  for (const a of res.artists) {
+    const tr = document.createElement('tr');
+    tr.dataset.artist = a.name;
+    if (searchedArtists.has(a.name)) tr.classList.add('artist-searched');
+    if (currentSearchArtist === a.name) { tr.classList.remove('artist-searched'); tr.classList.add('artist-active'); }
+    const pClass = a.priority <= 3 ? `p${a.priority}` : '';
+    const scoreTooltip = `(AW ${a.allWeekly} × 2) + (BoAW ${a.bestOfAllWeekly} × 3) + recency AW +${a.recencyBonusAW} + recency BoAW +${a.recencyBonusBoAW} = ${a.score}`;
+    const awTooltip = `Count: ${a.allWeekly}\nLatest position: ${a.latestPositionAW || '—'}\nRecency bonus: +${a.recencyBonusAW}`;
+    const boawTooltip = `Count: ${a.bestOfAllWeekly}\nLatest position: ${a.latestPositionBoAW || '—'}\nRecency bonus: +${a.recencyBonusBoAW}`;
+    tr.innerHTML = `<td>${esc(a.name)}</td>
+      <td><span class="priority-badge ${pClass}">P${a.priority}</span></td>
+      <td title="${esc(scoreTooltip)}">${a.score}</td><td title="${esc(awTooltip)}">${a.allWeekly}</td><td title="${esc(boawTooltip)}">${a.bestOfAllWeekly}</td>`;
+    tbody.appendChild(tr);
+  }
+  document.getElementById('artistTableWrap').classList.add('visible');
+  countEl.textContent = `${res.artists.length} artists`;
+}
+
+function toggleFilter(p) {
+  const btn = document.getElementById(`filterP${p}`);
+  if (activeFilters.has(p)) { activeFilters.delete(p); btn.classList.remove('active'); }
+  else { activeFilters.add(p); btn.classList.add('active'); }
+  loadArtists();
+}
+
+// ── Artist marks ─────────────────────────────────────────────────
+function markArtistRow(name, status) {
+  if (status === 'searched') {
+    // Remove active from previous
+    const prev = document.querySelector('tr.artist-active');
+    if (prev) { prev.classList.remove('artist-active'); prev.classList.add('artist-searched'); }
+  }
+  const row = document.querySelector(`tr[data-artist="${CSS.escape(name)}"]`);
+  if (row) {
+    row.classList.remove('artist-searched', 'artist-active');
+    row.classList.add(status === 'searched' ? 'artist-active' : 'artist-searched');
+  }
+}
+
+function clearArtistMarks() {
+  for (const row of document.querySelectorAll('tr.artist-searched, tr.artist-active')) {
+    row.classList.remove('artist-searched', 'artist-active');
+  }
+}
+
+// ── UI helpers ───────────────────────────────────────────────────
+function showProgress(prefix, value, total, text) {
+  const bar = document.getElementById(`${prefix}Progress`);
+  const fill = document.getElementById(`${prefix}ProgressFill`);
+  const txt = document.getElementById(`${prefix}ProgressText`);
+  bar.classList.add('visible');
+  txt.classList.add('visible');
+  fill.style.width = total > 0 ? `${(value / total * 100).toFixed(1)}%` : '0%';
+  txt.textContent = text;
+}
+
+function hideProgress(prefix) {
+  const bar = document.getElementById(`${prefix}Progress`);
+  const fill = document.getElementById(`${prefix}ProgressFill`);
+  const txt = document.getElementById(`${prefix}ProgressText`);
+  fill.style.width = '100%';
+  setTimeout(() => {
+    bar.classList.remove('visible');
+    txt.classList.remove('visible');
+  }, 1500);
+}
+
+function updateButtons() {
+  document.getElementById('fillBtn').disabled = busy;
+  document.getElementById('recalcBtn').disabled = busy;
+  const stopBtn = document.getElementById('stopBtn');
+  stopBtn.style.display = busy ? '' : 'none';
+  if (!busy) { stopBtn.disabled = false; stopBtn.textContent = 'Stop'; }
+}
+
+let shouldScrollToLog = false;
+function log(level, message) {
+  const panel = document.getElementById('logPanel');
+  const entry = document.createElement('div');
+  entry.className = `log-entry ${level}`;
+  const ts = new Date().toLocaleTimeString();
+  entry.innerHTML = `<span class="ts">${ts}</span> ${esc(message)}`;
+  panel.appendChild(entry);
+  panel.scrollTop = panel.scrollHeight;
+  if (shouldScrollToLog) {
+    shouldScrollToLog = false;
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function clearLog() {
+  document.getElementById('logPanel').innerHTML = '';
+  api('POST', '/api/clear-logs');
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function api(method, url, body) {
+  try {
+    const opts = { method, headers: {} };
+    if (body) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(url, opts);
+    return await res.json();
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// ── Settings ─────────────────────────────────────────────────────
+let currentConfig = null;
+let cachedPlaylists = null;
+let pickerTarget = null; // 'aw', 'boaw', 'editorial'
+
+let configLoaded = false;
+let configPromise = null;
+
+async function loadConfig() {
+  const res = await api('GET', '/api/config');
+  if (res.ok) {
+    currentConfig = res.config;
+    configLoaded = true;
+    populateSettings(currentConfig);
+    if (!res.configured) {
+      document.getElementById('settingsOverlay').classList.remove('hidden');
+      document.getElementById('welcomeBanner').classList.remove('hidden');
+    }
+  }
+}
+
+async function openSettings() {
+  if (!configLoaded) {
+    if (!configPromise) configPromise = loadConfig();
+    await configPromise;
+  }
+  if (currentConfig) populateSettings(currentConfig);
+  document.getElementById('settingsOverlay').classList.remove('hidden');
+}
+
+function closeSettings() {
+  document.getElementById('settingsOverlay').classList.add('hidden');
+  document.getElementById('welcomeBanner').classList.add('hidden');
+}
+
+function populateSettings(cfg) {
+  document.getElementById('cfgAwName').value = cfg.sourcePlaylists.allWeeklyName || '';
+  document.getElementById('cfgAwId').value = cfg.sourcePlaylists.allWeeklyId || '';
+  document.getElementById('cfgBoawName').value = cfg.sourcePlaylists.bestOfAllWeeklyName || '';
+  document.getElementById('cfgBoawId').value = cfg.sourcePlaylists.bestOfAllWeeklyId || '';
+
+  // Editorial playlists
+  renderEditorialList(cfg.editorialPlaylists);
+  renderExtSources(cfg.externalPlaylistSources);
+
+  // Genre tags
+  renderTags('accepted', cfg.genreFilters.accepted);
+  renderTags('rejected', cfg.genreFilters.rejected);
+
+  // Scoring
+  document.getElementById('cfgAwWeight').value = cfg.scoring.awWeight;
+  document.getElementById('cfgBoawWeight').value = cfg.scoring.boawWeight;
+  document.getElementById('cfgP1').value = cfg.scoring.priorityThresholds.p1;
+  document.getElementById('cfgP2').value = cfg.scoring.priorityThresholds.p2;
+  document.getElementById('cfgP3').value = cfg.scoring.priorityThresholds.p3;
+  document.getElementById('cfgP4').value = cfg.scoring.priorityThresholds.p4;
+  document.getElementById('cfgMinPop').value = cfg.editorialFilter.minPopularity;
+  document.getElementById('cfgMinFollowers').value = cfg.editorialFilter.minFollowers;
+}
+
+function collectSettings() {
+  const getEditorial = () => {
+    const items = [];
+    for (const el of document.querySelectorAll('#editorialList .list-item')) {
+      items.push({ id: el.dataset.id, name: el.dataset.name });
+    }
+    return items;
+  };
+
+  const getExtSources = () => {
+    const sources = [];
+    for (const el of document.querySelectorAll('#extSourceList .ext-source')) {
+      sources.push({
+        userId: el.querySelector('.ext-userId').value.trim(),
+        namePattern: el.querySelector('.ext-namePattern').value.trim(),
+        dateFormat: el.querySelector('.ext-dateFormat').value.trim(),
+        label: el.querySelector('.ext-label').value.trim(),
+      });
+    }
+    return sources;
+  };
+
+  const getTags = (type) => {
+    const tags = [];
+    for (const chip of document.querySelectorAll(`#${type}Tags .tag-chip`)) {
+      tags.push(chip.dataset.tag);
+    }
+    return tags;
+  };
+
+  return {
+    sourcePlaylists: {
+      allWeeklyId: document.getElementById('cfgAwId').value.trim(),
+      allWeeklyName: document.getElementById('cfgAwName').value.trim(),
+      bestOfAllWeeklyId: document.getElementById('cfgBoawId').value.trim(),
+      bestOfAllWeeklyName: document.getElementById('cfgBoawName').value.trim(),
+    },
+    editorialPlaylists: getEditorial(),
+    externalPlaylistSources: getExtSources(),
+    genreFilters: {
+      accepted: getTags('accepted'),
+      rejected: getTags('rejected'),
+    },
+    scoring: {
+      awWeight: Number(document.getElementById('cfgAwWeight').value) || 2,
+      boawWeight: Number(document.getElementById('cfgBoawWeight').value) || 3,
+      priorityThresholds: {
+        p1: Number(document.getElementById('cfgP1').value) || 60,
+        p2: Number(document.getElementById('cfgP2').value) || 25,
+        p3: Number(document.getElementById('cfgP3').value) || 15,
+        p4: Number(document.getElementById('cfgP4').value) || 1,
+      },
+    },
+    editorialFilter: {
+      minPopularity: Number(document.getElementById('cfgMinPop').value) || 60,
+      minFollowers: Number(document.getElementById('cfgMinFollowers').value) || 100000,
+    },
+  };
+}
+
+async function saveConfig() {
+  const cfg = collectSettings();
+  const res = await api('PUT', '/api/config', cfg);
+  if (res.ok) {
+    currentConfig = cfg;
+    closeSettings();
+    log('success', 'Settings saved');
+  } else {
+    log('error', res.error || 'Failed to save settings');
+    alert(res.error || 'Failed to save settings');
+  }
+}
+
+async function resetConfig() {
+  if (!confirm('Reset all settings to defaults?')) return;
+  const res = await api('GET', '/api/config');
+  if (res.ok) {
+    // Load fresh defaults by re-fetching (server returns defaults if no file)
+    const defaults = await (await fetch('/api/config')).json();
+    // We need defaults specifically, so we delete the file by saving defaults
+    // Actually, just populate with known defaults from the server response
+    populateSettings(defaults.config);
+  }
+}
+
+// ── Editorial list rendering ─────────────────────────────────────
+function renderEditorialList(playlists) {
+  const container = document.getElementById('editorialList');
+  container.innerHTML = '';
+  for (const pl of playlists) {
+    const div = document.createElement('div');
+    div.className = 'list-item';
+    div.dataset.id = pl.id;
+    div.dataset.name = pl.name;
+    div.innerHTML = `<span class="list-name">${esc(pl.name)}</span>
+      <span class="list-id">${esc(pl.id)}</span>
+      <button class="remove-btn" onclick="this.parentElement.remove()">&times;</button>`;
+    container.appendChild(div);
+  }
+}
+
+// ── External sources rendering ───────────────────────────────────
+function renderExtSources(sources) {
+  const container = document.getElementById('extSourceList');
+  container.innerHTML = '';
+  for (const src of sources) addExtSourceEl(src);
+}
+
+function addExtSource() {
+  addExtSourceEl({ userId: '', namePattern: '', dateFormat: 'DD.MM.YYYY', label: '' });
+}
+
+function addExtSourceEl(src) {
+  const container = document.getElementById('extSourceList');
+  const div = document.createElement('div');
+  div.className = 'ext-source';
+  div.innerHTML = `<div class="ext-source-header">
+      <span>${esc(src.label || 'New Source')}</span>
+      <button class="remove-btn" onclick="this.closest('.ext-source').remove()">&times;</button>
+    </div>
+    <div class="settings-row"><label>Label</label><input type="text" class="ext-label" value="${esc(src.label)}"></div>
+    <div class="settings-row"><label>User ID</label><input type="text" class="ext-userId" value="${esc(src.userId)}" style="font-family:monospace;font-size:11px;"></div>
+    <div class="settings-row"><label>Name Pattern</label><input type="text" class="ext-namePattern" value="${esc(src.namePattern)}"></div>
+    <div class="settings-row"><label>Date Format</label><input type="text" class="ext-dateFormat" value="${esc(src.dateFormat)}"></div>`;
+  container.appendChild(div);
+}
+
+// ── Tag editors ──────────────────────────────────────────────────
+function renderTags(type, tags) {
+  const container = document.getElementById(`${type}Tags`);
+  container.innerHTML = '';
+  for (const tag of tags) addTagChip(type, tag);
+}
+
+function addTag(type) {
+  const input = document.getElementById(`${type}Input`);
+  const val = input.value.trim().toLowerCase();
+  if (!val) return;
+  // Check duplicate
+  const existing = document.querySelectorAll(`#${type}Tags .tag-chip`);
+  for (const chip of existing) {
+    if (chip.dataset.tag === val) return;
+  }
+  addTagChip(type, val);
+  input.value = '';
+}
+
+function addTagChip(type, tag) {
+  const container = document.getElementById(`${type}Tags`);
+  const chip = document.createElement('span');
+  chip.className = 'tag-chip';
+  chip.dataset.tag = tag;
+  chip.innerHTML = `${esc(tag)}<button class="tag-remove" onclick="this.parentElement.remove()">&times;</button>`;
+  container.appendChild(chip);
+}
+
+// ── Playlist Picker ──────────────────────────────────────────────
+let pickerMode = 'user'; // 'user' = local filter on user playlists, 'search' = Spotify search
+let searchDebounce = null;
+
+async function pickPlaylist(target) {
+  pickerTarget = target;
+  pickerMode = (target === 'editorial') ? 'search' : 'user';
+  document.getElementById('pickerOverlay').classList.remove('hidden');
+  const searchInput = document.getElementById('pickerSearch');
+  searchInput.value = '';
+  searchInput.placeholder = pickerMode === 'search' ? 'Search Spotify playlists...' : 'Filter your playlists...';
+
+  if (pickerMode === 'user') {
+    if (!cachedPlaylists) {
+      document.getElementById('pickerList').innerHTML = '<div style="padding:20px;text-align:center;color:#666;">Loading playlists...</div>';
+      const res = await api('GET', '/api/user-playlists');
+      if (res.ok) {
+        cachedPlaylists = res.playlists;
+      } else {
+        document.getElementById('pickerList').innerHTML = '<div style="padding:20px;text-align:center;color:#e74c3c;">Failed to load playlists</div>';
+        return;
+      }
+    }
+    renderPickerList(cachedPlaylists);
+  } else {
+    document.getElementById('pickerList').innerHTML = '<div style="padding:20px;text-align:center;color:#666;">Type to search Spotify playlists</div>';
+  }
+}
+
+function closePicker() {
+  document.getElementById('pickerOverlay').classList.add('hidden');
+  pickerTarget = null;
+}
+
+function onPickerInput() {
+  if (pickerMode === 'user') {
+    if (!cachedPlaylists) return;
+    const q = document.getElementById('pickerSearch').value.toLowerCase();
+    const filtered = q ? cachedPlaylists.filter(p => p.name.toLowerCase().includes(q)) : cachedPlaylists;
+    renderPickerList(filtered);
+  } else {
+    // Debounced Spotify search
+    if (searchDebounce) clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(searchSpotifyPlaylists, 400);
+  }
+}
+
+async function searchSpotifyPlaylists() {
+  const q = document.getElementById('pickerSearch').value.trim();
+  if (!q) {
+    document.getElementById('pickerList').innerHTML = '<div style="padding:20px;text-align:center;color:#666;">Type to search Spotify playlists</div>';
+    return;
+  }
+  document.getElementById('pickerList').innerHTML = '<div style="padding:20px;text-align:center;color:#666;">Searching...</div>';
+  const res = await api('GET', `/api/search-playlists?q=${encodeURIComponent(q)}`);
+  if (res.ok) {
+    renderPickerList(res.playlists);
+  } else {
+    document.getElementById('pickerList').innerHTML = `<div style="padding:20px;text-align:center;color:#e74c3c;">${esc(res.error || 'Search failed')}</div>`;
+  }
+}
+
+function renderPickerList(playlists) {
+  const container = document.getElementById('pickerList');
+  container.innerHTML = '';
+  for (const pl of playlists) {
+    const div = document.createElement('div');
+    div.className = 'picker-item';
+    const ownerStr = pl.owner ? `<span style="color:#666;font-size:11px;margin-left:4px;">by ${esc(pl.owner)}</span>` : '';
+    div.innerHTML = `<span class="pl-name">${esc(pl.name)}${ownerStr}</span><span class="pl-count">${pl.trackCount} tracks</span>`;
+    div.onclick = () => selectPlaylist(pl);
+    container.appendChild(div);
+  }
+  if (playlists.length === 0) {
+    container.innerHTML = '<div style="padding:20px;text-align:center;color:#666;">No playlists found</div>';
+  }
+}
+
+function selectPlaylist(pl) {
+  if (pickerTarget === 'aw') {
+    document.getElementById('cfgAwName').value = pl.name;
+    document.getElementById('cfgAwId').value = pl.id;
+  } else if (pickerTarget === 'boaw') {
+    document.getElementById('cfgBoawName').value = pl.name;
+    document.getElementById('cfgBoawId').value = pl.id;
+  } else if (pickerTarget === 'editorial') {
+    const container = document.getElementById('editorialList');
+    for (const existing of container.querySelectorAll('.list-item')) {
+      if (existing.dataset.id === pl.id) { closePicker(); return; }
+    }
+    const div = document.createElement('div');
+    div.className = 'list-item';
+    div.dataset.id = pl.id;
+    div.dataset.name = pl.name;
+    div.innerHTML = `<span class="list-name">${esc(pl.name)}</span>
+      <span class="list-id">${esc(pl.id)}</span>
+      <button class="remove-btn" onclick="this.parentElement.remove()">&times;</button>`;
+    container.appendChild(div);
+  }
+  closePicker();
+}
+
+// ── Init ─────────────────────────────────────────────────────────
+connect();
+loadArtists();
+checkAuth();
+configPromise = loadConfig();
+</script>
+</body>
+</html>

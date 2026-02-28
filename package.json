@@ -11,21 +11,40 @@
     "auth": "tsc && node build/auth.js",
     "lint": "biome check --diagnostic-level=warn --error-on-warnings",
     "lint:fix": "biome check --write --unsafe --organize-imports-enabled=true",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "fill": "tsc && node build/cli/fill.js",
+    "fill:fresh": "tsc && node build/cli/fill.js --fresh",
+    "recalculate": "tsc && node build/cli/recalculate.js",
+    "find-artist": "tsc && node build/cli/find-artist.js",
+    "clear": "tsc && node build/cli/clear.js",
+    "list-artists": "tsc && node build/cli/list-artists.js",
+    "web": "tsc && cp -r src/web/public build/web/public && node build/web/server.js",
+    "web:dev": "tsc --watch & node build/web/server.js"
   },
-  "files": ["build"],
-  "keywords": [],
+  "files": [
+    "build"
+  ],
+  "keywords": ["spotify", "mcp", "model-context-protocol", "playlist", "automation", "music"],
   "author": "Marcel Marais",
-  "description": "A Model Context Protocol server for Spotify integration",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fl1po/playlist-creator.git"
+  },
+  "description": "Automated weekly playlist generation driven by your listening history, with MCP server for AI assistant integration",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.10.1",
     "@spotify/web-api-ts-sdk": "^1.2.0",
+    "express": "^5.2.1",
     "open": "^10.1.0",
+    "ws": "^8.19.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.13.8",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.8.2"
   }
 }
