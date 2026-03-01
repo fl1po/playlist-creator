@@ -11,5 +11,5 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "src/index.ts", "src/read.ts", "src/play.ts", "src/albums.ts", "src/auth.ts", "src/utils.ts", "src/types.ts"]
 }

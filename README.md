@@ -1,281 +1,161 @@
-<div align="center" style="display: flex; align-items: center; justify-content: center; gap: 10px;">
-<img src="https://upload.wikimedia.org/wikipedia/commons/8/84/Spotify_icon.svg" width="30" height="30">
-<h1>Spotify MCP Server</h1>
-</div>
+# Playlist Creator
 
-A lightweight [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that enables AI assistants like Cursor & Claude to control Spotify playback and manage playlists.
+Automated weekly playlist generation driven by your own listening history. Uses the Spotify Web API directly — no external services needed.
 
-<details>
-<summary>Contents</summary>
+## Why
 
-- [Example Interactions](#example-interactions)
-- [Tools](#tools)
-  - [Read Operations](#read-operations)
-  - [Album Operations](#album-operations)
-  - [Play / Create Operations](#play--create-operations)
-- [Setup](#setup)
-  - [Prerequisites](#prerequisites)
-  - [Installation](#installation)
-  - [Creating a Spotify Developer Application](#creating-a-spotify-developer-application)
-  - [Spotify API Configuration](#spotify-api-configuration)
-  - [Authentication Process](#authentication-process)
-- [Integrating with Claude Desktop, Cursor, and VsCode (Cline)](#integrating-with-claude-desktop-and-cursor)
-</details>
+Release Radar and Discover Weekly are black boxes that miss artists you care about. Following 900+ artists means 50-100 new releases every Friday — no human checks that manually. This project replaces guesswork with a deterministic priority system derived from your own curation.
 
-## Example Interactions
+## How it works
 
-- _"Play Elvis's first song"_
-- _"Create a Taylor Swift / Slipknot fusion playlist"_
-- _"Copy all the techno tracks from my workout playlist to my work playlist"_
-- _"Turn the volume down a bit"_
+### Source playlists
 
-## Tools
+The system learns your taste from two manually maintained playlists:
 
-### Read Operations
+- **AW (All Weekly)** — comprehensive weekly log of new music you listened to. Every Friday you add what you heard that week.
+- **BoAW (Best of All Weekly)** — curated subset of AW. Tracks good enough to keep long-term.
 
-1. **searchSpotify**
+Over time these playlists encode which artists you consistently return to and which ones you value most.
 
-   - **Description**: Search for tracks, albums, artists, or playlists on Spotify
-   - **Parameters**:
-     - `query` (string): The search term
-     - `type` (string): Type of item to search for (track, album, artist, playlist)
-     - `limit` (number, optional): Maximum number of results to return (10-50)
-   - **Returns**: List of matching items with their IDs, names, and additional details
-   - **Example**: `searchSpotify("bohemian rhapsody", "track", 20)`
+### Step 1: Calculate priorities
 
-2. **getNowPlaying**
+Scans AW and BoAW to score every artist:
 
-   - **Description**: Get information about the currently playing track on Spotify, including device and volume info
-   - **Parameters**: None
-   - **Returns**: Object containing track name, artist, album, playback progress, duration, playback state, device info, volume, and shuffle/repeat status
-   - **Example**: `getNowPlaying()`
+```
+score = (AW_count x awWeight) + (BoAW_count x boawWeight) + recencyBonusAW + recencyBonusBoAW
+```
 
-3. **getMyPlaylists**
+- **BoAW weighted higher** (default x3 vs x2) — keeping a track signals stronger preference than just listening
+- **Recency bonuses** — sliding scale rewarding artists who appear more recently in the playlist:
 
-   - **Description**: Get a list of the current user's playlists on Spotify
-   - **Parameters**:
-     - `limit` (number, optional): Maximum number of playlists to return (default: 20)
-     - `offset` (number, optional): Index of the first playlist to return (default: 0)
-   - **Returns**: Array of playlists with their IDs, names, track counts, and public status
-   - **Example**: `getMyPlaylists(10, 0)`
+  | Position in playlist | AW bonus | BoAW bonus |
+  |---------------------|----------|------------|
+  | Top 10%             | +20      | +15        |
+  | Top 30%             | +15      | +10        |
+  | Top 50% (AW) / 60% (BoAW) | +12 | +5   |
+  | Top 80% (AW) / 85% (BoAW) | +10 | +2   |
+  | Top 95% (AW)        | +7       | —          |
+  | Older               | +5       | +1         |
 
-4. **getPlaylistTracks**
+- **Priority tiers** (default thresholds, configurable):
 
-   - **Description**: Get a list of tracks in a specific Spotify playlist
-   - **Parameters**:
-     - `playlistId` (string): The Spotify ID of the playlist
-     - `limit` (number, optional): Maximum number of tracks to return (default: 100)
-     - `offset` (number, optional): Index of the first track to return (default: 0)
-   - **Returns**: Array of tracks with their IDs, names, artists, album, duration, and added date
-   - **Example**: `getPlaylistTracks("37i9dQZEVXcJZyENOWUFo7")`
+  | Tier | Score  | Meaning                    |
+  |------|--------|----------------------------|
+  | P1   | >= 60  | Core artists, always track  |
+  | P2   | 25-59  | Strong interest             |
+  | P3   | 15-24  | Moderate interest           |
+  | P4   | 1-14   | Peripheral                  |
 
-5. **getRecentlyPlayed**
+Output: `trusted-artists.json`
 
-   - **Description**: Retrieves a list of recently played tracks from Spotify.
-   - **Parameters**:
-     - `limit` (number, optional): A number specifying the maximum number of tracks to return.
-   - **Returns**: If tracks are found it returns a formatted list of recently played tracks else a message stating: "You don't have any recently played tracks on Spotify".
-   - **Example**: `getRecentlyPlayed({ limit: 10 })`
+### Step 2: Fill playlists
 
-6. **getUsersSavedTracks**
+For each unfilled Friday:
 
-   - **Description**: Get a list of tracks saved in the user's "Liked Songs" library
-   - **Parameters**:
-     - `limit` (number, optional): Maximum number of tracks to return (1-50, default: 50)
-     - `offset` (number, optional): Offset for pagination (0-based index, default: 0)
-   - **Returns**: Formatted list of saved tracks with track names, artists, duration, track IDs, and when they were added to Liked Songs. Shows pagination info (e.g., "1-20 of 150").
-   - **Example**: `getUsersSavedTracks({ limit: 20, offset: 0 })`
+1. Loads **P1 + P2 artists** (recommended < 500)
+2. Searches Spotify for new releases within that Friday's date window
+3. Checks **editorial playlists** for additional discoveries (configurable list)
+4. Checks **external playlist sources** — configurable curator playlists matched by user ID, name regex, and date format
+5. Applies smart filtering:
+   - **Variant dedup** — picks explicit version with most markets
+   - **Deluxe handling** — only adds bonus tracks, skips originals already present
+   - **Low popularity removal** — drops releases below configurable threshold
+   - **Genre filtering** — configurable accepted/rejected genre lists
+   - **Instrumental/clean/acoustic removal** — filters variant editions
+   - **AW dedup** — skips tracks already in All Weekly
+6. Creates a playlist named by date (`DD.MM.YY`) and adds tracks sorted by popularity
+7. **Resumable** — progress saved to `batch-cache.json`, picks up where it left off
 
-7. **getQueue**
+```
+                        ┌─────────────────┐
+                        │  AW + BoAW      │
+                        │  playlists      │
+                        └────────┬────────┘
+                                 │
+                            Recalculate
+                                 │
+                        ┌────────▼────────┐
+                        │ trusted-artists │
+                        │     .json       │
+                        └────────┬────────┘
+                                 │
+                               Fill
+                                 │
+               ┌─────────────────┼──────────────────┐
+               │                 │                   │
+      ┌────────▼───────┐ ┌──────▼──────┐  ┌─────────▼────────┐
+      │  P1+P2 artist  │ │  Editorial  │  │  Smart filtering │
+      │  release scan  │ │  + external │  │  & dedup         │
+      └────────┬───────┘ └──────┬──────┘  └─────────┬────────┘
+               │                │                    │
+               └────────────────┼────────────────────┘
+                                │
+                       ┌────────▼────────┐
+                       │  Weekly playlist│
+                       │   (DD.MM.YY)    │
+                       └─────────────────┘
+```
 
-   - **Description**: Get the currently playing track and upcoming items in the Spotify queue
-   - **Parameters**:
-     - `limit` (number, optional): Maximum number of upcoming items to show (1-50, default: 10)
-   - **Returns**: Currently playing track and list of upcoming tracks in the queue
-   - **Example**: `getQueue({ limit: 20 })`
+## Configuration
 
-8. **getAvailableDevices**
+All settings are managed via the **Settings** panel in the web dashboard (gear icon in the header). On first launch, the app uses sensible defaults. Settings are persisted to `user-config.json`.
 
-   - **Description**: Get information about the user's available Spotify Connect devices
-   - **Parameters**: None
-   - **Returns**: List of available devices with name, type, active status, volume, and device ID
-   - **Example**: `getAvailableDevices()`
+### Configurable settings
 
+| Section | What you can change |
+|---------|-------------------|
+| **Source Playlists** | AW and BoAW playlist IDs (picked from your Spotify library) |
+| **Editorial Playlists** | List of Spotify playlists to scan for discoveries (search any public playlist) |
+| **External Sources** | Curator playlists matched by user ID + name regex + date format |
+| **Genre Filters** | Accepted and rejected genre lists for editorial artist filtering |
+| **Scoring** | AW/BoAW weights, P1-P4 thresholds, min popularity, min followers |
 
-### Play / Create Operations
+Changes take effect on the next Fill or Recalculate run.
 
-1. **playMusic**
+## Web dashboard
 
-   - **Description**: Start playing a track, album, artist, or playlist on Spotify
-   - **Parameters**:
-     - `uri` (string, optional): Spotify URI of the item to play (overrides type and id)
-     - `type` (string, optional): Type of item to play (track, album, artist, playlist)
-     - `id` (string, optional): Spotify ID of the item to play
-     - `deviceId` (string, optional): ID of the device to play on
-   - **Returns**: Success status
-   - **Example**: `playMusic({ uri: "spotify:track:6rqhFgbbKwnb9MLmUQDhG6" })`
-   - **Alternative**: `playMusic({ type: "track", id: "6rqhFgbbKwnb9MLmUQDhG6" })`
+The primary interface. Start it with:
 
-2. **pausePlayback**
+```bash
+npm run web
+```
 
-   - **Description**: Pause the currently playing track on Spotify
-   - **Parameters**:
-     - `deviceId` (string, optional): ID of the device to pause
-   - **Returns**: Success status
-   - **Example**: `pausePlayback()`
+Opens at `http://localhost:3005`. From the dashboard you can:
 
-3. **resumePlayback**
+- **Recalculate** priorities — scan AW + BoAW and rebuild artist scores
+- **Fill** playlists — generate missing weekly playlists with real-time progress
+- **Fill (fresh)** — ignore batch cache and start from scratch
+- **Stop** any running task mid-execution (resumable)
+- **Search artists** — look up any artist's priority, score, and playlist stats
+- **Browse artists** — view all tracked artists filtered by priority tier
+- **Clear** a playlist by name
+- **Settings** — configure source playlists, editorial playlists, genre filters, scoring weights and thresholds
+- **Authenticate** — OAuth flow runs in-browser, no terminal needed
 
-   - **Description**: Resume Spotify playback on the active device
-   - **Parameters**:
-     - `deviceId` (string, optional): ID of the device to resume playback on
-   - **Returns**: Success status
-   - **Example**: `resumePlayback()`
-
-4. **skipToNext**
-
-   - **Description**: Skip to the next track in the current playback queue
-   - **Parameters**:
-     - `deviceId` (string, optional): ID of the device
-   - **Returns**: Success status
-   - **Example**: `skipToNext()`
-
-5. **skipToPrevious**
-
-   - **Description**: Skip to the previous track in the current playback queue
-   - **Parameters**:
-     - `deviceId` (string, optional): ID of the device
-   - **Returns**: Success status
-   - **Example**: `skipToPrevious()`
-
-6. **createPlaylist**
-
-   - **Description**: Create a new playlist on Spotify
-   - **Parameters**:
-     - `name` (string): Name for the new playlist
-     - `description` (string, optional): Description for the playlist
-     - `public` (boolean, optional): Whether the playlist should be public (default: false)
-   - **Returns**: Object with the new playlist's ID and URL
-   - **Example**: `createPlaylist({ name: "Workout Mix", description: "Songs to get pumped up", public: false })`
-
-7. **addTracksToPlaylist**
-
-   - **Description**: Add tracks to an existing Spotify playlist
-   - **Parameters**:
-     - `playlistId` (string): ID of the playlist
-     - `trackUris` (array): Array of track URIs or IDs to add
-     - `position` (number, optional): Position to insert tracks
-   - **Returns**: Success status and snapshot ID
-   - **Example**: `addTracksToPlaylist({ playlistId: "3cEYpjA9oz9GiPac4AsH4n", trackUris: ["spotify:track:4iV5W9uYEdYUVa79Axb7Rh"] })`
-
-8. **addToQueue**
-
-   - **Description**: Adds a track, album, artist or playlist to the current playback queue
-   - **Parameters**:
-     - `uri` (string, optional): Spotify URI of the item to add to queue (overrides type and id)
-     - `type` (string, optional): Type of item to queue (track, album, artist, playlist)
-     - `id` (string, optional): Spotify ID of the item to queue
-     - `deviceId` (string, optional): ID of the device to queue on
-   - **Returns**: Success status
-   - **Example**: `addToQueue({ uri: "spotify:track:6rqhFgbbKwnb9MLmUQDhG6" })`
-   - **Alternative**: `addToQueue({ type: "track", id: "6rqhFgbbKwnb9MLmUQDhG6" })`
-
-9. **setVolume**
-
-   - **Description**: Set the playback volume to a specific percentage (requires Spotify Premium)
-   - **Parameters**:
-     - `volumePercent` (number): The volume to set (0-100)
-     - `deviceId` (string, optional): ID of the device to set volume on
-   - **Returns**: Success status with the new volume level
-   - **Example**: `setVolume({ volumePercent: 50 })`
-
-10. **adjustVolume**
-
-   - **Description**: Adjust the playback volume up or down by a relative amount (requires Spotify Premium)
-   - **Parameters**:
-     - `adjustment` (number): The amount to adjust volume by (-100 to 100). Positive values increase volume, negative values decrease it.
-     - `deviceId` (string, optional): ID of the device to adjust volume on
-   - **Returns**: Success status showing the volume change (e.g., "Volume increased from 50% to 60%")
-   - **Example**: `adjustVolume({ adjustment: 10 })` (increase by 10%)
-   - **Example**: `adjustVolume({ adjustment: -20 })` (decrease by 20%)
-
-
-### Album Operations
-
-1. **getAlbums**
-
-   - **Description**: Get detailed information about one or more albums by their Spotify IDs
-   - **Parameters**:
-     - `albumIds` (string|array): A single album ID or array of album IDs (max 20)
-   - **Returns**: Album details including name, artists, release date, type, total tracks, and ID. For single album returns detailed view, for multiple albums returns summary list.
-   - **Example**: `getAlbums("4aawyAB9vmqN3uQ7FjRGTy")` or `getAlbums(["4aawyAB9vmqN3uQ7FjRGTy", "1DFixLWuPkv3KT3TnV35m3"])`
-
-2. **getAlbumTracks**
-
-   - **Description**: Get tracks from a specific album with pagination support
-   - **Parameters**:
-     - `albumId` (string): The Spotify ID of the album
-     - `limit` (number, optional): Maximum number of tracks to return (1-50)
-     - `offset` (number, optional): Offset for pagination (0-based index)
-   - **Returns**: List of tracks from the album with track names, artists, duration, and IDs. Shows pagination info.
-   - **Example**: `getAlbumTracks("4aawyAB9vmqN3uQ7FjRGTy", 10, 0)`
-
-3. **saveOrRemoveAlbumForUser**
-
-   - **Description**: Save or remove albums from the user's "Your Music" library
-   - **Parameters**:
-     - `albumIds` (array): Array of Spotify album IDs (max 20)
-     - `action` (string): Action to perform: "save" or "remove"
-   - **Returns**: Success status with confirmation message
-   - **Example**: `saveOrRemoveAlbumForUser(["4aawyAB9vmqN3uQ7FjRGTy"], "save")`
-
-4. **checkUsersSavedAlbums**
-
-   - **Description**: Check if albums are saved in the user's "Your Music" library
-   - **Parameters**:
-     - `albumIds` (array): Array of Spotify album IDs to check (max 20)
-   - **Returns**: Status of each album (saved or not saved)
-   - **Example**: `checkUsersSavedAlbums(["4aawyAB9vmqN3uQ7FjRGTy", "1DFixLWuPkv3KT3TnV35m3"])`
+All operations stream live logs and progress via WebSocket — you see every release found, every filter applied, and every playlist created in real time.
 
 ## Setup
 
 ### Prerequisites
 
 - Node.js v16+
-- A Spotify Premium account
-- A registered Spotify Developer application
+- Spotify Premium account
+- [Spotify Developer app](https://developer.spotify.com/dashboard/)
 
 ### Installation
 
 ```bash
-git clone https://github.com/marcelmarais/spotify-mcp-server.git
-cd spotify-mcp-server
+git clone https://github.com/fl1po/playlist-creator.git
+cd playlist-creator
 npm install
 npm run build
 ```
 
-### Creating a Spotify Developer Application
+### Configure Spotify credentials
 
-1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/)
-2. Log in with your Spotify account
-3. Click the "Create an App" button
-4. Fill in the app name and description
-5. Accept the Terms of Service and click "Create"
-6. In your new app's dashboard, you'll see your **Client ID**
-7. Click "Show Client Secret" to reveal your **Client Secret**
-8. Click "Edit Settings" and add a Redirect URI (e.g., `http://127.0.0.1:8888/callback`)
-9. Save your changes
-
-### Spotify API Configuration
-
-Create a `spotify-config.json` file in the project root (you can copy and modify the provided example):
-
-```bash
-# Copy the example config file
-cp spotify-config.example.json spotify-config.json
-```
-
-Then edit the file with your credentials:
+1. Create an app at the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/)
+2. Set redirect URI to `http://127.0.0.1:8888/callback`
+3. Create `spotify-config.json` in the project root:
 
 ```json
 {
@@ -285,72 +165,60 @@ Then edit the file with your credentials:
 }
 ```
 
-### Authentication Process
+### Prepare source playlists
 
-The Spotify API uses OAuth 2.0 for authentication. Follow these steps to authenticate your application:
+Create two playlists on Spotify:
 
-1. Run the authentication script:
+1. **All Weekly (AW)** — start adding tracks you listen to each week
+2. **Best of All Weekly (BoAW)** — move your favorites from AW here over time
 
-```bash
-npm run auth
-```
-
-2. The script will generate an authorization URL. Open this URL in your web browser.
-
-3. You'll be prompted to log in to Spotify and authorize your application.
-
-4. After authorization, Spotify will redirect you to your specified redirect URI with a code parameter in the URL.
-
-5. The authentication script will automatically exchange this code for access and refresh tokens.
-
-6. These tokens will be saved to your `spotify-config.json` file, which will now look something like:
-
-```json
-{
-  "clientId": "your-client-id",
-  "clientSecret": "your-client-secret",
-  "redirectUri": "http://localhost:8888/callback",
-  "accessToken": "BQAi9Pn...kKQ",
-  "refreshToken": "AQDQcj...7w",
-  "expiresAt": 1677889354671
-}
-```
-
-7. The server will automatically refresh the access token when needed, using the refresh token.
-
-## Integrating with Claude Desktop, Cursor, and VsCode [Via Cline model extension](https://marketplace.visualstudio.com/items/?itemName=saoudrizwan.claude-dev)
-
-To use your MCP server with Claude Desktop, add it to your Claude configuration:
-
-```json
-{
-  "mcpServers": {
-    "spotify": {
-      "command": "node",
-      "args": ["spotify-mcp-server/build/index.js"]
-    }
-  }
-}
-```
-
-For Cursor, go to the MCP tab in `Cursor Settings` (command + shift + J). Add a server with this command:
+### Run
 
 ```bash
-node path/to/spotify-mcp-server/build/index.js
+npm run web
 ```
 
-To set up your MCP correctly with Cline ensure you have the following file configuration set `cline_mcp_settings.json`:
+Open `http://localhost:3005`, authenticate via the dashboard, then configure your source playlists in **Settings** (gear icon). Hit **Recalculate** followed by **Fill**.
 
-```json
-{
-  "mcpServers": {
-    "spotify": {
-      "command": "node",
-      "args": ["~/../spotify-mcp-server/build/index.js"],
-      "autoApprove": ["getListeningHistory", "getNowPlaying"]
-    }
-  }
-}
+<details>
+<summary>CLI fallback</summary>
+
+All dashboard actions are also available as CLI commands (use default config values — configure via web dashboard for custom settings):
+
+| Command | Description |
+|---------|-------------|
+| `npm run recalculate` | Rebuild `trusted-artists.json` |
+| `npm run fill` | Fill missing weekly playlists |
+| `npm run fill:fresh` | Fill ignoring batch cache |
+| `npm run find-artist -- <name>` | Look up artist priority |
+| `npm run list-artists` | List artists by priority |
+| `npm run clear -- <playlist>` | Clear a playlist |
+
+</details>
+
+## Project structure
+
 ```
-
-You can add additional tools to the auto approval array to run the tools without intervention.
+src/
+├── lib/
+│   ├── config.ts         # FileConfigStore (Spotify OAuth tokens)
+│   ├── user-config.ts    # UserConfigStore (user settings)
+│   ├── spotify-client.ts # SpotifyClient abstraction
+│   ├── api-wrapper.ts    # Retry/rate-limit/backoff wrapper
+│   ├── pagination.ts     # Playlist/album track pagination
+│   └── types.ts          # Shared types
+├── domain/
+│   ├── artists.ts        # Scoring formula, recency bonuses, priority tiers
+│   ├── releases.ts       # Variant dedup, deluxe detection, grouping
+│   ├── filters.ts        # Genre accept/reject lists
+│   └── tracks.ts         # Date logic, Friday generation
+├── services/
+│   ├── playlist-filler.ts    # Weekly playlist fill orchestration
+│   ├── priority-calculator.ts # AW/BoAW scan and scoring
+│   ├── artist-lookup.ts      # Artist search service
+│   └── playlist-clearer.ts   # Playlist clearing service
+├── cli/                  # CLI wrappers for all services
+└── web/
+    ├── server.ts         # Express + WebSocket dashboard server
+    └── public/           # Dashboard frontend
+```

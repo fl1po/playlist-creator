@@ -3,6 +3,18 @@ node_modules
 .env
 package-lock.json
 spotify-config.json
+user-config.json
+trusted-artists.json
+batch-cache.json
+batch-p1p2-progress.json
+# MCP server (not part of playlist automation)
+src/index.ts
+src/read.ts
+src/play.ts
+src/albums.ts
+src/auth.ts
+src/utils.ts
+src/types.ts
 build
 dist
 .DS_Store

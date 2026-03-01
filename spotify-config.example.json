@@ -2,6 +2,6 @@
   "clientId": "your-client-id",
   "clientSecret": "your-client-secret",
   "redirectUri": "http://127.0.0.1:8888/callback",
-  "accessToken": "run-npm auth to get this",
-  "refreshToken": "run-npm auth to get this"
+  "accessToken": "obtained via web dashboard auth",
+  "refreshToken": "obtained via web dashboard auth"
 }
