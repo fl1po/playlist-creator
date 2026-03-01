@@ -1,0 +1,7 @@
+{
+  "clientId": "your-client-id",
+  "clientSecret": "your-client-secret",
+  "redirectUri": "http://127.0.0.1:8888/callback",
+  "accessToken": "obtained via web dashboard auth",
+  "refreshToken": "obtained via web dashboard auth"
+}
