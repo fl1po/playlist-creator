@@ -1,13 +1,30 @@
 import { SpotifyApi } from "@spotify/web-api-ts-sdk";
 import type { ApiCallOptions, ApiResult, SpotifyClient } from "./types.js";
+import { RateLimitError } from "./rate-limit-error.js";
+
+/** Sleep in 1-second chunks, checking abort via client.api between each. */
+async function abortableSleep(ms: number, client: SpotifyClient): Promise<void> {
+  const target = Date.now() + ms;
+  while (Date.now() < target) {
+    void client.api; // throws if aborted
+    const remaining = target - Date.now();
+    await new Promise((r) => setTimeout(r, Math.min(remaining, 1000)));
+  }
+}
 
 function isRateLimitError(e: Error): boolean {
+  if (e instanceof RateLimitError) return true;
   const msg = e.message?.toLowerCase() ?? "";
   return (
     msg.includes("429") ||
     msg.includes("rate limit") ||
     msg.includes("too many requests")
   );
+}
+
+function getRetryAfterSeconds(e: Error): number | null {
+  if (e instanceof RateLimitError) return e.retryAfterSeconds;
+  return null;
 }
 
 function isAuthError(e: Error): boolean {
@@ -20,6 +37,11 @@ function isAuthError(e: Error): boolean {
     msg.includes("unauthorized") ||
     msg.includes("bad request")
   );
+}
+
+function isServerError(e: Error): boolean {
+  const msg = e.message ?? "";
+  return msg.includes("502") || msg.includes("503") || msg.includes("504");
 }
 
 function isNetworkError(e: Error): boolean {
@@ -79,16 +101,24 @@ export function createApiCall(
         return { success: false, authError: true, error: err };
       }
 
+      // Server errors (502/503/504) → retry with short delay
+      if (isServerError(err)) {
+        if (retryCount >= 3) {
+          callbacks?.onError?.(description, err);
+          return { success: false, error: err };
+        }
+        await abortableSleep(5000 * (retryCount + 1), client);
+        return apiCall(fn, description, retryCount + 1);
+      }
+
       // Network errors → retry with growing delay
       if (isNetworkError(err)) {
         if (retryCount >= 10) {
           callbacks?.onError?.(description, err);
           return { success: false, error: err };
         }
-        const waitTime = 10 * (retryCount + 1);
         callbacks?.onNetworkRetry?.(retryCount + 1, 10);
-        await new Promise((r) => setTimeout(r, waitTime * 1000));
-        void client.api; // abort check after sleep
+        await abortableSleep(10000 * (retryCount + 1), client);
         return apiCall(fn, description, retryCount + 1);
       }
 
@@ -100,24 +130,17 @@ export function createApiCall(
           const sleepMs = sleepHours * 60 * 60 * 1000;
           const wakeTime = new Date(Date.now() + sleepMs);
           callbacks?.onLongSleep?.(sleepHours, wakeTime);
-
-          // Sleep in 1-min chunks (handles Mac sleep properly)
-          const target = Date.now() + sleepMs;
-          while (Date.now() < target) {
-            void client.api; // abort check
-            const remaining = target - Date.now();
-            const chunk = Math.min(remaining, 60 * 1000);
-            await new Promise((r) => setTimeout(r, chunk));
-          }
-
+          await abortableSleep(sleepMs, client);
           callbacks?.onLongSleepWake?.();
           await client.recreateApi();
           return apiCall(fn, description, 0);
         }
-        const waitTime = 60 * (retryCount + 1);
+        const retryAfter = getRetryAfterSeconds(err);
+        const waitTime = retryAfter !== null
+          ? retryAfter + 1          // Spotify's value + 1s buffer
+          : 60 * (retryCount + 1);  // fallback when header missing
         callbacks?.onRateLimitWait?.(waitTime);
-        await new Promise((r) => setTimeout(r, waitTime * 1000));
-        void client.api; // abort check after sleep
+        await abortableSleep(waitTime * 1000, client);
         return apiCall(fn, description, retryCount + 1);
       }
 

@@ -198,7 +198,7 @@ app.post("/api/fill", (_req, res) => {
     },
     onDateStart: (date, index, total) => {
       checkAbort(abort);
-      broadcast("fill:progress", { date, index, total });
+      broadcast("fill:progress", { date, index, total, searched: searchedArtists.size });
     },
     onDateSkipped: (date, reason, trackCount) =>
       broadcast("log", { level: "info", message: `Skipped ${date}: ${reason} (${trackCount} tracks)` }),
@@ -229,10 +229,16 @@ app.post("/api/fill", (_req, res) => {
       broadcast("fill:error", { date, message: err.message }),
     onRateLimitSleep: (hours, wakeTime) =>
       broadcast("log", { level: "warn", message: `Rate limited — sleeping ${hours}h, waking at ${wakeTime.toLocaleTimeString()}` }),
+    onRateLimitWait: (seconds, wakeTime) =>
+      broadcast("fill:rateLimited", { seconds, wakeTime: wakeTime.toISOString() }),
     onRecalculating: () =>
       broadcast("log", { level: "info", message: "Playlist changed — recalculating priorities..." }),
-    onBatchComplete: (results, duration) =>
-      broadcast("fill:complete", { results, duration }),
+    onRecalculated: () =>
+      broadcast("fill:recalculated", {}),
+    onBatchComplete: (results, duration) => {
+      searchedArtists.clear();
+      broadcast("fill:complete", { results, duration });
+    },
     onLog: (msg) =>
       broadcast("log", { level: "info", message: msg }),
   });
@@ -487,18 +493,68 @@ app.get("/api/search-playlists", async (req, res) => {
     return;
   }
   try {
+    await client.refreshToken();
     const result = await client.api.search(query, ["playlist"], undefined, 20);
-    const playlists = (result.playlists?.items ?? []).map(
-      (p) => ({
+    const playlists = (result.playlists?.items ?? []).filter(Boolean).map(
+      (p: any) => ({
         id: p.id,
         name: p.name,
-        owner: (p.owner as { display_name?: string })?.display_name ?? "Unknown",
-        trackCount: (p as unknown as { tracks?: { total?: number } }).tracks?.total ?? 0,
+        owner: p.owner?.display_name ?? "Unknown",
+        trackCount: p.tracks?.total ?? 0,
       }),
     );
     res.json({ ok: true, playlists });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get("/api/artist-releases", async (req, res) => {
+  const artistId = (req.query.id as string)?.trim();
+  const after = (req.query.after as string) ?? "";
+  const before = (req.query.before as string) ?? "";
+  if (!artistId) {
+    res.status(400).json({ error: "id query parameter required" });
+    return;
+  }
+  try {
+    await client.refreshToken();
+    const result: any = await client.api.artists.albums(artistId, "album,single,appears_on", undefined, 50, 0);
+    const items = (result.items ?? [])
+      .filter((a: any) => (!after || a.release_date >= after) && (!before || a.release_date <= before))
+      .map((a: any) => ({
+        id: a.id, name: a.name, type: a.album_type, group: a.album_group,
+        release_date: a.release_date, markets: a.available_markets?.length ?? 0,
+      }));
+    res.json({ ok: true, releases: items });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get("/api/playlist-info", async (req, res) => {
+  const id = (req.query.id as string)?.trim();
+  if (!id) {
+    res.status(400).json({ error: "id query parameter required" });
+    return;
+  }
+  try {
+    await client.refreshToken();
+    const pl: any = await client.api.playlists.getPlaylist(id);
+    res.json({
+      ok: true,
+      playlist: {
+        id: pl.id,
+        name: pl.name,
+        owner: pl.owner?.display_name ?? "Unknown",
+        trackCount: pl.tracks?.total ?? 0,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
   }
 });
 

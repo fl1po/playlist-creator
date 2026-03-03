@@ -391,7 +391,7 @@
       <h2>Find Artist</h2>
       <div class="card-row">
         <input type="text" id="artistQuery" placeholder="Artist name..." onkeydown="if(event.key==='Enter')findArtist()">
-        <button onclick="findArtist()">Search</button>
+        <button id="findArtistBtn" onclick="findArtist()">Search</button>
       </div>
       <p class="hint">Look up an artist's priority, score, popularity, and playlist stats. Searches by partial name match.</p>
       <div class="results" id="artistResults"></div>
@@ -402,7 +402,7 @@
       <h2>Clear Playlist</h2>
       <div class="card-row">
         <input type="text" id="clearName" placeholder="Playlist name..." onkeydown="if(event.key==='Enter')clearPlaylist()">
-        <button class="danger" onclick="clearPlaylist()">Clear</button>
+        <button id="clearBtn" class="danger" onclick="clearPlaylist()">Clear</button>
       </div>
       <p class="hint">Remove all tracks from a playlist by its exact name. Asks for confirmation before clearing.</p>
     </div>
@@ -475,7 +475,7 @@
     <!-- Section 2: Editorial Playlists -->
     <div class="settings-section">
       <h3>Editorial Playlists</h3>
-      <p class="desc">Additional playlists scanned for new releases from popular artists.</p>
+      <p class="desc">Additional playlists scanned for new releases from popular artists. Note: Spotify-owned editorial playlists (e.g. RapCaviar) are not accessible via the API — use community-maintained alternatives instead.</p>
       <div id="editorialList"></div>
       <button class="secondary" style="margin-top:8px;font-size:12px;padding:4px 12px;" onclick="pickPlaylist('editorial')">+ Add Playlist</button>
 
@@ -570,11 +570,32 @@
 let ws;
 let activeFilters = new Set([1, 2]);
 let busy = false;
+let wsConnected = false;
 
 // ── Fill progress state ──────────────────────────────────────────
 let fillState = { totalDates: 0, currentDate: 0, totalArtists: 0, currentArtist: 0, dates: [] };
 let searchedArtists = new Set();
 let currentSearchArtist = null;
+let rateLimitTimer = null;
+
+function startRateLimitCountdown(wakeTime) {
+  clearRateLimitCountdown();
+  const target = new Date(wakeTime).getTime();
+  const tick = () => {
+    const remaining = Math.max(0, Math.ceil((target - Date.now()) / 1000));
+    if (remaining <= 0) { clearRateLimitCountdown(); return; }
+    const min = Math.floor(remaining / 60);
+    const sec = remaining % 60;
+    const display = min > 0 ? `${min}m ${sec}s` : `${sec}s`;
+    document.getElementById('fillCurrentProgressText').textContent = `Rate limited — resuming in ${display}`;
+  };
+  tick();
+  rateLimitTimer = setInterval(tick, 1000);
+}
+
+function clearRateLimitCountdown() {
+  if (rateLimitTimer) { clearInterval(rateLimitTimer); rateLimitTimer = null; }
+}
 
 function setFetching(active) {
   const methods = active ? 'add' : 'remove';
@@ -626,14 +647,18 @@ function connect() {
   ws = new WebSocket(`${proto}://${location.host}`);
 
   ws.onopen = () => {
+    wsConnected = true;
     document.getElementById('statusDot').className = 'status-dot connected';
     document.getElementById('statusText').textContent = 'Connected';
+    updateButtons();
     log('success', 'WebSocket connected');
   };
 
   ws.onclose = () => {
+    wsConnected = false;
     document.getElementById('statusDot').className = 'status-dot error';
     document.getElementById('statusText').textContent = 'Disconnected';
+    updateButtons();
     log('warn', 'WebSocket disconnected — reconnecting in 3s...');
     setTimeout(connect, 3000);
   };
@@ -655,9 +680,6 @@ function handleMessage({ type, data }) {
 
     case 'log':
       log(data.level, data.message);
-      if (busy && (data.message.includes('Rate limited') || data.message.includes('sleeping') || data.message.includes('Pausing') || data.message.includes('waiting'))) {
-        setFetching(false);
-      }
       break;
 
     // Fill events
@@ -671,10 +693,15 @@ function handleMessage({ type, data }) {
       setFetching(true);
       break;
     case 'fill:progress':
+      clearRateLimitCountdown();
       fillState.currentDate = data.index;
       fillState.currentArtist = 0;
       log('info', `[${data.index + 1}/${data.total}] Processing: ${data.date}`);
-      showProgress('fillCurrent', 0, 1, `${data.date}: starting...`);
+      if (data.searched > 0) {
+        showProgress('fillCurrent', data.searched, fillState.totalArtists || data.searched, `Searching artists: ${data.searched}/${fillState.totalArtists || '...'}`);
+      } else {
+        showProgress('fillCurrent', 0, 1, `${data.date}: starting...`);
+      }
       updateFillProgress();
       setFetching(true);
       break;
@@ -696,6 +723,7 @@ function handleMessage({ type, data }) {
       break;
     case 'fill:complete': {
       setFetching(false);
+      clearRateLimitCountdown();
       searchedArtists = new Set();
       currentSearchArtist = null;
       clearArtistMarks();
@@ -712,7 +740,15 @@ function handleMessage({ type, data }) {
       loadArtists();
       break;
     }
+    case 'fill:recalculated':
+      loadArtists();
+      break;
+    case 'fill:rateLimited':
+      startRateLimitCountdown(data.wakeTime);
+      setFetching(false);
+      break;
     case 'fill:searchProgress':
+      clearRateLimitCountdown();
       if (!fillState.totalArtists) fillState.totalArtists = data.total;
       fillState.currentArtist = data.searched;
       if (data.artist) {
@@ -955,8 +991,11 @@ function hideProgress(prefix) {
 }
 
 function updateButtons() {
-  document.getElementById('fillBtn').disabled = busy;
-  document.getElementById('recalcBtn').disabled = busy;
+  const disabled = busy || !wsConnected;
+  document.getElementById('fillBtn').disabled = disabled;
+  document.getElementById('recalcBtn').disabled = disabled;
+  document.getElementById('findArtistBtn').disabled = !wsConnected;
+  document.getElementById('clearBtn').disabled = disabled;
   const stopBtn = document.getElementById('stopBtn');
   stopBtn.style.display = busy ? '' : 'none';
   if (!busy) { stopBtn.disabled = false; stopBtn.textContent = 'Stop'; }
@@ -1229,6 +1268,7 @@ async function pickPlaylist(target) {
   const searchInput = document.getElementById('pickerSearch');
   searchInput.value = '';
   searchInput.placeholder = pickerMode === 'search' ? 'Search Spotify playlists...' : 'Filter your playlists...';
+  setTimeout(() => searchInput.focus(), 50);
 
   if (pickerMode === 'user') {
     if (!cachedPlaylists) {
@@ -1243,7 +1283,7 @@ async function pickPlaylist(target) {
     }
     renderPickerList(cachedPlaylists);
   } else {
-    document.getElementById('pickerList').innerHTML = '<div style="padding:20px;text-align:center;color:#666;">Type to search Spotify playlists</div>';
+    document.getElementById('pickerList').innerHTML = '<div style="padding:20px;text-align:center;color:#666;">Type to search or paste a Spotify playlist URL</div>';
   }
 }
 
@@ -1265,16 +1305,45 @@ function onPickerInput() {
   }
 }
 
+function extractPlaylistId(input) {
+  // https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=...
+  const urlMatch = input.match(/open\.spotify\.com\/playlist\/([a-zA-Z0-9]+)/);
+  if (urlMatch) return urlMatch[1];
+  // spotify:playlist:37i9dQZF1DXcBWIGoYBM5M
+  const uriMatch = input.match(/spotify:playlist:([a-zA-Z0-9]+)/);
+  if (uriMatch) return uriMatch[1];
+  // bare ID (22 chars, alphanumeric)
+  if (/^[a-zA-Z0-9]{22}$/.test(input)) return input;
+  return null;
+}
+
 async function searchSpotifyPlaylists() {
   const q = document.getElementById('pickerSearch').value.trim();
   if (!q) {
-    document.getElementById('pickerList').innerHTML = '<div style="padding:20px;text-align:center;color:#666;">Type to search Spotify playlists</div>';
+    document.getElementById('pickerList').innerHTML = '<div style="padding:20px;text-align:center;color:#666;">Type to search or paste a Spotify playlist URL</div>';
     return;
   }
+
+  // Check if it's a playlist URL/URI/ID
+  const playlistId = extractPlaylistId(q);
+  if (playlistId) {
+    document.getElementById('pickerList').innerHTML = '<div style="padding:20px;text-align:center;color:#666;">Loading playlist...</div>';
+    const res = await api('GET', `/api/playlist-info?id=${encodeURIComponent(playlistId)}`);
+    if (res.ok) {
+      renderPickerList([res.playlist]);
+    } else {
+      document.getElementById('pickerList').innerHTML = `<div style="padding:20px;text-align:center;color:#e74c3c;">${esc(res.error || 'Playlist not found')}</div>`;
+    }
+    return;
+  }
+
   document.getElementById('pickerList').innerHTML = '<div style="padding:20px;text-align:center;color:#666;">Searching...</div>';
   const res = await api('GET', `/api/search-playlists?q=${encodeURIComponent(q)}`);
   if (res.ok) {
     renderPickerList(res.playlists);
+    if (res.playlists.length === 0) {
+      document.getElementById('pickerList').innerHTML = '<div style="padding:20px;text-align:center;color:#666;">No playlists found</div>';
+    }
   } else {
     document.getElementById('pickerList').innerHTML = `<div style="padding:20px;text-align:center;color:#e74c3c;">${esc(res.error || 'Search failed')}</div>`;
   }

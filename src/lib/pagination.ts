@@ -154,7 +154,10 @@ export async function getPlaylistAlbums(
         ),
       `editorial playlist ${playlistId}`,
     );
-    if (!result.success) break;
+    if (!result.success) {
+      if (result.authError) throw result.error;
+      break;
+    }
 
     for (const item of result.data.items) {
       if (item.track?.album) {

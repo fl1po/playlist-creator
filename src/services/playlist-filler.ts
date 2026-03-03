@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import { execSync } from "node:child_process";
 import type { SpotifyApi } from "@spotify/web-api-ts-sdk";
 import { createApiCall, isAuthError } from "../lib/api-wrapper.js";
 import {
@@ -28,12 +27,33 @@ import {
   type RawRelease,
 } from "../domain/releases.js";
 import { filterByPriority } from "../domain/artists.js";
+import { PriorityCalculatorService } from "./priority-calculator.js";
 import {
   formatDateISO,
   generateFridayDates,
   getValidDates,
   parseDate,
 } from "../domain/tracks.js";
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Check if an imprecise release date could overlap with valid dates.
+ *  Day-precision → exact match. Month/year → any valid date shares that prefix. */
+function releaseDateCouldMatch(releaseDate: string, validDates: string[]): boolean {
+  if (releaseDate.length === 10) return validDates.includes(releaseDate);
+  return validDates.some(d => d.startsWith(releaseDate));
+}
+
+/** Last-resort match for imprecise dates when full album lookup fails.
+ *  Month-precision → last day of month; year-precision → Dec 31. */
+function releaseDateFallbackMatch(releaseDate: string, validDates: string[]): boolean {
+  if (releaseDate.length === 7) {
+    const [y, m] = releaseDate.split("-").map(Number);
+    const lastDay = new Date(y, m, 0).getDate();
+    return validDates.includes(`${releaseDate}-${String(lastDay).padStart(2, "0")}`);
+  }
+  return validDates.includes(`${releaseDate}-12-31`);
+}
 
 // ── Event callbacks ─────────────────────────────────────────────────────────
 
@@ -53,8 +73,10 @@ export interface PlaylistFillerEvents {
   onDateCompleted?: (result: DateResult) => void;
   onDateError?: (date: string, error: Error) => void;
   onRateLimitSleep?: (hours: number, wakeTime: Date) => void;
+  onRateLimitWait?: (seconds: number, wakeTime: Date) => void;
   onBatchComplete?: (results: DateResult[], durationMinutes: number) => void;
   onRecalculating?: () => void;
+  onRecalculated?: () => void;
   onLog?: (message: string) => void;
 }
 
@@ -121,9 +143,18 @@ export class PlaylistFillerService {
     } as Required<PlaylistFillerOptions>;
 
     const apiCallbacks: ApiCallOptions = {
-      onRateLimitWait: (s) => this.events.onLog?.(`  Rate limited, waiting ${s / 60}min...`),
+      onRateLimitWait: (s) => {
+        const resumeAt = new Date(Date.now() + s * 1000);
+        const display = s >= 60 ? `${(s / 60).toFixed(1)}min` : `${s}s`;
+        const time = resumeAt.toLocaleTimeString();
+        this.events.onLog?.(`  Rate limited, waiting ${display} (until ${time})...`);
+        this.events.onRateLimitWait?.(s, resumeAt);
+      },
       onNetworkRetry: (a, m) => this.events.onLog?.(`  Network error, retry ${a}/${m}`),
-      onLongSleep: (h, w) => this.events.onRateLimitSleep?.(h, w),
+      onLongSleep: (h, w) => {
+        this.events.onRateLimitSleep?.(h, w);
+        this.events.onRateLimitWait?.(h * 3600, w);
+      },
       onError: (desc, err) => {
         if (err.message?.includes("404")) return;
         this.events.onLog?.(`  Error (${desc}): ${err.message}`);
@@ -226,14 +257,20 @@ export class PlaylistFillerService {
       this.events.onDateStart?.(targetDate, i, datesToProcess.length);
 
       try {
-        // Recalculate priorities if playlists changed (skip if mid-search)
-        const recalculated = await this.maybeRecalculate();
+        // Recalculate priorities if playlists changed (skip if mid-search for this date)
+        const recalculated = await this.maybeRecalculate(targetDate);
         if (recalculated) {
+          const oldNames = new Set(p1p2Artists.map(([name]) => name));
           trustedArtists = JSON.parse(
             fs.readFileSync(this.opts.trustedArtistsPath, "utf8"),
           );
           p1p2Artists = filterByPriority(trustedArtists.artistCounts, [1, 2]);
+          const newNames = new Set(p1p2Artists.map(([name]) => name));
+          const added = p1p2Artists.filter(([name]) => !oldNames.has(name));
+          const removed = [...oldNames].filter(name => !newNames.has(name));
           this.events.onLog?.(`Reloaded P1+P2 artists: ${p1p2Artists.length}`);
+          if (added.length) this.events.onLog?.(`  New: ${added.map(([n]) => n).join(", ")}`);
+          if (removed.length) this.events.onLog?.(`  Removed: ${removed.join(", ")}`);
         }
 
         if (i > 0 && (i + 1) % 10 === 0) {
@@ -252,7 +289,7 @@ export class PlaylistFillerService {
         this.events.onDateCompleted?.(result);
 
         if (i < datesToProcess.length - 1) {
-          await new Promise((r) => setTimeout(r, 10000));
+          await this.sleep(10000);
         }
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
@@ -276,7 +313,7 @@ export class PlaylistFillerService {
         }
 
         results.push({ date: targetDate, error: err.message } as DateResult);
-        await new Promise((r) => setTimeout(r, 60000));
+        await this.sleep(60000);
       }
     }
 
@@ -287,7 +324,7 @@ export class PlaylistFillerService {
 
   // ── Recalculation check ─────────────────────────────────────────────────
 
-  private async maybeRecalculate(): Promise<boolean> {
+  private async maybeRecalculate(targetDate: string): Promise<boolean> {
     const awResult = await this.apiCall(
       () => this.api.playlists.getPlaylist(this.opts.allWeeklyId),
       "All Weekly info",
@@ -308,11 +345,17 @@ export class PlaylistFillerService {
     let recalculated = false;
     if (awChanged || boawChanged) {
       const progress = this.cache.artistSearchProgress;
-      if (progress && progress.artistsSearched > 0) {
-        this.events.onLog?.("Playlists changed but skipping recalculation — artist search in progress");
+      if (progress && progress.date === targetDate && progress.artistsSearched > 0) {
+        // Skip recalculation — artist search already in progress for this date
       } else {
         this.events.onRecalculating?.();
-        execSync("npm run recalculate", { stdio: "inherit" });
+        const calcService = new PriorityCalculatorService(this.client, {
+          allWeeklyId: this.opts.allWeeklyId,
+          bestOfAllWeeklyId: this.opts.bestOfAllWeeklyId,
+        });
+        const output = await calcService.run();
+        fs.writeFileSync(this.opts.trustedArtistsPath, JSON.stringify(output, null, 2));
+        this.events.onRecalculated?.();
         recalculated = true;
       }
     }
@@ -438,10 +481,11 @@ export class PlaylistFillerService {
           };
           this.saveCache();
           this.events.onArtistSearchPause?.(artistsSearched, p1p2Artists.length);
-          await new Promise((r) => setTimeout(r, 30000));
+          this.events.onRateLimitWait?.(30, new Date(Date.now() + 30000));
+          await this.sleep(30000);
         }
 
-        await new Promise((r) => setTimeout(r, 500));
+        await this.sleep(500);
       }
     } catch (e) {
       // Save progress on abort so we can resume later
@@ -519,6 +563,16 @@ export class PlaylistFillerService {
 
   // ── Helpers ─────────────────────────────────────────────────────────────
 
+  /** Sleep in 1-second chunks, checking abort between each. */
+  private async sleep(ms: number): Promise<void> {
+    const target = Date.now() + ms;
+    while (Date.now() < target) {
+      void this.api; // throws "Stopped by user" if aborted
+      const remaining = target - Date.now();
+      await new Promise((r) => setTimeout(r, Math.min(remaining, 1000)));
+    }
+  }
+
   private async searchArtist(
     name: string,
   ): Promise<{ id: string; name: string } | null> {
@@ -527,7 +581,9 @@ export class PlaylistFillerService {
       `search "${name}"`,
     );
     if (!result.success) {
-      throw result.error ?? new Error(`Search failed for "${name}"`);
+      if (result.authError) throw result.error ?? new Error(`Search failed for "${name}"`);
+      this.events.onFiltered?.("search failed", name, "", result.error?.message);
+      return null;
     }
     if (result.data.artists?.items.length) {
       const exact = result.data.artists.items.find(
@@ -557,16 +613,36 @@ export class PlaylistFillerService {
       }
 
       for (const album of result.data.items) {
-        if (validDates.includes(album.release_date)) {
-          allReleases.push({
-            id: album.id,
-            name: album.name,
-            type: album.album_type,
-            release_date: album.release_date,
-            artistId,
-            markets: album.available_markets?.length ?? 0,
-          });
+        let releaseDate = album.release_date;
+
+        if (releaseDate.length === 10) {
+          // Day precision — exact match
+          if (!validDates.includes(releaseDate)) continue;
+        } else if (releaseDateCouldMatch(releaseDate, validDates)) {
+          // Imprecise date overlaps this week — fetch full album for precise date
+          const fullAlbum = await this.apiCall(
+            () => this.api.albums.get(album.id),
+            `full album ${album.id}`,
+          );
+          if (fullAlbum.success && fullAlbum.data.release_date.length === 10) {
+            releaseDate = fullAlbum.data.release_date;
+            if (!validDates.includes(releaseDate)) continue;
+          } else {
+            // API failed or still imprecise — fall back to last day of period
+            if (!releaseDateFallbackMatch(releaseDate, validDates)) continue;
+          }
+        } else {
+          continue;
         }
+
+        allReleases.push({
+          id: album.id,
+          name: album.name,
+          type: album.album_type,
+          release_date: releaseDate,
+          artistId,
+          markets: album.available_markets?.length ?? 0,
+        });
       }
 
       if (result.data.items.length < 50) break;
@@ -660,6 +736,7 @@ export class PlaylistFillerService {
         () => this.api.playlists.getUsersPlaylists(source.userId, 50, 0),
         `${source.label} playlists`,
       );
+      if (!result.success && result.authError) throw result.error;
       if (result.success) {
         const match = result.data.items.find(
           (p: { name: string }) => p.name.includes(dateStr) && pattern.test(p.name),
@@ -682,9 +759,18 @@ export class PlaylistFillerService {
           () => this.api.albums.get(albumId),
           `album ${albumId}`,
         );
-        if (!albumResult.success) continue;
+        if (!albumResult.success) {
+          if (albumResult.authError) throw albumResult.error;
+          continue;
+        }
         const album = albumResult.data;
-        if (!validDates.includes(album.release_date)) continue;
+        // Full album endpoint — date is usually day-precision, but handle imprecise as fallback
+        const editRd = album.release_date;
+        if (editRd.length === 10) {
+          if (!validDates.includes(editRd)) continue;
+        } else if (!releaseDateFallbackMatch(editRd, validDates)) {
+          continue;
+        }
 
         const primaryArtist = album.artists[0];
         const artistName = primaryArtist.name;
@@ -707,7 +793,10 @@ export class PlaylistFillerService {
             () => this.api.artists.get(primaryArtist.id),
             `artist ${primaryArtist.id}`,
           );
-          if (!artistResult.success) continue;
+          if (!artistResult.success) {
+            if (artistResult.authError) throw artistResult.error;
+            continue;
+          }
           const details = artistResult.data;
 
           if (

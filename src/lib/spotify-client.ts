@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 import { SpotifyApi } from "@spotify/web-api-ts-sdk";
 import type { ConfigStore, SpotifyClient, SpotifyConfig } from "./types.js";
+import { RetryAfterResponseValidator } from "./response-validator.js";
 
 export interface SpotifyClientOptions {
   configStore: ConfigStore;
@@ -24,7 +25,7 @@ export function createSpotifyClient(
       token_type: "Bearer",
       expires_in: 3600,
       refresh_token: refreshTokenValue,
-    });
+    }, { responseValidator: new RetryAfterResponseValidator() });
   }
 
   let api = buildApi();
