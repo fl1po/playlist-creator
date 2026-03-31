@@ -1,30 +1,20 @@
-import type { SpotifyApi } from "@spotify/web-api-ts-sdk";
-import type {
-  AlbumTrack,
-  ApiResult,
-  PlaylistAlbumInfo,
-  SimplePlaylist,
-} from "./types.js";
-
-type ApiCallFn = <T>(
-  fn: () => Promise<T>,
-  description: string,
-) => Promise<ApiResult<T>>;
+import type { SpotifyContext } from './spotify-context.js';
+import { trackKey } from './track-utils.js';
+import type { AlbumTrack, PlaylistAlbumInfo, SimplePlaylist } from './types.js';
 
 /** Get all track IDs from a playlist. */
 export async function getAllPlaylistTracks(
-  api: SpotifyApi,
+  ctx: SpotifyContext,
   playlistId: string,
-  apiCall: ApiCallFn,
 ): Promise<string[]> {
   const tracks: string[] = [];
   let offset = 0;
   const limit = 50;
 
   while (true) {
-    const result = await apiCall(
+    const result = await ctx.call(
       () =>
-        api.playlists.getPlaylistItems(
+        ctx.api.playlists.getPlaylistItems(
           playlistId,
           undefined,
           undefined,
@@ -40,13 +30,12 @@ export async function getAllPlaylistTracks(
     }
 
     for (const item of result.data.items) {
-      if (item.track && item.track.id) {
+      if (item.track?.id) {
         tracks.push(item.track.id);
       }
     }
     if (result.data.items.length < limit) break;
     offset += limit;
-    await new Promise((r) => setTimeout(r, 100));
   }
 
   return tracks;
@@ -54,18 +43,17 @@ export async function getAllPlaylistTracks(
 
 /** Get all playlists owned by a user. */
 export async function getAllUserPlaylists(
-  api: SpotifyApi,
+  ctx: SpotifyContext,
   userId: string,
-  apiCall: ApiCallFn,
 ): Promise<SimplePlaylist[]> {
   const playlists: SimplePlaylist[] = [];
   let offset = 0;
   const limit = 50;
 
   while (true) {
-    const result = await apiCall(
-      () => api.playlists.getUsersPlaylists(userId, limit, offset),
-      "user playlists",
+    const result = await ctx.call(
+      () => ctx.api.playlists.getUsersPlaylists(userId, limit, offset),
+      'user playlists',
     );
 
     if (!result.success) {
@@ -84,7 +72,6 @@ export async function getAllUserPlaylists(
     }
     if (result.data.items.length < limit) break;
     offset += limit;
-    await new Promise((r) => setTimeout(r, 100));
   }
 
   return playlists;
@@ -92,16 +79,15 @@ export async function getAllUserPlaylists(
 
 /** Get all tracks from an album with normalized dedup keys. */
 export async function getAlbumTracks(
-  api: SpotifyApi,
+  ctx: SpotifyContext,
   albumId: string,
-  apiCall: ApiCallFn,
 ): Promise<AlbumTrack[]> {
   const tracks: AlbumTrack[] = [];
   let offset = 0;
 
   while (true) {
-    const result = await apiCall(
-      () => api.albums.tracks(albumId, undefined, 50, offset),
+    const result = await ctx.call(
+      () => ctx.api.albums.tracks(albumId, undefined, 50, offset),
       `tracks for album ${albumId}`,
     );
 
@@ -111,22 +97,18 @@ export async function getAlbumTracks(
     }
 
     for (const track of result.data.items) {
-      const artistNames = track.artists
-        .map((a: { name: string }) => a.name.toLowerCase())
-        .sort()
-        .join("|");
-      const trackKey = `${artistNames}::${track.name.toLowerCase()}`;
+      const artistNames = track.artists.map((a: { name: string }) => a.name);
+      const key = trackKey(artistNames, track.name);
       tracks.push({
         id: track.id,
         name: track.name,
-        key: trackKey,
+        key,
         explicit: (track as unknown as { explicit?: boolean }).explicit,
       });
     }
 
     if (result.data.items.length < 50) break;
     offset += 50;
-    await new Promise((r) => setTimeout(r, 100));
   }
 
   return tracks;
@@ -134,18 +116,17 @@ export async function getAlbumTracks(
 
 /** Get unique albums referenced by tracks in a playlist. */
 export async function getPlaylistAlbums(
-  api: SpotifyApi,
+  ctx: SpotifyContext,
   playlistId: string,
-  apiCall: ApiCallFn,
   maxOffset = 200,
 ): Promise<Map<string, PlaylistAlbumInfo>> {
   const albums = new Map<string, PlaylistAlbumInfo>();
   let offset = 0;
 
   while (true) {
-    const result = await apiCall(
+    const result = await ctx.call(
       () =>
-        api.playlists.getPlaylistItems(
+        ctx.api.playlists.getPlaylistItems(
           playlistId,
           undefined,
           undefined,
@@ -168,7 +149,7 @@ export async function getPlaylistAlbums(
             name: item.track.album.name,
             artistName:
               (item.track as unknown as { artists?: Array<{ name: string }> })
-                .artists?.[0]?.name ?? "Unknown",
+                .artists?.[0]?.name ?? 'Unknown',
           });
         }
       }
@@ -176,28 +157,146 @@ export async function getPlaylistAlbums(
     if (result.data.items.length < 50) break;
     offset += 50;
     if (offset > maxOffset) break;
-    await new Promise((r) => setTimeout(r, 50));
   }
 
   return albums;
 }
 
+/** Get all tracks from a playlist with normalized dedup keys. */
+export async function getPlaylistTracksDetailed(
+  ctx: SpotifyContext,
+  playlistId: string,
+): Promise<Array<{ uri: string; name: string; key: string; artists: string }>> {
+  const tracks: Array<{
+    uri: string;
+    name: string;
+    key: string;
+    artists: string;
+  }> = [];
+  let offset = 0;
+  const limit = 50;
+
+  while (true) {
+    const result = await ctx.call(
+      () =>
+        ctx.api.playlists.getPlaylistItems(
+          playlistId,
+          undefined,
+          undefined,
+          limit,
+          offset,
+        ),
+      `playlist tracks detailed ${playlistId}`,
+    );
+
+    if (!result.success) {
+      if (result.authError) throw result.error;
+      return tracks;
+    }
+
+    for (const item of result.data.items) {
+      if (item.track?.id) {
+        const trackArtists =
+          (item.track as unknown as { artists?: Array<{ name: string }> })
+            .artists ?? [];
+        const artistNames = trackArtists.map((a) => a.name);
+        const key = trackKey(artistNames, item.track.name);
+        const displayArtists = artistNames.join(', ');
+        tracks.push({
+          uri: item.track.uri,
+          name: item.track.name,
+          key,
+          artists: displayArtists,
+        });
+      }
+    }
+    if (result.data.items.length < limit) break;
+    offset += limit;
+  }
+
+  return tracks;
+}
+
+// ── Playlist tracks with individual artist names ────────────────────────────
+
+export interface PlaylistTrackWithArtists {
+  uri: string;
+  id: string;
+  name: string;
+  artistNames: string[];
+}
+
+/** Get all tracks from a playlist with individual artist names (not comma-joined). */
+export async function getPlaylistTracksWithArtists(
+  ctx: SpotifyContext,
+  playlistId: string,
+): Promise<PlaylistTrackWithArtists[]> {
+  const tracks: PlaylistTrackWithArtists[] = [];
+  let offset = 0;
+  const limit = 50;
+
+  while (true) {
+    const result = await ctx.call(
+      () =>
+        ctx.api.playlists.getPlaylistItems(
+          playlistId,
+          undefined,
+          undefined,
+          limit,
+          offset,
+        ),
+      `playlist tracks with artists ${playlistId}`,
+    );
+
+    if (!result.success) {
+      if (result.authError) throw result.error;
+      return tracks;
+    }
+
+    for (const item of result.data.items) {
+      if (item.track?.id) {
+        const trackArtists =
+          (item.track as unknown as { artists?: Array<{ name: string }> })
+            .artists ?? [];
+        tracks.push({
+          uri: item.track.uri,
+          id: item.track.id,
+          name: item.track.name,
+          artistNames: trackArtists.map((a) => a.name),
+        });
+      }
+    }
+    if (result.data.items.length < limit) break;
+    offset += limit;
+  }
+
+  return tracks;
+}
+
 /** Scan playlist tracks with position info for recency calculations. */
 export async function getPlaylistTracksWithPositions(
-  api: SpotifyApi,
+  ctx: SpotifyContext,
   playlistId: string,
-  apiCall: ApiCallFn,
-): Promise<{ artistData: Map<string, { positions: number[]; trackCount: number; id: string | null }>; totalTracks: number }> {
-  const artistData = new Map<string, { positions: number[]; trackCount: number; id: string | null }>();
+): Promise<{
+  artistData: Map<
+    string,
+    { positions: number[]; trackCount: number; id: string | null }
+  >;
+  totalTracks: number;
+}> {
+  const artistData = new Map<
+    string,
+    { positions: number[]; trackCount: number; id: string | null }
+  >();
   let offset = 0;
   const limit = 50;
   let position = 0;
   let totalTracks = 0;
 
   while (true) {
-    const result = await apiCall(
+    const result = await ctx.call(
       () =>
-        api.playlists.getPlaylistItems(
+        ctx.api.playlists.getPlaylistItems(
           playlistId,
           undefined,
           undefined,
@@ -218,14 +317,21 @@ export async function getPlaylistTracksWithPositions(
 
     for (const item of result.data.items) {
       if (item.track?.artists) {
-        for (const artist of item.track.artists as Array<{ id: string; name: string }>) {
+        for (const artist of item.track.artists as Array<{
+          id: string;
+          name: string;
+        }>) {
           const name = artist.name;
           if (!artistData.has(name)) {
-            artistData.set(name, { positions: [], trackCount: 0, id: artist.id });
+            artistData.set(name, {
+              positions: [],
+              trackCount: 0,
+              id: artist.id,
+            });
           }
-          const data = artistData.get(name)!;
-          data.positions.push(position);
-          data.trackCount++;
+          const data = artistData.get(name);
+          data?.positions.push(position);
+          if (data) data.trackCount++;
         }
       }
       position++;
@@ -233,7 +339,6 @@ export async function getPlaylistTracksWithPositions(
 
     if (result.data.items.length < limit) break;
     offset += limit;
-    await new Promise((r) => setTimeout(r, 30));
   }
 
   return { artistData, totalTracks };

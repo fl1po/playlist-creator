@@ -2,10 +2,18 @@ import type { SpotifyApi } from "@spotify/web-api-ts-sdk";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
-export interface SpotifyConfig {
+export interface AppConfig {
   clientId: string;
   clientSecret: string;
   redirectUri: string;
+}
+
+export interface UserTokens {
+  accessToken: string;
+  refreshToken: string;
+}
+
+export interface SpotifyConfig extends AppConfig {
   accessToken?: string;
   refreshToken?: string;
 }

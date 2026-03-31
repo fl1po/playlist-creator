@@ -1,13 +1,13 @@
-import type { SpotifyApi } from "@spotify/web-api-ts-sdk";
-import { createApiCall } from "../lib/api-wrapper.js";
-import type { ArtistData, SpotifyClient, TrustedArtistsFile } from "../lib/types.js";
+import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
+import type { SpotifyContext } from '../lib/spotify-context.js';
+import type { ArtistData, TrustedArtistsFile } from '../lib/types.js';
 
 // ── Events ──────────────────────────────────────────────────────────────────
 
-export interface ArtistLookupEvents {
-  onResult?: (result: ArtistLookupResult) => void;
-  onNotFound?: (query: string) => void;
-}
+export type ArtistLookupEventMap = {
+  result: [result: ArtistLookupResult];
+  notFound: [query: string];
+};
 
 export interface ArtistLookupResult {
   name: string;
@@ -22,21 +22,15 @@ export interface ArtistLookupResult {
 // ── Service ─────────────────────────────────────────────────────────────────
 
 export class ArtistLookupService {
-  private client: SpotifyClient;
-  private events: ArtistLookupEvents;
-  private apiCall: ReturnType<typeof createApiCall>;
+  private ctx: SpotifyContext;
+  private emitter: ServiceEmitter<ArtistLookupEventMap>;
 
   constructor(
-    client: SpotifyClient,
-    events?: ArtistLookupEvents,
+    ctx: SpotifyContext,
+    events?: EventHandlers<ArtistLookupEventMap>,
   ) {
-    this.client = client;
-    this.events = events ?? {};
-    this.apiCall = createApiCall(client);
-  }
-
-  get api(): SpotifyApi {
-    return this.client.api;
+    this.ctx = ctx;
+    this.emitter = new ServiceEmitter(events);
   }
 
   async lookup(
@@ -51,12 +45,15 @@ export class ArtistLookupService {
     );
 
     if (matches.length === 0) {
-      this.events.onNotFound?.(query);
+      this.emitter.emit('notFound', query);
       return [];
     }
 
     // Pre-compute rankings per priority group
-    const rankByPriority: Record<number, Array<{ name: string; score: number }>> = {};
+    const rankByPriority: Record<
+      number,
+      Array<{ name: string; score: number }>
+    > = {};
     for (const [n, a] of Object.entries(artists)) {
       if (!a.priority) continue;
       if (!rankByPriority[a.priority]) rankByPriority[a.priority] = [];
@@ -74,9 +71,10 @@ export class ArtistLookupService {
       let genres: string[] = [];
 
       if (data.spotifyId) {
-        const result = await this.apiCall(
-          () => this.api.artists.get(data.spotifyId!),
-          `artist ${data.spotifyId}`,
+        const spotifyId = data.spotifyId;
+        const result = await this.ctx.call(
+          () => this.ctx.api.artists.get(spotifyId),
+          `artist ${spotifyId}`,
         );
         if (result.success) {
           popularity = result.data.popularity;
@@ -103,7 +101,7 @@ export class ArtistLookupService {
         priorityGroupSize,
       };
       results.push(r);
-      this.events.onResult?.(r);
+      this.emitter.emit('result', r);
     }
 
     return results;

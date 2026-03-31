@@ -11,7 +11,7 @@ const deluxePatterns = [
   /\bultimate\b.*\bedition\b/i,
   /\bsuper\b.*\bedition\b/i,
   /\bplatinum\b.*\bedition\b/i,
-  /\banniversary\b/i,
+  /\banniversary\b.*\bedition\b/i,
 ];
 
 export function isDeluxeRelease(albumName: string): boolean {
@@ -104,6 +104,28 @@ export function groupReleases(
     groups.get(key)!.push(release);
   }
   return groups;
+}
+
+// ── Popularity filtering ────────────────────────────────────────────────────
+
+// ── Date matching helpers ────────────────────────────────────────────────────
+
+/** Check if an imprecise release date could overlap with valid dates.
+ *  Day-precision → exact match. Month/year → any valid date shares that prefix. */
+export function releaseDateCouldMatch(releaseDate: string, validDates: string[]): boolean {
+  if (releaseDate.length === 10) return validDates.includes(releaseDate);
+  return validDates.some(d => d.startsWith(releaseDate));
+}
+
+/** Last-resort match for imprecise dates when full album lookup fails.
+ *  Month-precision → last day of month; year-precision → Dec 31. */
+export function releaseDateFallbackMatch(releaseDate: string, validDates: string[]): boolean {
+  if (releaseDate.length === 7) {
+    const [y, m] = releaseDate.split("-").map(Number);
+    const lastDay = new Date(y, m, 0).getDate();
+    return validDates.includes(`${releaseDate}-${String(lastDay).padStart(2, "0")}`);
+  }
+  return validDates.includes(`${releaseDate}-12-31`);
 }
 
 // ── Popularity filtering ────────────────────────────────────────────────────

@@ -150,6 +150,7 @@
   .priority-badge.p1 { background: #1DB954; color: #000; }
   .priority-badge.p2 { background: #2d6a4f; color: #e0e0e0; }
   .priority-badge.p3 { background: #333; color: #999; }
+  .priority-badge.p4 { background: #1a1a1a; color: #666; }
 
   /* Log panel */
   .log-panel {
@@ -177,14 +178,36 @@
   }
   .auth-overlay.hidden { display: none; }
   .auth-card {
-    text-align: center; max-width: 400px; padding: 48px 32px;
+    text-align: center; max-width: 420px; padding: 48px 32px;
   }
+  .auth-card .auth-icon {
+    width: 64px; height: 64px; margin: 0 auto 24px;
+    background: #1a3a25; border-radius: 50%; display: flex;
+    align-items: center; justify-content: center;
+  }
+  .auth-card .auth-icon svg { width: 32px; height: 32px; }
   .auth-card h1 { font-size: 28px; margin-bottom: 8px; }
   .auth-card h1 span { color: #1DB954; }
-  .auth-card p { color: #999; font-size: 14px; margin-bottom: 32px; line-height: 1.5; }
+  .auth-card p { color: #999; font-size: 14px; margin-bottom: 24px; line-height: 1.6; }
+  .auth-card .auth-features {
+    text-align: left; margin: 0 auto 28px; max-width: 280px;
+  }
+  .auth-card .auth-features li {
+    color: #888; font-size: 13px; line-height: 1.8; list-style: none;
+    padding-left: 20px; position: relative;
+  }
+  .auth-card .auth-features li::before {
+    content: ''; position: absolute; left: 0; top: 9px;
+    width: 8px; height: 8px; border-radius: 50%; background: #1DB954;
+  }
   .auth-card button { font-size: 15px; padding: 12px 32px; }
-  .auth-card .auth-status { margin-top: 16px; font-size: 13px; color: #666; }
+  .auth-card .auth-status { margin-top: 16px; font-size: 13px; color: #666; min-height: 20px; }
   .auth-card .auth-status.error { color: #e74c3c; }
+  .auth-card .auth-footer {
+    margin-top: 32px; font-size: 12px; color: #555;
+  }
+  .auth-card .auth-footer a { color: #888; text-decoration: none; }
+  .auth-card .auth-footer a:hover { color: #1DB954; }
 
   /* Settings gear button */
   .gear-btn {
@@ -194,6 +217,7 @@
     display: flex; align-items: center; justify-content: center;
   }
   .gear-btn:hover { color: #e0e0e0; background: #282828; }
+  .gear-btn.active { color: #1DB954; }
 
   /* Settings modal */
   .settings-overlay {
@@ -332,24 +356,66 @@
   .picker-item:hover { background: #282828; }
   .picker-item .pl-name { font-weight: 500; }
   .picker-item .pl-count { color: #666; font-size: 12px; }
+
+  /* Stats */
+  .stats-section-title { font-size: 13px; font-weight: 600; color: #1DB954; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+  .stats-metric { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 13px; }
+  .stats-metric .label { color: #999; }
+  .stats-metric .value { font-weight: 600; }
+  .priority-stacked-bar {
+    display: flex; height: 24px; border-radius: 4px; overflow: hidden;
+    margin: 12px 0 8px; gap: 1px;
+  }
+  .priority-stacked-bar .seg {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600; min-width: 24px; transition: flex 0.3s;
+  }
+  .priority-stacked-bar .seg.p1 { background: #1DB954; color: #000; }
+  .priority-stacked-bar .seg.p2 { background: #2d6a4f; color: #e0e0e0; }
+  .priority-stacked-bar .seg.p3 { background: #444; color: #999; }
+  .priority-stacked-bar .seg.p4 { background: #222; color: #666; }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 13px; }
+  .bar-row .bar-label { min-width: 50px; color: #999; text-align: right; flex-shrink: 0; }
+  .bar-row .bar-track { flex: 1; height: 18px; background: #1a1a1a; border-radius: 3px; overflow: hidden; }
+  .bar-row .bar-fill { height: 100%; background: #1DB954; border-radius: 3px; transition: width 0.3s; display: flex; align-items: center; padding-left: 6px; font-size: 11px; font-weight: 600; color: #000; white-space: nowrap; }
+  .bar-row .bar-count { min-width: 36px; text-align: right; color: #999; font-size: 12px; flex-shrink: 0; }
+  .stats-empty { text-align: center; padding: 40px 20px; color: #666; }
+  .stats-empty p { margin-top: 8px; font-size: 13px; }
 </style>
 </head>
 <body>
 
 <div class="auth-overlay" id="authOverlay">
   <div class="auth-card">
+    <div class="auth-icon">
+      <svg viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="16" fill="#1DB954"/><path d="M8 22.5C8 24.43 9.57 26 11.5 26S15 24.43 15 22.5 13.43 19 11.5 19 8 20.57 8 22.5Z" fill="#121212"/><rect x="14" y="6" width="3" height="17" rx="1.5" fill="#121212"/><path d="M17 6c3.5 0 7 1.5 7 5s-2 4-4 4" stroke="#121212" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>
+    </div>
     <h1><span>Spotify</span> Automation</h1>
-    <p id="authDesc" style="display:none;">Connect your Spotify account to get started.</p>
+    <div id="authWelcome">
+      <p>Automatically fill weekly playlists with new releases from your favorite artists.</p>
+      <ul class="auth-features">
+        <li>Track artist priorities from your playlists</li>
+        <li>Discover new releases automatically</li>
+        <li>Create weekly playlists hands-free</li>
+      </ul>
+    </div>
+    <div id="authExpired" style="display:none;">
+      <p>Your session has expired. Please reconnect to continue.</p>
+    </div>
     <button id="authConnectBtn" onclick="authenticate()" style="display:none;">Connect with Spotify</button>
     <div class="auth-status" id="authStatus">Checking authentication...</div>
+    <div class="auth-footer">Open source on <a href="https://github.com/fl1po/playlist-creator" target="_blank" rel="noopener">GitHub</a></div>
   </div>
 </div>
 
 <header>
   <h1><span>Spotify</span> Automation</h1>
   <div class="status">
+    <span id="userDisplay" style="font-size:12px;color:#999;display:none;"></span>
+    <button class="gear-btn" id="statsBtn" onclick="toggleStats()" title="Stats"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="12" x2="2" y2="8"/><line x1="6" y1="12" x2="6" y2="4"/><line x1="10" y1="12" x2="10" y2="6"/><line x1="14" y1="12" x2="14" y2="2"/></svg></button>
     <button class="gear-btn" onclick="openSettings()" title="Settings">&#9881;</button>
     <button class="secondary" id="authBtn" onclick="authenticate()" style="display:none;">Authenticate</button>
+    <button class="secondary" id="logoutBtn" onclick="logout()" style="display:none;font-size:12px;padding:6px 14px;">Logout</button>
     <button class="danger" id="stopBtn" onclick="stopTask()" style="display:none;">Stop</button>
     <div class="status-dot" id="statusDot"></div>
     <span id="statusText">Connecting...</span>
@@ -407,6 +473,16 @@
       <p class="hint">Remove all tracks from a playlist by its exact name. Asks for confirmation before clearing.</p>
     </div>
 
+    <!-- Deduplicate -->
+    <div class="card">
+      <h2>Deduplicate</h2>
+      <div class="card-row">
+        <button id="dedupScanBtn" onclick="dedupScan()">Scan</button>
+        <button id="dedupRemoveBtn" class="danger" onclick="dedupRemove()" disabled>Remove duplicates</button>
+      </div>
+      <p class="hint">Scan weekly playlists for duplicate tracks, then remove them.</p>
+    </div>
+
   </div>
 
   <!-- Log Panel -->
@@ -436,6 +512,38 @@
     </div>
   </div>
 </main>
+
+<!-- Stats Modal -->
+<div class="settings-overlay hidden" id="statsOverlay" onclick="if(event.target===this)closeStats()">
+  <div class="settings-panel" style="max-width:720px;">
+    <div class="settings-header">
+      <h2>Stats</h2>
+      <button class="settings-close" onclick="closeStats()">&times;</button>
+    </div>
+    <div id="statsEmpty" class="stats-empty" style="display:none;">
+      <h2>No Stats Available</h2>
+      <p>Run a priority recalculation first to generate artist data.</p>
+    </div>
+    <div id="statsContent" style="display:none;">
+      <div class="cards" style="margin-bottom:16px;">
+        <div class="card" style="border:none;padding:0;">
+          <h3 class="stats-section-title">Priority Distribution</h3>
+          <div id="statsPriorityBar" class="priority-stacked-bar"></div>
+          <div id="statsOverview"></div>
+        </div>
+        <div class="card" style="border:none;padding:0;">
+          <h3 class="stats-section-title">Score Distribution</h3>
+          <div id="statsScoreDist"></div>
+        </div>
+      </div>
+      <div id="statsFillHistorySection" style="display:none;">
+        <h3 class="stats-section-title">Fill History</h3>
+        <div id="statsFillTotals"></div>
+        <div id="statsFillHistory" style="margin-top:12px;"></div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- Settings Modal -->
 <div class="settings-overlay hidden" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">
@@ -738,6 +846,21 @@ function handleMessage({ type, data }) {
       log('success', `  ${data.results.length} dates: ${data.results.length - skipped - errors} created, ${skipped} skipped, ${errors} errors`);
       log('success', `  Total tracks added: ${totalTracks}`);
       loadArtists();
+      if (statsVisible) loadStats();
+      break;
+    }
+    case 'fill:stopped': {
+      setFetching(false);
+      clearRateLimitCountdown();
+      searchedArtists = new Set();
+      currentSearchArtist = null;
+      clearArtistMarks();
+      hideProgress('fillCurrent');
+      const segBar2 = document.getElementById('fillSegBar');
+      const totalTxt2 = document.getElementById('fillTotalProgressText');
+      setTimeout(() => { segBar2.classList.remove('visible'); totalTxt2.classList.remove('visible'); }, 1500);
+      loadArtists();
+      if (statsVisible) loadStats();
       break;
     }
     case 'fill:recalculated':
@@ -789,6 +912,18 @@ function handleMessage({ type, data }) {
       hideProgress('recalc');
       log('success', `Priorities: P1=${data.p1Count} P2=${data.p2Count} P3=${data.p3Count} P4=${data.p4Count}`);
       loadArtists();
+      if (statsVisible) loadStats();
+      break;
+    case 'recalc:changes':
+      if (data.changes && data.changes.length > 0) {
+        const label = (p) => p === null ? 'none' : `P${p}`;
+        log('info', `${data.changes.length} artist(s) changed priority:`);
+        for (const c of data.changes) {
+          log('info', `  ${c.artist}: ${label(c.from)} → ${label(c.to)}`);
+        }
+      } else {
+        log('info', 'No priority changes detected');
+      }
       break;
     case 'recalc:topArtists':
       break;
@@ -797,16 +932,68 @@ function handleMessage({ type, data }) {
     case 'lookup:result':
       break;
 
+    // Sync events
+    case 'sync:start':
+      log('info', `Playlist sync started — ${data.demoted} demoted, ${data.promoted} promoted, ${data.playlists} playlist(s)`);
+      setFetching(true);
+      break;
+    case 'sync:playlistSync':
+      log('info', `  Synced "${data.name}": −${data.removed} +${data.added}`);
+      break;
+    case 'sync:complete':
+      log('success', `Playlist sync complete — ${data.totalRemoved} removed, ${data.totalAdded} added across ${data.playlistsSynced} playlist(s)`);
+      setFetching(false);
+      break;
+
     // Clear
     case 'clear:complete':
       log('success', `Cleared ${data.cleared} tracks from "${data.name}"`);
       break;
 
+    // Dedup
+    case 'dedup:playlist': {
+      const dupes = data.duplicates.map(d => `${d.artist} — ${d.track} ×${d.count}`).join(', ');
+      const total = data.duplicates.reduce((s, d) => s + d.count - 1, 0);
+      log('info', `${data.name}: ${total} duplicates (${dupes})`);
+      break;
+    }
+    case 'dedup:scanComplete':
+      dedupScanResult = data;
+      if (data.totalDuplicates > 0) {
+        log('warn', `Scan complete: ${data.totalDuplicates} duplicates in ${data.playlists.length} playlists`);
+        document.getElementById('dedupRemoveBtn').disabled = false;
+      } else {
+        log('success', 'Scan complete: no duplicates found');
+      }
+      break;
+    case 'dedup:complete':
+      log('success', `Removed ${data.totalRemoved} duplicate tracks`);
+      dedupScanResult = null;
+      document.getElementById('dedupRemoveBtn').disabled = true;
+      break;
+
     // Auth
     case 'auth':
-      setAuthenticated(data.authenticated);
-      if (!data.authenticated && data.url) {
-        window.open(data.url, '_blank');
+      if (data.authenticated && data.token) {
+        // Exchange token for cookie on our origin, close popup, reload
+        fetch(`/api/auth/complete?token=${encodeURIComponent(data.token)}`)
+          .finally(() => {
+            if (authPopup && !authPopup.closed) authPopup.close();
+            authPopup = null;
+            location.reload();
+          });
+      } else if (data.authenticated) {
+        if (authPopup && !authPopup.closed) authPopup.close();
+        authPopup = null;
+        location.reload();
+      } else {
+        setAuthenticated(false, null, 'expired');
+        if (data.url) {
+          const w = 460, h = 700;
+          const left = Math.round(screen.width / 2 - w / 2);
+          const top = Math.round(screen.height / 2 - h / 2);
+          authPopup = window.open(data.url, 'spotify_auth', `width=${w},height=${h},left=${left},top=${top}`);
+        }
       }
       break;
 
@@ -838,36 +1025,78 @@ async function stopTask() {
   if (!res.ok) log('error', res.error || 'Failed to stop');
 }
 
+let authPopup = null;
 async function authenticate() {
-  document.getElementById('authStatus').textContent = 'Opening Spotify login...';
-  document.getElementById('authStatus').className = 'auth-status';
+  const status = document.getElementById('authStatus');
+  const connectBtn = document.getElementById('authConnectBtn');
+  status.textContent = 'Opening Spotify login...';
+  status.className = 'auth-status';
+  connectBtn.disabled = true;
   const res = await api('GET', '/api/auth');
   if (res.url) {
-    window.open(res.url, '_blank');
-    document.getElementById('authStatus').textContent = 'Waiting for authorization — complete login in the opened tab...';
+    const w = 460, h = 700;
+    const left = Math.round(screen.width / 2 - w / 2);
+    const top = Math.round(screen.height / 2 - h / 2);
+    authPopup = window.open(res.url, 'spotify_auth', `width=${w},height=${h},left=${left},top=${top}`);
+    status.textContent = 'Complete the login in the popup...';
+  } else {
+    status.textContent = 'Failed to start authentication.';
+    status.className = 'auth-status error';
+    connectBtn.disabled = false;
   }
 }
 
-function setAuthenticated(ok) {
+function setAuthenticated(ok, displayName, reason) {
   const overlay = document.getElementById('authOverlay');
   const authBtn = document.getElementById('authBtn');
+  const logoutBtn = document.getElementById('logoutBtn');
+  const userDisplay = document.getElementById('userDisplay');
+  const welcome = document.getElementById('authWelcome');
+  const expired = document.getElementById('authExpired');
+  const connectBtn = document.getElementById('authConnectBtn');
+  const status = document.getElementById('authStatus');
+
   if (ok) {
     overlay.classList.add('hidden');
     authBtn.style.display = 'none';
+    logoutBtn.style.display = '';
+    if (displayName) {
+      userDisplay.textContent = displayName;
+      userDisplay.style.display = '';
+    }
   } else {
     overlay.classList.remove('hidden');
     authBtn.style.display = '';
-    document.getElementById('authDesc').style.display = '';
-    document.getElementById('authConnectBtn').style.display = '';
-    document.getElementById('authStatus').textContent = 'Token expired or invalid — please re-authenticate.';
-    document.getElementById('authStatus').className = 'auth-status error';
+    logoutBtn.style.display = 'none';
+    userDisplay.style.display = 'none';
+    connectBtn.style.display = '';
+
+    if (reason === 'expired') {
+      welcome.style.display = 'none';
+      expired.style.display = '';
+      connectBtn.textContent = 'Reconnect with Spotify';
+      status.textContent = '';
+      status.className = 'auth-status';
+    } else {
+      welcome.style.display = '';
+      expired.style.display = 'none';
+      connectBtn.textContent = 'Connect with Spotify';
+      status.textContent = '';
+      status.className = 'auth-status';
+    }
   }
 }
 
 async function checkAuth() {
   document.getElementById('authStatus').textContent = 'Checking authentication...';
+  document.getElementById('authConnectBtn').style.display = 'none';
   const res = await api('GET', '/api/auth/status');
-  setAuthenticated(res.authenticated);
+  setAuthenticated(res.authenticated, res.displayName, res.reason);
+}
+
+async function logout() {
+  await api('POST', '/api/logout');
+  setAuthenticated(false, null, 'no_session');
 }
 
 let searchPending = false;
@@ -912,6 +1141,26 @@ async function clearPlaylist() {
   shouldScrollToLog = true;
   const res = await api('POST', '/api/clear', { name });
   if (!res.ok) log('error', res.error || 'Failed to clear');
+}
+
+// ── Dedup ────────────────────────────────────────────────────────
+let dedupScanResult = null;
+
+async function dedupScan() {
+  dedupScanResult = null;
+  document.getElementById('dedupRemoveBtn').disabled = true;
+  shouldScrollToLog = true;
+  const res = await api('POST', '/api/dedup-scan');
+  if (!res.ok) log('error', res.error || 'Failed to start dedup scan');
+}
+
+async function dedupRemove() {
+  if (!dedupScanResult || !dedupScanResult.playlists.length) return;
+  if (!confirm(`Remove ${dedupScanResult.totalDuplicates} duplicate tracks from ${dedupScanResult.playlists.length} playlists?`)) return;
+  shouldScrollToLog = true;
+  const payload = dedupScanResult.playlists.map(p => ({ id: p.id, uris: p.trackUris }));
+  const res = await api('POST', '/api/dedup-remove', { playlists: payload });
+  if (!res.ok) log('error', res.error || 'Failed to start dedup removal');
 }
 
 async function loadArtists() {
@@ -996,6 +1245,8 @@ function updateButtons() {
   document.getElementById('recalcBtn').disabled = disabled;
   document.getElementById('findArtistBtn').disabled = !wsConnected;
   document.getElementById('clearBtn').disabled = disabled;
+  document.getElementById('dedupScanBtn').disabled = disabled;
+  if (disabled) document.getElementById('dedupRemoveBtn').disabled = true;
   const stopBtn = document.getElementById('stopBtn');
   stopBtn.style.display = busy ? '' : 'none';
   if (!busy) { stopBtn.disabled = false; stopBtn.textContent = 'Stop'; }
@@ -1035,6 +1286,10 @@ async function api(method, url, body) {
       opts.body = JSON.stringify(body);
     }
     const res = await fetch(url, opts);
+    if (res.status === 401) {
+      setAuthenticated(false, null, 'expired');
+      return { ok: false, error: 'Not authenticated' };
+    }
     return await res.json();
   } catch (e) {
     return { ok: false, error: e.message };
@@ -1389,11 +1644,127 @@ function selectPlaylist(pl) {
   closePicker();
 }
 
+// ── Stats ────────────────────────────────────────────────────────
+let statsVisible = false;
+
+function toggleStats() {
+  statsVisible = !statsVisible;
+  const overlay = document.getElementById('statsOverlay');
+  if (statsVisible) {
+    overlay.classList.remove('hidden');
+    loadStats();
+  } else {
+    closeStats();
+  }
+}
+
+function closeStats() {
+  statsVisible = false;
+  document.getElementById('statsOverlay').classList.add('hidden');
+}
+
+async function loadStats() {
+  const res = await api('GET', '/api/stats');
+  if (!res.ok || !res.stats) return;
+  renderStats(res.stats);
+}
+
+function renderStats(stats) {
+  const emptyEl = document.getElementById('statsEmpty');
+  const contentEl = document.getElementById('statsContent');
+
+  if (!stats.overview) {
+    emptyEl.style.display = '';
+    contentEl.style.display = 'none';
+    return;
+  }
+
+  emptyEl.style.display = 'none';
+  contentEl.style.display = '';
+
+  const o = stats.overview;
+
+  // Priority stacked bar
+  const total = o.p1 + o.p2 + o.p3 + o.p4;
+  const barEl = document.getElementById('statsPriorityBar');
+  if (total > 0) {
+    barEl.innerHTML = [
+      { cls: 'p1', count: o.p1, label: 'P1' },
+      { cls: 'p2', count: o.p2, label: 'P2' },
+      { cls: 'p3', count: o.p3, label: 'P3' },
+      { cls: 'p4', count: o.p4, label: 'P4' },
+    ].filter(s => s.count > 0).map(s =>
+      `<div class="seg ${s.cls}" style="flex:${s.count}" title="${s.label}: ${s.count}">${s.count}</div>`
+    ).join('');
+  }
+
+  // Overview metrics
+  const overviewEl = document.getElementById('statsOverview');
+  const analysisDate = o.lastAnalysis ? new Date(o.lastAnalysis).toLocaleDateString() : 'Never';
+  overviewEl.innerHTML = [
+    metric('Total Artists', o.totalArtists.toLocaleString()),
+    metric('Last Analysis', analysisDate),
+    metric('AW Tracks', o.awTrackCount.toLocaleString()),
+    metric('BoAW Tracks', o.boawTrackCount.toLocaleString()),
+  ].join('');
+
+  // Fill history
+  const historySection = document.getElementById('statsFillHistorySection');
+  if (stats.fillHistory?.length) {
+    historySection.style.display = '';
+    const h = stats.fillHistory;
+    const allTimeTracks = h.reduce((s, e) => s + e.totalTracks, 0);
+    const allTimeAlbums = h.reduce((s, e) => s + e.totalAlbums, 0);
+    const allTimeSingles = h.reduce((s, e) => s + e.totalSingles, 0);
+
+    document.getElementById('statsFillTotals').innerHTML = [
+      metric('Total Fills', h.length),
+      metric('All-Time Tracks', allTimeTracks.toLocaleString()),
+      metric('All-Time Albums', allTimeAlbums.toLocaleString()),
+      metric('All-Time Singles', allTimeSingles.toLocaleString()),
+    ].join('');
+
+    const maxTracks = Math.max(...h.map(e => e.totalTracks), 1);
+    document.getElementById('statsFillHistory').innerHTML = h.slice().reverse().map(e => {
+      const date = new Date(e.timestamp).toLocaleDateString();
+      return `<div class="bar-row">
+        <span class="bar-label">${date}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${(e.totalTracks / maxTracks * 100).toFixed(1)}%">${e.totalTracks}</div></div>
+        <span class="bar-count">${e.datesProcessed}d</span>
+      </div>`;
+    }).join('');
+  } else {
+    historySection.style.display = 'none';
+  }
+
+  // Score distribution
+  if (stats.scoreDistribution) {
+    const maxCount = Math.max(...stats.scoreDistribution.map(b => b.count), 1);
+    const distEl = document.getElementById('statsScoreDist');
+    distEl.innerHTML = stats.scoreDistribution.map(b =>
+      `<div class="bar-row">
+        <span class="bar-label">${b.label}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${(b.count / maxCount * 100).toFixed(1)}%">${b.count > 0 ? b.count : ''}</div></div>
+        <span class="bar-count">${b.count}</span>
+      </div>`
+    ).join('');
+  }
+
+}
+
+function metric(label, value) {
+  return `<div class="stats-metric"><span class="label">${label}</span><span class="value">${value}</span></div>`;
+}
+
 // ── Init ─────────────────────────────────────────────────────────
 connect();
-loadArtists();
-checkAuth();
-configPromise = loadConfig();
+checkAuth().then(() => {
+  const overlay = document.getElementById('authOverlay');
+  if (overlay.classList.contains('hidden')) {
+    loadArtists();
+    configPromise = loadConfig();
+  }
+});
 </script>
 </body>
 </html>

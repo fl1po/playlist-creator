@@ -21,7 +21,7 @@ export function isGenreAcceptable(
   genres: string[] | undefined,
   lists?: GenreFilterLists,
 ): boolean {
-  if (!genres || genres.length === 0) return true;
+  if (!genres || genres.length === 0) return false;
   const genresLower = genres.map((g) => g.toLowerCase());
 
   const rejected = lists?.rejected ?? rejectedGenres;
@@ -33,7 +33,7 @@ export function isGenreAcceptable(
   for (const a of accepted) {
     if (genresLower.some((g) => g.includes(a))) return true;
   }
-  return true;
+  return false;
 }
 
 // Instrumental / clean / acoustic version detection patterns
