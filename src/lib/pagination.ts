@@ -1,6 +1,14 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { parseDate } from '../domain/tracks.js';
 import type { SpotifyContext } from './spotify-context.js';
 import { trackKey } from './track-utils.js';
-import type { AlbumTrack, PlaylistAlbumInfo, SimplePlaylist } from './types.js';
+import type {
+  AlbumTrack,
+  FoundRelease,
+  PlaylistAlbumInfo,
+  SimplePlaylist,
+} from './types.js';
 
 /** Get all track IDs from a playlist. */
 export async function getAllPlaylistTracks(
@@ -75,6 +83,101 @@ export async function getAllUserPlaylists(
   }
 
   return playlists;
+}
+
+const NON_LISTENED_CACHE = 'non-listened-cache.json';
+
+interface NonListenedCache {
+  playlists: SimplePlaylist[];
+}
+
+export const LISTENING_TIME_CACHE = 'listening-time-cache.json';
+
+/** Invalidate the non-listened playlists and listening time caches. */
+export function invalidateNonListenedCache(dataDir: string): void {
+  for (const file of [NON_LISTENED_CACHE, LISTENING_TIME_CACHE]) {
+    try {
+      fs.unlinkSync(path.join(dataDir, file));
+    } catch {
+      /* missing file is fine */
+    }
+  }
+}
+
+/**
+ * Get non-listened weekly playlists.
+ *
+ * Returns cached result when available. Otherwise iterates weekly playlists
+ * from newest to oldest, stopping at the first with AW overlap. Result is
+ * cached to disk so subsequent calls are instant.
+ */
+export async function getNonListenedPlaylists(
+  ctx: SpotifyContext,
+  userId: string,
+  allWeeklyId: string,
+  dataDir: string,
+  log?: (message: string) => void,
+): Promise<{ playlists: SimplePlaylist[]; awTrackIds: Set<string> }> {
+  const emit = log ?? (() => {});
+  const cachePath = path.join(dataDir, NON_LISTENED_CACHE);
+
+  const awTrackIds = new Set(await getAllPlaylistTracks(ctx, allWeeklyId));
+  emit(`Loaded ${awTrackIds.size} tracks from All Weekly`);
+
+  // Try cache
+  try {
+    const cached: NonListenedCache = JSON.parse(
+      fs.readFileSync(cachePath, 'utf8'),
+    );
+    if (cached.playlists != null) {
+      emit(
+        `Using cached non-listened playlists (${cached.playlists.length})`,
+      );
+      return { playlists: cached.playlists, awTrackIds };
+    }
+  } catch {
+    /* cache miss */
+  }
+
+  // Scan from newest to oldest
+  const allPlaylists = await getAllUserPlaylists(ctx, userId);
+  emit(`Found ${allPlaylists.length} user playlists`);
+
+  const weeklyPattern = /^(\d{2})\.(\d{2})\.(\d{2})$/;
+  const weeklies = allPlaylists
+    .filter((pl) => pl.trackCount > 0 && weeklyPattern.test(pl.name))
+    .sort(
+      (a, b) => parseDate(b.name).getTime() - parseDate(a.name).getTime(),
+    ); // newest first
+
+  emit(`Found ${weeklies.length} weekly playlists, scanning from newest...`);
+
+  const nonListened: SimplePlaylist[] = [];
+
+  for (let i = 0; i < weeklies.length; i++) {
+    const pl = weeklies[i];
+    const trackIds = await getAllPlaylistTracks(ctx, pl.id);
+    const hasOverlap = trackIds.some((id) => awTrackIds.has(id));
+
+    if (hasOverlap) {
+      emit(`  ${pl.name} — AW overlap found, cutoff reached`);
+      break;
+    }
+
+    emit(`  ${pl.name} — non-listened (${i + 1})`);
+    nonListened.push(pl);
+  }
+
+  // Reverse so result is chronological (oldest first)
+  nonListened.reverse();
+
+  emit(`Result: ${nonListened.length} non-listened playlists`);
+
+  // Write cache
+  const cache: NonListenedCache = { playlists: nonListened };
+  fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2));
+
+  return { playlists: nonListened, awTrackIds };
 }
 
 /** Get all tracks from an album with normalized dedup keys. */
@@ -224,6 +327,7 @@ export interface PlaylistTrackWithArtists {
   id: string;
   name: string;
   artistNames: string[];
+  albumId: string;
 }
 
 /** Get all tracks from a playlist with individual artist names (not comma-joined). */
@@ -255,14 +359,16 @@ export async function getPlaylistTracksWithArtists(
 
     for (const item of result.data.items) {
       if (item.track?.id) {
-        const trackArtists =
-          (item.track as unknown as { artists?: Array<{ name: string }> })
-            .artists ?? [];
+        const t = item.track as unknown as {
+          artists?: Array<{ name: string }>;
+          album?: { id: string };
+        };
         tracks.push({
           uri: item.track.uri,
           id: item.track.id,
           name: item.track.name,
-          artistNames: trackArtists.map((a) => a.name),
+          artistNames: (t.artists ?? []).map((a) => a.name),
+          albumId: t.album?.id ?? '',
         });
       }
     }
@@ -271,6 +377,72 @@ export async function getPlaylistTracksWithArtists(
   }
 
   return tracks;
+}
+
+/** Get total duration of all tracks in a playlist. */
+export async function getPlaylistTotalDuration(
+  ctx: SpotifyContext,
+  playlistId: string,
+): Promise<{ totalMs: number; trackCount: number }> {
+  let totalMs = 0;
+  let trackCount = 0;
+  let offset = 0;
+  const limit = 50;
+
+  while (true) {
+    const result = await ctx.call(
+      () =>
+        ctx.api.playlists.getPlaylistItems(
+          playlistId,
+          undefined,
+          undefined,
+          limit,
+          offset,
+        ),
+      `playlist duration ${playlistId}`,
+    );
+
+    if (!result.success) {
+      if (result.authError) throw result.error;
+      return { totalMs, trackCount };
+    }
+
+    for (const item of result.data.items) {
+      if (item.track) {
+        totalMs +=
+          (item.track as unknown as { duration_ms?: number }).duration_ms ?? 0;
+        trackCount++;
+      }
+    }
+    if (result.data.items.length < limit) break;
+    offset += limit;
+  }
+
+  return { totalMs, trackCount };
+}
+
+/** Fetch album popularity in batches of 20. */
+export async function fetchReleasePopularities(
+  ctx: SpotifyContext,
+  releases: Map<string, FoundRelease>,
+): Promise<Map<string, number>> {
+  const popularities = new Map<string, number>();
+  const ids = [...releases.keys()];
+
+  for (let i = 0; i < ids.length; i += 20) {
+    const batch = ids.slice(i, i + 20);
+    const result = await ctx.call(
+      () => ctx.api.albums.get(batch),
+      'album popularity batch',
+    );
+    if (result.success) {
+      for (const album of result.data) {
+        popularities.set(album.id, album.popularity);
+      }
+    }
+  }
+
+  return popularities;
 }
 
 /** Scan playlist tracks with position info for recency calculations. */

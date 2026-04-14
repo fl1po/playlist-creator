@@ -483,6 +483,17 @@
       <p class="hint">Scan weekly playlists for duplicate tracks, then remove them.</p>
     </div>
 
+    <!-- Listening Time -->
+    <div class="card">
+      <h2>Listening Time</h2>
+      <div class="card-row">
+        <button id="listeningTimeBtn" onclick="calcListeningTime()">Calculate</button>
+      </div>
+      <p class="hint">Calculate total listening time of non-listened weekly playlists.</p>
+      <p id="ltProgressText" class="progress-text"></p>
+      <div id="ltResult" style="display:none; margin-top:8px; font-weight:600;"></div>
+    </div>
+
   </div>
 
   <!-- Log Panel -->
@@ -972,6 +983,21 @@ function handleMessage({ type, data }) {
       document.getElementById('dedupRemoveBtn').disabled = true;
       break;
 
+    // Listening Time
+    case 'listeningTime:progress': {
+      const ltProg = document.getElementById('ltProgressText');
+      ltProg.textContent = `${data.current}/${data.total} — ${data.playlistName} (${formatDuration(data.totalMs)})`;
+      ltProg.classList.add('visible');
+      break;
+    }
+    case 'listeningTime:complete': {
+      const ltProg2 = document.getElementById('ltProgressText');
+      ltProg2.classList.remove('visible');
+      ltProg2.textContent = '';
+      showListeningTimeResult(data);
+      break;
+    }
+
     // Auth
     case 'auth':
       if (data.authenticated && data.token) {
@@ -1163,6 +1189,33 @@ async function dedupRemove() {
   if (!res.ok) log('error', res.error || 'Failed to start dedup removal');
 }
 
+// ── Listening Time ────────────────────────────────────────────────
+function formatDuration(ms) {
+  const totalMinutes = Math.round(ms / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${minutes}m`;
+  return `${hours}h ${minutes}m`;
+}
+
+function showListeningTimeResult(data) {
+  const el = document.getElementById('ltResult');
+  el.style.display = 'block';
+  el.textContent = `${formatDuration(data.totalMs)} across ${data.playlistCount} playlists (${data.totalTracks} tracks)`;
+}
+
+async function loadListeningTime() {
+  const res = await api('GET', '/api/listening-time');
+  if (res.ok) showListeningTimeResult(res);
+}
+
+async function calcListeningTime() {
+  document.getElementById('ltResult').style.display = 'none';
+  shouldScrollToLog = true;
+  const res = await api('POST', '/api/listening-time');
+  if (!res.ok) log('error', res.error || 'Failed to start listening time calculation');
+}
+
 async function loadArtists() {
   const countEl = document.getElementById('artistCount');
   countEl.textContent = 'Loading...';
@@ -1246,6 +1299,7 @@ function updateButtons() {
   document.getElementById('findArtistBtn').disabled = !wsConnected;
   document.getElementById('clearBtn').disabled = disabled;
   document.getElementById('dedupScanBtn').disabled = disabled;
+  document.getElementById('listeningTimeBtn').disabled = disabled;
   if (disabled) document.getElementById('dedupRemoveBtn').disabled = true;
   const stopBtn = document.getElementById('stopBtn');
   stopBtn.style.display = busy ? '' : 'none';
@@ -1762,6 +1816,7 @@ checkAuth().then(() => {
   const overlay = document.getElementById('authOverlay');
   if (overlay.classList.contains('hidden')) {
     loadArtists();
+    loadListeningTime();
     configPromise = loadConfig();
   }
 });

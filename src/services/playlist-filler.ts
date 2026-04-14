@@ -15,6 +15,7 @@ import {
 import { abortableSleep } from '../lib/abort.js';
 import { isAuthError } from '../lib/api-wrapper.js';
 import {
+  fetchReleasePopularities,
   getAllPlaylistTracks,
   getAllUserPlaylists,
   getPlaylistAlbums,
@@ -570,7 +571,7 @@ export class PlaylistFillerService {
 
     // Filter low popularity
     const releasePopularity =
-      await this.fetchReleasePopularities(foundReleases);
+      await fetchReleasePopularities(this.ctx, foundReleases);
     const lowPop = filterLowPopularity(foundReleases, releasePopularity);
     for (const id of lowPop) {
       const r = foundReleases.get(id);
@@ -783,28 +784,6 @@ export class PlaylistFillerService {
         }
       }
     }
-  }
-
-  private async fetchReleasePopularities(
-    releases: Map<string, FoundRelease>,
-  ): Promise<Map<string, number>> {
-    const popularities = new Map<string, number>();
-    const ids = [...releases.keys()];
-
-    for (let i = 0; i < ids.length; i += 20) {
-      const batch = ids.slice(i, i + 20);
-      const result = await this.ctx.call(
-        () => this.ctx.api.albums.get(batch),
-        'album popularity batch',
-      );
-      if (result.success) {
-        for (const album of result.data) {
-          popularities.set(album.id, album.popularity);
-        }
-      }
-    }
-
-    return popularities;
   }
 
   private async collectAndSortTracks(

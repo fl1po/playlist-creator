@@ -98,7 +98,7 @@ export class ReleaseCollector {
         () =>
           this.ctx.api.artists.albums(
             artistId,
-            'album,single',
+            'album,single,compilation',
             undefined,
             50,
             offset,
@@ -356,7 +356,7 @@ export class ReleaseCollector {
         () =>
           this.ctx.api.artists.albums(
             artistId,
-            'album,single',
+            'album,single,compilation',
             undefined,
             50,
             offset,
@@ -401,7 +401,7 @@ export class ReleaseCollector {
         () =>
           this.ctx.api.artists.albums(
             artistId,
-            'album,single',
+            'album,single,compilation',
             undefined,
             50,
             offset,

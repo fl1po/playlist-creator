@@ -93,6 +93,7 @@ export async function syncIfNeeded(
     {
       allWeeklyId,
       trustedArtistsPath: path.join(dataDir, 'trusted-artists.json'),
+      dataDir,
     },
     broadcastEvents<PlaylistSyncEventMap>(broadcast, {
       start: {

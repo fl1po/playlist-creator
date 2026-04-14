@@ -21,6 +21,7 @@ const SKIP_HISTORY = new Set([
   'auth',
   'fill:searchProgress',
   'recalc:scanProgress',
+  'listeningTime:progress',
 ]);
 
 export function createBroadcaster(): Broadcaster {

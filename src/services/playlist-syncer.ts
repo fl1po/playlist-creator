@@ -2,15 +2,18 @@ import fs from 'node:fs';
 import { filterByPriority } from '../domain/artists.js';
 import {
   type RawRelease,
+  filterLowPopularity,
   filterVariants,
   releaseDateCouldMatch,
   releaseDateFallbackMatch,
 } from '../domain/releases.js';
 import { getValidDates, parseDate } from '../domain/tracks.js';
 import {
+  fetchReleasePopularities,
   getAllPlaylistTracks,
-  getAllUserPlaylists,
+  getNonListenedPlaylists,
   getPlaylistTracksWithArtists,
+  invalidateNonListenedCache,
 } from '../lib/pagination.js';
 import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
@@ -39,6 +42,7 @@ export type PlaylistSyncEventMap = {
 export interface PlaylistSyncerOptions {
   allWeeklyId: string;
   trustedArtistsPath: string;
+  dataDir: string;
 }
 
 // ── Service ──────────────────────────────────────────────────────────────────
@@ -93,23 +97,15 @@ export class PlaylistSyncerService {
     if (!meResult.success) throw new Error('Failed to get user profile');
     const userId = meResult.data.id;
 
-    // Find unprocessed weekly playlists
-    const allPlaylists = await getAllUserPlaylists(this.ctx, userId);
-    const awTrackIds = new Set(
-      await getAllPlaylistTracks(this.ctx, this.opts.allWeeklyId),
-    );
-
-    const weeklyPattern = /^(\d{2}\.\d{2}\.\d{2})$/;
-    const unprocessed: SimplePlaylist[] = [];
-
-    for (const pl of allPlaylists) {
-      if (!weeklyPattern.test(pl.name) || pl.trackCount === 0) continue;
-
-      // Check if any tracks overlap with All Weekly
-      const trackIds = await getAllPlaylistTracks(this.ctx, pl.id);
-      const hasOverlap = trackIds.some((id) => awTrackIds.has(id));
-      if (!hasOverlap) unprocessed.push(pl);
-    }
+    // Find non-listened weekly playlists
+    const { playlists: unprocessed, awTrackIds } =
+      await getNonListenedPlaylists(
+        this.ctx,
+        userId,
+        this.opts.allWeeklyId,
+        this.opts.dataDir,
+        (msg) => this.emitter.emit('log', msg),
+      );
 
     if (unprocessed.length === 0) {
       this.emitter.emit('log', 'No unprocessed weekly playlists found');
@@ -137,33 +133,47 @@ export class PlaylistSyncerService {
     let playlistsSynced = 0;
 
     // ── Removal phase ────────────────────────────────────────────────────
+    // Only target tracks from demoted artists. Albums are treated as a
+    // unit: if any track in the album has a P1/P2 artist, the whole
+    // album stays (it was added because of that feature).
 
     if (demoted.length > 0) {
       const demotedNames = new Set(demoted.map((d) => d.artist.toLowerCase()));
 
       for (const pl of unprocessed) {
         const tracks = await getPlaylistTracksWithArtists(this.ctx, pl.id);
+
+        // Group tracks by album
+        const albumTracks = new Map<string, typeof tracks>();
+        for (const track of tracks) {
+          const key = track.albumId || track.id;
+          if (!albumTracks.has(key)) albumTracks.set(key, []);
+          albumTracks.get(key)!.push(track);
+        }
+
         const toRemove: Array<{ uri: string; name: string; artists: string }> =
           [];
 
-        for (const track of tracks) {
-          const trackArtistLower = track.artistNames.map((n) =>
-            n.toLowerCase(),
+        for (const [, albumGroup] of albumTracks) {
+          // Skip albums that have no demoted artist
+          const albumHasDemoted = albumGroup.some((t) =>
+            t.artistNames.some((n) => demotedNames.has(n.toLowerCase())),
           );
-          const hasDemoted = trackArtistLower.some((n) => demotedNames.has(n));
-          if (!hasDemoted) continue;
+          if (!albumHasDemoted) continue;
 
-          // Keep if another artist on the track is still P1/P2
-          const hasOtherP1P2 = track.artistNames.some(
-            (n) => !demotedNames.has(n.toLowerCase()) && p1p2Set.has(n),
+          // Keep the whole album if any track has a P1/P2 artist
+          const albumHasP1P2 = albumGroup.some((t) =>
+            t.artistNames.some((n) => p1p2Set.has(n)),
           );
-          if (hasOtherP1P2) continue;
+          if (albumHasP1P2) continue;
 
-          toRemove.push({
-            uri: track.uri,
-            name: track.name,
-            artists: track.artistNames.join(', '),
-          });
+          for (const track of albumGroup) {
+            toRemove.push({
+              uri: track.uri,
+              name: track.name,
+              artists: track.artistNames.join(', '),
+            });
+          }
         }
 
         if (toRemove.length > 0) {
@@ -240,11 +250,18 @@ export class PlaylistSyncerService {
 
           if (foundReleases.size === 0) continue;
 
-          // Filter instrumental/clean variants
+          const popularities = await fetchReleasePopularities(
+            this.ctx,
+            foundReleases,
+          );
+          const lowPop = filterLowPopularity(foundReleases, popularities);
+          for (const id of lowPop) foundReleases.delete(id);
+
           const { filtered: variantIds } = filterVariants(foundReleases);
           for (const id of variantIds) foundReleases.delete(id);
 
-          // Collect tracks with full filter suite
+          if (foundReleases.size === 0) continue;
+
           const existingTrackIds = new Set(
             await getAllPlaylistTracks(this.ctx, pl.id),
           );
@@ -281,6 +298,9 @@ export class PlaylistSyncerService {
       }
     }
 
+    if (totalRemoved > 0 || totalAdded > 0) {
+      invalidateNonListenedCache(this.opts.dataDir);
+    }
     this.emitter.emit('complete', totalRemoved, totalAdded, playlistsSynced);
     this.emitter.emit(
       'log',
