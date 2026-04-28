@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Router } from 'express';
 import {
+  AW_BREAKDOWN_CACHE,
   getAllUserPlaylists,
   LISTENING_TIME_CACHE,
 } from '../../lib/pagination.js';
@@ -275,19 +276,21 @@ export function queryRoutes(ctx: RouteContext): Router {
     }
   });
 
-  // Listening time (cached GET)
-  router.get('/listening-time', (req, res) => {
-    const session = ctx.requireSession(req, res);
-    if (!session) return;
-
-    const cachePath = path.join(session.dataDir, LISTENING_TIME_CACHE);
-    try {
-      const cached = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-      res.json({ ok: true, ...cached });
-    } catch {
-      res.json({ ok: false });
-    }
-  });
+  // Cached GET routes
+  function cachedGet(route: string, cacheFile: string) {
+    router.get(route, (req, res) => {
+      const session = ctx.requireSession(req, res);
+      if (!session) return;
+      try {
+        const cached = JSON.parse(fs.readFileSync(path.join(session.dataDir, cacheFile), 'utf8'));
+        res.json({ ok: true, ...cached });
+      } catch {
+        res.json({ ok: false });
+      }
+    });
+  }
+  cachedGet('/listening-time', LISTENING_TIME_CACHE);
+  cachedGet('/aw-breakdown', AW_BREAKDOWN_CACHE);
 
   return router;
 }

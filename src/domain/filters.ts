@@ -45,3 +45,7 @@ export const acousticPattern =
   /[\s\-]*[\(\[]?\s*(acoustic|acoustic version|acoustics)\s*[\)\]]?\s*$/i;
 export const instrumentalTrackPattern =
   /[\s\-]+(instrumental|inst\.?)$/i;
+export const spedUpPattern =
+  /[\s\-]*[\(\[]?\s*(sped up|sped[-\s]?up version|speed up)\s*[\)\]]?\s*$/i;
+export const slowedPattern =
+  /[\s\-]*[\(\[]?\s*(slowed|slowed\s*(\+|&|and)\s*reverb|slowed down|slowed version|chopped\s*(\+|&|and)\s*screwed)\s*[\)\]]?\s*$/i;

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseDate } from '../domain/tracks.js';
+import { formatDdMmYy, parseDate, toReleaseFriday } from '../domain/tracks.js';
 import type { SpotifyContext } from './spotify-context.js';
 import { trackKey } from './track-utils.js';
 import type {
@@ -92,6 +92,26 @@ interface NonListenedCache {
 }
 
 export const LISTENING_TIME_CACHE = 'listening-time-cache.json';
+export const DURATION_SNAPSHOT_CACHE = 'duration-snapshots.json';
+export const AW_BREAKDOWN_CACHE = 'aw-breakdown.json';
+
+export interface DurationSnapshot {
+  snapshotId: string;
+  totalMs: number;
+  trackCount: number;
+}
+
+export type DurationSnapshots = Record<string, DurationSnapshot>;
+
+export interface WeekBreakdownEntry {
+  date: string; // dd.mm.yy release week
+  addedAt: string; // dd.mm.yy date added to AW
+  trackCount: number;
+  durationMs: number;
+  repeatArtists: number;
+  repeatArtistTracks: number;
+  frequentArtists: string[]; // artists with 3+ tracks this week
+}
 
 /** Invalidate the non-listened playlists and listening time caches. */
 export function invalidateNonListenedCache(dataDir: string): void {
@@ -514,4 +534,136 @@ export async function getPlaylistTracksWithPositions(
   }
 
   return { artistData, totalTracks };
+}
+
+interface RawTrack {
+  durationMs: number;
+  artists: string[];
+  addedAtDate: string; // YYYY-MM-DD or 'unknown'
+}
+
+/** Derive release Friday label from a track's release date, falling back to added_at. */
+function trackFriday(releaseDate: string | undefined, addedAt: string): string {
+  if (releaseDate) return formatDdMmYy(toReleaseFriday(new Date(releaseDate)));
+  if (addedAt !== 'unknown') return formatDdMmYy(toReleaseFriday(new Date(addedAt)));
+  return 'unknown';
+}
+
+/** Get all tracks from a playlist grouped by release week. */
+export async function getPlaylistTracksGroupedByWeek(
+  ctx: SpotifyContext,
+  playlistId: string,
+  onProgress?: (fetched: number, total: number) => void,
+): Promise<WeekBreakdownEntry[]> {
+  const byFriday = new Map<string, RawTrack[]>();
+  // Track the most common added_at date per Friday group
+  const addedAtCounts = new Map<string, Map<string, number>>();
+  let offset = 0;
+  const limit = 50;
+  let total = 0;
+
+  while (true) {
+    const result = await ctx.call(
+      () =>
+        ctx.api.playlists.getPlaylistItems(
+          playlistId,
+          undefined,
+          undefined,
+          limit,
+          offset,
+        ),
+      `playlist tracks grouped ${playlistId}`,
+    );
+
+    if (!result.success) {
+      if (result.authError) throw result.error;
+      break;
+    }
+
+    if (offset === 0) total = result.data.total;
+
+    for (const item of result.data.items) {
+      if (!item.track) continue;
+      const addedAt = (item as unknown as { added_at?: string }).added_at;
+      const addedAtDate = addedAt ? addedAt.slice(0, 10) : 'unknown';
+      const durationMs =
+        (item.track as unknown as { duration_ms?: number }).duration_ms ?? 0;
+      const artists = (
+        item.track.artists as Array<{ name: string }>
+      ).map((a) => a.name);
+      const releaseDate = (
+        item.track as unknown as { album?: { release_date?: string } }
+      ).album?.release_date;
+
+      const fri = trackFriday(releaseDate, addedAtDate);
+      if (!byFriday.has(fri)) byFriday.set(fri, []);
+      byFriday.get(fri)!.push({ durationMs, artists, addedAtDate });
+
+      if (!addedAtCounts.has(fri)) addedAtCounts.set(fri, new Map());
+      const counts = addedAtCounts.get(fri)!;
+      counts.set(addedAtDate, (counts.get(addedAtDate) ?? 0) + 1);
+    }
+
+    offset += result.data.items.length;
+    onProgress?.(offset, total);
+    if (result.data.items.length < limit) break;
+  }
+
+  // Sort Fridays chronologically (pre-parse to avoid repeated parseDate calls)
+  const sortedFridays = [...byFriday.keys()]
+    .filter((f) => f !== 'unknown')
+    .map((f) => ({ label: f, time: parseDate(f).getTime() }))
+    .sort((a, b) => a.time - b.time)
+    .map((f) => f.label);
+
+  // Append unknown tracks to last group
+  const unknownTracks = byFriday.get('unknown');
+  if (unknownTracks?.length && sortedFridays.length > 0) {
+    const lastFri = sortedFridays[sortedFridays.length - 1];
+    byFriday.get(lastFri)!.push(...unknownTracks);
+  } else if (unknownTracks?.length) {
+    sortedFridays.push('unknown');
+  }
+
+  return sortedFridays.map((dateLabel) => {
+    const tracks = byFriday.get(dateLabel)!;
+
+    // Find the most common added_at date (inline max, no sort)
+    const counts = addedAtCounts.get(dateLabel);
+    let topAdded = 'unknown';
+    let topCount = 0;
+    if (counts) {
+      for (const [date, count] of counts) {
+        if (count > topCount) { topCount = count; topAdded = date; }
+      }
+    }
+    const addedAt = topAdded === 'unknown'
+      ? 'unknown'
+      : formatDdMmYy(new Date(topAdded));
+
+    const trackCount = tracks.length;
+    const durationMs = tracks.reduce((s, t) => s + t.durationMs, 0);
+
+    const artistCounts = new Map<string, number>();
+    for (const t of tracks) {
+      for (const a of t.artists) {
+        artistCounts.set(a, (artistCounts.get(a) ?? 0) + 1);
+      }
+    }
+    let repeatArtists = 0;
+    let repeatArtistTracks = 0;
+    const frequentArtists: string[] = [];
+    for (const [name, count] of artistCounts) {
+      if (count > 1) {
+        repeatArtists++;
+        repeatArtistTracks += count;
+      }
+      if (count >= 3) {
+        frequentArtists.push(`${name} (${count})`);
+      }
+    }
+    frequentArtists.sort();
+
+    return { date: dateLabel, addedAt, trackCount, durationMs, repeatArtists, repeatArtistTracks, frequentArtists };
+  });
 }

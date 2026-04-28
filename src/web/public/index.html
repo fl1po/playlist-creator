@@ -492,15 +492,46 @@
       <p class="hint">Calculate total listening time of non-listened weekly playlists.</p>
       <p id="ltProgressText" class="progress-text"></p>
       <div id="ltResult" style="display:none; margin-top:8px; font-weight:600;"></div>
+      <button id="ltExpandBtn" class="secondary" style="display:none; margin-top:6px; font-size:12px;" onclick="toggleLtBreakdown()">Show breakdown</button>
+      <div id="ltBreakdown" style="display:none; margin-top:8px;">
+        <table id="ltBreakdownTable">
+          <thead><tr><th style="text-align:left">Playlist</th><th style="text-align:left">Status</th><th style="text-align:right">Tracks</th><th style="text-align:right">Duration</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
 
+    <!-- AW Breakdown -->
+    <div class="card">
+      <h2>AW Breakdown</h2>
+      <div class="card-row">
+        <button id="awBreakdownBtn" onclick="calcAwBreakdown()">Calculate</button>
+        <label class="toggle"><input type="checkbox" id="awForceRecalc"> Force</label>
+      </div>
+      <p class="hint">Break down the All Weekly playlist into weekly stats.</p>
+      <p id="awProgressText" class="progress-text"></p>
+      <div id="awResult" style="display:none; margin-top:8px; font-weight:600;"></div>
+      <button id="awExpandBtn" class="secondary" style="display:none; margin-top:6px; font-size:12px;" onclick="toggleAwBreakdown()">Show breakdown</button>
+    </div>
+
+  </div>
+
+  <!-- AW Breakdown Table (full width, outside grid) -->
+  <div id="awBreakdown" style="display:none; margin-bottom:24px; overflow-x:auto;">
+    <table id="awBreakdownTable" style="width:100%;">
+      <thead><tr><th style="text-align:left">Week</th><th style="text-align:left">Added</th><th style="text-align:right">Tracks</th><th style="text-align:right">Duration</th><th style="text-align:right">Repeat Artists</th><th style="text-align:right">Repeat Tracks</th><th style="text-align:left">Frequent Artists (3+)</th></tr></thead>
+      <tbody></tbody>
+    </table>
   </div>
 
   <!-- Log Panel -->
   <div>
     <div class="log-header">
       <h2>Live Log</h2>
-      <button class="secondary" onclick="clearLog()">Clear</button>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <label class="toggle"><input type="checkbox" id="logAutoScroll" checked> Auto-scroll</label>
+        <button class="secondary" onclick="clearLog()">Clear</button>
+      </div>
     </div>
     <div class="log-panel" id="logPanel"></div>
   </div>
@@ -513,7 +544,8 @@
       <button class="secondary active" id="filterP1" onclick="toggleFilter(1)">P1</button>
       <button class="secondary active" id="filterP2" onclick="toggleFilter(2)">P2</button>
       <button class="secondary" id="filterP3" onclick="toggleFilter(3)">P3</button>
-      <span id="artistCount" style="font-size:13px;color:#999;margin-left:auto;"></span>
+      <label class="toggle" style="margin-left:auto;"><input type="checkbox" id="artistAutoScroll" checked> Auto-scroll</label>
+      <span id="artistCount" style="font-size:13px;color:#999;margin-left:8px;"></span>
     </div>
     <div class="artist-table-wrap" id="artistTableWrap">
       <table>
@@ -998,6 +1030,21 @@ function handleMessage({ type, data }) {
       break;
     }
 
+    // AW Breakdown
+    case 'awBreakdown:progress': {
+      const awProg = document.getElementById('awProgressText');
+      awProg.textContent = `Fetching tracks: ${data.fetched}/${data.total}`;
+      awProg.classList.add('visible');
+      break;
+    }
+    case 'awBreakdown:complete': {
+      const awProg2 = document.getElementById('awProgressText');
+      awProg2.classList.remove('visible');
+      awProg2.textContent = '';
+      showAwBreakdownResult(data);
+      break;
+    }
+
     // Auth
     case 'auth':
       if (data.authenticated && data.token) {
@@ -1201,7 +1248,35 @@ function formatDuration(ms) {
 function showListeningTimeResult(data) {
   const el = document.getElementById('ltResult');
   el.style.display = 'block';
-  el.textContent = `${formatDuration(data.totalMs)} across ${data.playlistCount} playlists (${data.totalTracks} tracks)`;
+  const avg = data.playlistCount > 0 ? formatDuration(data.totalMs / data.playlistCount) : '0m';
+  el.textContent = `${formatDuration(data.totalMs)} across ${data.playlistCount} playlists (${data.totalTracks} tracks) · avg ${avg}/playlist`;
+
+  const expandBtn = document.getElementById('ltExpandBtn');
+  const breakdown = document.getElementById('ltBreakdown');
+  if (data.perPlaylist && data.perPlaylist.length) {
+    expandBtn.style.display = '';
+    const tbody = document.getElementById('ltBreakdownTable').querySelector('tbody');
+    tbody.innerHTML = '';
+    for (const pl of data.perPlaylist) {
+      const tr = document.createElement('tr');
+      const statusHtml = pl.ready
+        ? '<span style="color:#1DB954">ready</span>'
+        : '<span style="color:#b3b3b3">not ready</span>';
+      tr.innerHTML = `<td>${pl.name}</td><td>${statusHtml}</td><td style="text-align:right">${pl.trackCount}</td><td style="text-align:right">${formatDuration(pl.durationMs)}</td>`;
+      tbody.appendChild(tr);
+    }
+  } else {
+    expandBtn.style.display = 'none';
+    breakdown.style.display = 'none';
+  }
+}
+
+function toggleLtBreakdown() {
+  const bd = document.getElementById('ltBreakdown');
+  const btn = document.getElementById('ltExpandBtn');
+  const visible = bd.style.display !== 'none';
+  bd.style.display = visible ? 'none' : 'block';
+  btn.textContent = visible ? 'Show breakdown' : 'Hide breakdown';
 }
 
 async function loadListeningTime() {
@@ -1214,6 +1289,53 @@ async function calcListeningTime() {
   shouldScrollToLog = true;
   const res = await api('POST', '/api/listening-time');
   if (!res.ok) log('error', res.error || 'Failed to start listening time calculation');
+}
+
+// ── AW Breakdown ─────────────────────────────────────────────────
+function showAwBreakdownResult(data) {
+  const el = document.getElementById('awResult');
+  el.style.display = 'block';
+  const avgTracks = data.weekCount > 0 ? Math.round(data.totalTracks / data.weekCount) : 0;
+  const avgDur = data.weekCount > 0 ? formatDuration(data.totalDurationMs / data.weekCount) : '0m';
+  el.innerHTML = `${data.weekCount} weeks · ${data.totalTracks} tracks · ${formatDuration(data.totalDurationMs)}<br>avg ${avgTracks} tracks / ${avgDur} per week`;
+
+  const expandBtn = document.getElementById('awExpandBtn');
+  const breakdown = document.getElementById('awBreakdown');
+  if (data.weeks && data.weeks.length) {
+    expandBtn.style.display = '';
+    const tbody = document.getElementById('awBreakdownTable').querySelector('tbody');
+    tbody.innerHTML = '';
+    for (const w of data.weeks) {
+      const tr = document.createElement('tr');
+      const freq = (w.frequentArtists || []).join(', ');
+      tr.innerHTML = `<td>${w.date}</td><td>${w.addedAt || ''}</td><td style="text-align:right">${w.trackCount}</td><td style="text-align:right">${formatDuration(w.durationMs)}</td><td style="text-align:right">${w.repeatArtists}</td><td style="text-align:right">${w.repeatArtistTracks}</td><td style="font-size:12px;color:#b3b3b3">${freq}</td>`;
+      tbody.appendChild(tr);
+    }
+  } else {
+    expandBtn.style.display = 'none';
+    breakdown.style.display = 'none';
+  }
+}
+
+function toggleAwBreakdown() {
+  const bd = document.getElementById('awBreakdown');
+  const btn = document.getElementById('awExpandBtn');
+  const visible = bd.style.display !== 'none';
+  bd.style.display = visible ? 'none' : 'block';
+  btn.textContent = visible ? 'Show breakdown' : 'Hide breakdown';
+}
+
+async function loadAwBreakdown() {
+  const res = await api('GET', '/api/aw-breakdown');
+  if (res.ok) showAwBreakdownResult(res);
+}
+
+async function calcAwBreakdown() {
+  document.getElementById('awResult').style.display = 'none';
+  shouldScrollToLog = true;
+  const force = document.getElementById('awForceRecalc').checked;
+  const res = await api('POST', '/api/aw-breakdown', { force });
+  if (!res.ok) log('error', res.error || 'Failed to start AW breakdown calculation');
 }
 
 async function loadArtists() {
@@ -1261,6 +1383,9 @@ function markArtistRow(name, status) {
   if (row) {
     row.classList.remove('artist-searched', 'artist-active');
     row.classList.add(status === 'searched' ? 'artist-active' : 'artist-searched');
+    if (status === 'searched' && document.getElementById('artistAutoScroll').checked) {
+      row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
   }
 }
 
@@ -1300,6 +1425,7 @@ function updateButtons() {
   document.getElementById('clearBtn').disabled = disabled;
   document.getElementById('dedupScanBtn').disabled = disabled;
   document.getElementById('listeningTimeBtn').disabled = disabled;
+  document.getElementById('awBreakdownBtn').disabled = disabled;
   if (disabled) document.getElementById('dedupRemoveBtn').disabled = true;
   const stopBtn = document.getElementById('stopBtn');
   stopBtn.style.display = busy ? '' : 'none';
@@ -1314,7 +1440,9 @@ function log(level, message) {
   const ts = new Date().toLocaleTimeString();
   entry.innerHTML = `<span class="ts">${ts}</span> ${esc(message)}`;
   panel.appendChild(entry);
-  panel.scrollTop = panel.scrollHeight;
+  if (document.getElementById('logAutoScroll').checked) {
+    panel.scrollTop = panel.scrollHeight;
+  }
   if (shouldScrollToLog) {
     shouldScrollToLog = false;
     panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1817,6 +1945,7 @@ checkAuth().then(() => {
   if (overlay.classList.contains('hidden')) {
     loadArtists();
     loadListeningTime();
+    loadAwBreakdown();
     configPromise = loadConfig();
   }
 });

@@ -19,3 +19,4 @@ src/types.ts
 build
 dist
 .DS_Store
+.obsidian

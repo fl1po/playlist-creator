@@ -23,6 +23,7 @@ import { createTaskMutex } from './task-mutex.js';
 import { dedupRemoveTask } from './tasks/dedup-remove.js';
 import { dedupScanTask } from './tasks/dedup-scan.js';
 import { fillTask, getSearchedArtists } from './tasks/fill.js';
+import { awBreakdownTask } from './tasks/aw-breakdown.js';
 import { listeningTimeTask } from './tasks/listening-time.js';
 import { recalculateTask } from './tasks/recalculate.js';
 
@@ -95,6 +96,7 @@ taskRunner.register(recalculateTask);
 taskRunner.register(dedupScanTask);
 taskRunner.register(dedupRemoveTask);
 taskRunner.register(listeningTimeTask);
+taskRunner.register(awBreakdownTask);
 
 // ── Simple inline routes ────────────────────────────────────────────────────
 

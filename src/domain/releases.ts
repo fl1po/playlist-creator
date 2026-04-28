@@ -1,5 +1,5 @@
 import type { FoundRelease } from "../lib/types.js";
-import { acousticPattern, cleanPattern, instrumentalPattern, instrumentalTrackPattern } from "./filters.js";
+import { acousticPattern, cleanPattern, instrumentalPattern, instrumentalTrackPattern, slowedPattern, spedUpPattern } from "./filters.js";
 
 // ── Deluxe detection ────────────────────────────────────────────────────────
 
@@ -48,7 +48,18 @@ export function filterVariants(
     const isInstrumental = instrumentalPattern.test(name);
     const isClean = cleanPattern.test(name);
     const isAcoustic = acousticPattern.test(name);
-    if (!isInstrumental && !isClean && !isAcoustic) continue;
+    const isSpedUp = spedUpPattern.test(name);
+    const isSlowed = slowedPattern.test(name);
+    if (!isInstrumental && !isClean && !isAcoustic && !isSpedUp && !isSlowed) continue;
+
+    if (isSpedUp || isSlowed) {
+      removed.push({
+        id,
+        type: isSpedUp ? "sped up" : "slowed",
+        release,
+      });
+      continue;
+    }
 
     const baseName = name
       .replace(instrumentalPattern, "")
