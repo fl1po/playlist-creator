@@ -1,31 +1,39 @@
-import { execSync } from "node:child_process";
-import { SpotifyApi } from "@spotify/web-api-ts-sdk";
-import type { ConfigStore, SpotifyClient, SpotifyConfig } from "./types.js";
-import { RetryAfterResponseValidator } from "./response-validator.js";
+import { execSync } from 'node:child_process';
+import { SpotifyApi } from '@spotify/web-api-ts-sdk';
+import { RetryAfterResponseValidator } from './response-validator.js';
+import type { ConfigStore, SpotifyClient, SpotifyConfig } from './types.js';
+
+export type ReauthStrategy =
+  | { type: 'cli' }
+  | { type: 'custom'; handler: () => Promise<boolean> };
 
 export interface SpotifyClientOptions {
   configStore: ConfigStore;
+  reauth?: ReauthStrategy;
   onAuthRequired?: (attempt: number, maxAttempts: number) => void;
   onAuthSuccess?: () => void;
   onAuthFailed?: (error: Error) => void;
   onTokenRefreshed?: () => void;
 }
 
-export function createSpotifyClient(
-  opts: SpotifyClientOptions,
-): SpotifyClient {
+export function createSpotifyClient(opts: SpotifyClientOptions): SpotifyClient {
   const { configStore } = opts;
+  const reauth = opts.reauth ?? { type: 'cli' };
   let config: SpotifyConfig = configStore.load();
-  let accessToken = config.accessToken ?? "";
-  let refreshTokenValue = config.refreshToken ?? "";
+  let accessToken = config.accessToken ?? '';
+  let refreshTokenValue = config.refreshToken ?? '';
 
   function buildApi(): SpotifyApi {
-    return SpotifyApi.withAccessToken(config.clientId, {
-      access_token: accessToken,
-      token_type: "Bearer",
-      expires_in: 3600,
-      refresh_token: refreshTokenValue,
-    }, { responseValidator: new RetryAfterResponseValidator() });
+    return SpotifyApi.withAccessToken(
+      config.clientId,
+      {
+        access_token: accessToken,
+        token_type: 'Bearer',
+        expires_in: 3600,
+        refresh_token: refreshTokenValue,
+      },
+      { responseValidator: new RetryAfterResponseValidator() },
+    );
   }
 
   let api = buildApi();
@@ -34,11 +42,16 @@ export function createSpotifyClient(
     const maxAttempts = 3;
     opts.onAuthRequired?.(attempt, maxAttempts);
 
+    if (reauth.type === 'custom') {
+      return reauth.handler();
+    }
+
+    // CLI reauth: execSync
     try {
-      execSync("npm run auth", { stdio: "inherit" });
+      execSync('npm run auth', { stdio: 'inherit' });
       config = configStore.load();
-      accessToken = config.accessToken ?? "";
-      refreshTokenValue = config.refreshToken ?? "";
+      accessToken = config.accessToken ?? '';
+      refreshTokenValue = config.refreshToken ?? '';
       api = buildApi();
       opts.onAuthSuccess?.();
       return true;
@@ -55,18 +68,18 @@ export function createSpotifyClient(
   }
 
   async function refreshToken(retryCount = 0): Promise<string> {
-    const authHeader = `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}`;
+    const authHeader = `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64')}`;
     const params = new URLSearchParams();
-    params.append("grant_type", "refresh_token");
-    params.append("refresh_token", refreshTokenValue);
+    params.append('grant_type', 'refresh_token');
+    params.append('refresh_token', refreshTokenValue);
 
     let response: Response;
     try {
-      response = await fetch("https://accounts.spotify.com/api/token", {
-        method: "POST",
+      response = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
         headers: {
           Authorization: authHeader,
-          "Content-Type": "application/x-www-form-urlencoded",
+          'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: params,
       });
@@ -85,7 +98,7 @@ export function createSpotifyClient(
       const authSuccess = await runAuth();
       if (!authSuccess) {
         throw new Error(
-          "Authentication failed. Please run npm run auth manually.",
+          'Authentication failed. Please run npm run auth manually.',
         );
       }
       return accessToken;

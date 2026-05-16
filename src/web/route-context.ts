@@ -3,8 +3,8 @@ import path from 'node:path';
 import type express from 'express';
 import { BridgedConfigStore, UserTokenStore } from '../lib/config.js';
 import type { AppConfigStore } from '../lib/config.js';
-import { createSpotifyClient } from '../lib/spotify-client.js';
 import type { RequestPacer } from '../lib/request-pacer.js';
+import { createSpotifyClient } from '../lib/spotify-client.js';
 import type {
   AppConfig,
   SpotifyClient,
@@ -13,8 +13,8 @@ import type {
 import { UserConfigStore } from '../lib/user-config.js';
 import type { AuthManager } from './auth.js';
 import type { Broadcaster } from './broadcast.js';
-import type { TaskMutex } from './task-mutex.js';
 import { getSessionUserId } from './session.js';
+import type { TaskMutex } from './task-mutex.js';
 
 export interface UserSession {
   userId: string;
@@ -99,30 +99,25 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
 
     const client = createSpotifyClient({
       configStore,
-      onAuthRequired: () =>
-        broadcast('log', {
-          level: 'warn',
-          message:
-            'Token expired — opening Spotify login. Task paused, waiting...',
-        }),
+      reauth: {
+        type: 'custom',
+        handler: async () => {
+          broadcast('log', {
+            level: 'warn',
+            message:
+              'Token expired — opening Spotify login. Task paused, waiting...',
+          });
+          const url = auth.buildAuthUrl();
+          broadcast('auth', { authenticated: false, url });
+          return auth.waitForAuth();
+        },
+      },
       onAuthFailed: (err) =>
         broadcast('log', {
           level: 'error',
           message: `Auth failed: ${err.message}`,
         }),
     });
-
-    // Override runAuth to pause and wait for dashboard auth
-    client.runAuth = async () => {
-      broadcast('log', {
-        level: 'warn',
-        message:
-          'Token expired — opening Spotify login. Task paused, waiting...',
-      });
-      const url = auth.buildAuthUrl();
-      broadcast('auth', { authenticated: false, url });
-      return auth.waitForAuth();
-    };
 
     const session: UserSession = { userId, client, userConfigStore, dataDir };
     sessions.set(userId, session);

@@ -97,6 +97,7 @@ export interface PlaylistFillerOptions {
   trustedArtistsPath?: string;
   allWeeklyId?: string;
   bestOfAllWeeklyId?: string;
+  useLikedSongs?: boolean;
   editorialPlaylists?: Array<{ id: string; name: string }>;
   externalPlaylistSources?: ExternalPlaylistSource[];
   genreFilters?: GenreFilterLists;
@@ -154,6 +155,7 @@ export class PlaylistFillerService {
       allWeeklyId: options?.allWeeklyId ?? DEFAULTS.allWeeklyId,
       bestOfAllWeeklyId:
         options?.bestOfAllWeeklyId ?? DEFAULTS.bestOfAllWeeklyId,
+      useLikedSongs: options?.useLikedSongs ?? false,
       editorialPlaylists:
         options?.editorialPlaylists ?? DEFAULTS.editorialPlaylists,
       externalPlaylistSources:
@@ -360,15 +362,28 @@ export class PlaylistFillerService {
       () => this.ctx.api.playlists.getPlaylist(this.opts.allWeeklyId),
       'All Weekly info',
     );
-    const boawResult = await this.ctx.call(
-      () => this.ctx.api.playlists.getPlaylist(this.opts.bestOfAllWeeklyId),
-      'Best of All Weekly info',
-    );
-
-    if (!(awResult.success && boawResult.success)) return false;
+    if (!awResult.success) return false;
 
     const awSnapshot = awResult.data.snapshot_id;
-    const boawSnapshot = boawResult.data.snapshot_id;
+
+    let boawSnapshot: string;
+    if (this.opts.useLikedSongs) {
+      // Liked Songs has no snapshot_id — use track count as change indicator
+      const likedResult = await this.ctx.call(
+        () => this.ctx.api.currentUser.tracks.savedTracks(1, 0),
+        'Liked Songs count',
+      );
+      boawSnapshot = likedResult.success
+        ? String((likedResult.data as any).total ?? 0)
+        : this.cache.bestOfAllWeeklySnapshot ?? '0';
+    } else {
+      const boawResult = await this.ctx.call(
+        () => this.ctx.api.playlists.getPlaylist(this.opts.bestOfAllWeeklyId),
+        'Best of All Weekly info',
+      );
+      if (!boawResult.success) return false;
+      boawSnapshot = boawResult.data.snapshot_id;
+    }
 
     const awChanged =
       this.cache.allWeeklySnapshot &&
@@ -378,6 +393,9 @@ export class PlaylistFillerService {
       this.cache.bestOfAllWeeklySnapshot !== boawSnapshot;
 
     let recalculated = false;
+    if (!awChanged && !boawChanged) {
+      this.emitter.emit('log', 'Snapshots unchanged — skipping recalculation');
+    }
     if (awChanged || boawChanged) {
       const progress = this.cache.artistSearchProgress;
       if (
@@ -391,6 +409,7 @@ export class PlaylistFillerService {
         const calcService = new PriorityCalculatorService(this.ctx, {
           allWeeklyId: this.opts.allWeeklyId,
           bestOfAllWeeklyId: this.opts.bestOfAllWeeklyId,
+          useLikedSongs: this.opts.useLikedSongs,
         });
         const output = await calcService.run();
         fs.writeFileSync(

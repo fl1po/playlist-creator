@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import { FileConfigStore } from '../lib/config.js';
-import { createSpotifyClient } from '../lib/spotify-client.js';
-import { createSpotifyContext } from '../lib/spotify-context.js';
+import { spotifyContext } from '../lib/spotify-context.js';
 import type { TrustedArtistsFile } from '../lib/types.js';
+import { UserConfigStore, secondaryLabel } from '../lib/user-config.js';
 import { ArtistLookupService } from '../services/artist-lookup.js';
 
 const TRUSTED_ARTISTS_PATH = './trusted-artists.json';
@@ -17,13 +17,8 @@ const trustedArtists: TrustedArtistsFile = JSON.parse(
   fs.readFileSync(TRUSTED_ARTISTS_PATH, 'utf8'),
 );
 
-const configStore = new FileConfigStore();
-const client = createSpotifyClient({ configStore });
-
-// Refresh token once up front
-await client.refreshToken();
-
-const ctx = createSpotifyContext(client);
+const ctx = spotifyContext({ configStore: new FileConfigStore() });
+const sl = secondaryLabel(new UserConfigStore().load());
 
 const service = new ArtistLookupService(ctx, {
   onResult: (r) => {
@@ -43,10 +38,10 @@ const service = new ArtistLookupService(ctx, {
       `    Genres:     ${r.genres.length ? r.genres.join(', ') : '—'}`,
     );
     console.log(
-      `    AW tracks:  ${r.data.allWeekly}  |  BoAW tracks: ${r.data.bestOfAllWeekly}`,
+      `    AW tracks:  ${r.data.allWeekly}  |  ${sl} tracks: ${r.data.bestOfAllWeekly}`,
     );
     console.log(
-      `    Recency:    AW +${r.data.recencyBonusAW}  |  BoAW +${r.data.recencyBonusBoAW}`,
+      `    Recency:    AW +${r.data.recencyBonusAW}  |  ${sl} +${r.data.recencyBonusBoAW}`,
     );
     console.log(
       `    Spotify:    https://open.spotify.com/artist/${r.data.spotifyId || '?'}`,

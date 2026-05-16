@@ -289,10 +289,12 @@ export class PlaylistSyncerService {
             totalAdded += tracksToAdd.length;
             playlistsSynced++;
             this.emitter.emit('playlistSync', pl.name, 0, tracksToAdd.length);
-            this.emitter.emit(
-              'log',
-              `  ${pl.name}: added ${tracksToAdd.length} track(s) from promoted artists`,
-            );
+            for (const c of collected) {
+              this.emitter.emit(
+                'log',
+                `  ${pl.name}: added "${c.release.artistName} — ${c.release.name}" (${c.trackIds.length} track(s))`,
+              );
+            }
           }
         }
       }

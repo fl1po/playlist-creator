@@ -27,12 +27,16 @@ export const listeningTimeTask: TaskDefinition = {
       (msg) => tc.broadcast('log', { level: 'info', message: msg }),
     );
 
+    const force = !!tc.body.force;
+
     const snapshotPath = path.join(tc.dataDir, DURATION_SNAPSHOT_CACHE);
     let snapshots: DurationSnapshots = {};
-    try {
-      snapshots = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
-    } catch {
-      /* no cache yet */
+    if (!force) {
+      try {
+        snapshots = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
+      } catch {
+        /* no cache yet */
+      }
     }
 
     let totalMs = 0;

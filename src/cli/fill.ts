@@ -1,46 +1,30 @@
 import fs from 'node:fs';
 import { FileConfigStore } from '../lib/config.js';
-import { RequestPacer } from '../lib/request-pacer.js';
-import { createSpotifyClient } from '../lib/spotify-client.js';
-import { createSpotifyContext } from '../lib/spotify-context.js';
+import { spotifyContext } from '../lib/spotify-context.js';
 import { PlaylistFillerService } from '../services/playlist-filler.js';
 
 const freshMode = process.argv.includes('--fresh');
 
-const configStore = new FileConfigStore();
-const client = createSpotifyClient({
-  configStore,
-  onAuthRequired: (attempt, max) =>
-    console.log(
-      `\nAuth failed. Running npm run auth... (attempt ${attempt}/${max})`,
-    ),
-  onAuthSuccess: () => console.log('Authentication successful!\n'),
-  onAuthFailed: (err) => console.error('Authentication failed:', err.message),
-  onTokenRefreshed: () => {},
-});
-
-const pacer = new RequestPacer(1);
-const ctx = createSpotifyContext(
-  client,
-  {
+const ctx = spotifyContext({
+  configStore: new FileConfigStore(),
+  events: {
     onRateLimitWait: (s) => {
-      const resumeAt = new Date(Date.now() + s * 1000);
-      const display = s >= 60 ? `${(s / 60).toFixed(1)}min` : `${s}s`;
-      const time = resumeAt.toLocaleTimeString();
-      console.log(`  Rate limited, waiting ${display} (until ${time})...`);
-    },
-    onNetworkRetry: (a, m) => console.log(`  Network error, retry ${a}/${m}`),
-    onLongSleep: (h, w) => {
-      console.log(`\n!!! RATE LIMIT: Sleeping for ${h} hours...`);
-      console.log(`    Will resume at: ${w.toLocaleTimeString()}`);
-    },
-    onError: (desc, err) => {
-      if (err.message?.includes('404')) return;
-      console.log(`  Error (${desc}): ${err.message}`);
-    },
+    const resumeAt = new Date(Date.now() + s * 1000);
+    const display = s >= 60 ? `${(s / 60).toFixed(1)}min` : `${s}s`;
+    const time = resumeAt.toLocaleTimeString();
+    console.log(`  Rate limited, waiting ${display} (until ${time})...`);
   },
-  pacer,
-);
+  onNetworkRetry: (a, m) => console.log(`  Network error, retry ${a}/${m}`),
+  onLongSleep: (h, w) => {
+    console.log(`\n!!! RATE LIMIT: Sleeping for ${h} hours...`);
+    console.log(`    Will resume at: ${w.toLocaleTimeString()}`);
+  },
+  onError: (desc, err) => {
+    if (err.message?.includes('404')) return;
+    console.log(`  Error (${desc}): ${err.message}`);
+  },
+  },
+});
 
 const service = new PlaylistFillerService(
   ctx,

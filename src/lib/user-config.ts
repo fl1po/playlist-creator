@@ -12,6 +12,7 @@ export interface UserConfig {
     allWeeklyName: string;
     bestOfAllWeeklyId: string;
     bestOfAllWeeklyName: string;
+    useLikedSongs: boolean;
   };
   editorialPlaylists: Array<{ id: string; name: string }>;
   externalPlaylistSources: Array<{
@@ -33,6 +34,7 @@ export interface UserConfig {
     minPopularity: number;
     minFollowers: number;
   };
+  weeklyListeningBudget: number;
 }
 
 // ── Defaults (current hardcoded values) ──────────────────────────────────────
@@ -43,6 +45,7 @@ export const DEFAULT_USER_CONFIG: UserConfig = {
     allWeeklyName: "",
     bestOfAllWeeklyId: "",
     bestOfAllWeeklyName: "",
+    useLikedSongs: false,
   },
   editorialPlaylists: [],
   externalPlaylistSources: [],
@@ -67,7 +70,20 @@ export const DEFAULT_USER_CONFIG: UserConfig = {
     minPopularity: 60,
     minFollowers: 100000,
   },
+  weeklyListeningBudget: 15,
 };
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Short label for the secondary source playlist. */
+export function secondaryLabel(cfg: UserConfig): 'Liked' | 'BoAW' {
+  return cfg.sourcePlaylists.useLikedSongs ? 'Liked' : 'BoAW';
+}
+
+/** Long-form name for the secondary source playlist. */
+export function secondarySourceName(cfg: { sourcePlaylists: { useLikedSongs: boolean } }): string {
+  return cfg.sourcePlaylists.useLikedSongs ? 'Liked Songs' : 'Best of All Weekly';
+}
 
 // ── Store ────────────────────────────────────────────────────────────────────
 
@@ -116,6 +132,7 @@ export class UserConfigStore {
         },
       },
       editorialFilter: { ...defaults.editorialFilter, ...partial.editorialFilter },
+      weeklyListeningBudget: partial.weeklyListeningBudget ?? defaults.weeklyListeningBudget,
     };
   }
 }

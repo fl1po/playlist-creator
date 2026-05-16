@@ -25,8 +25,8 @@ export function configRoutes(ctx: RouteContext): Router {
     const errors: string[] = [];
     if (!config.sourcePlaylists?.allWeeklyId)
       errors.push('All Weekly playlist ID required');
-    if (!config.sourcePlaylists?.bestOfAllWeeklyId)
-      errors.push('Best of All Weekly playlist ID required');
+    if (!config.sourcePlaylists?.useLikedSongs && !config.sourcePlaylists?.bestOfAllWeeklyId)
+      errors.push('Best of All Weekly playlist ID required (or enable Liked Songs)');
 
     const t = config.scoring?.priorityThresholds;
     if (t && !(t.p1 > t.p2 && t.p2 > t.p3 && t.p3 > t.p4 && t.p4 > 0)) {

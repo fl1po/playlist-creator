@@ -116,6 +116,7 @@ export const fillTask: TaskDefinition = {
         freshMode,
         allWeeklyId: userConfig.sourcePlaylists.allWeeklyId,
         bestOfAllWeeklyId: userConfig.sourcePlaylists.bestOfAllWeeklyId,
+        useLikedSongs: userConfig.sourcePlaylists.useLikedSongs,
         editorialPlaylists: userConfig.editorialPlaylists,
         externalPlaylistSources: userConfig.externalPlaylistSources,
         genreFilters: userConfig.genreFilters,

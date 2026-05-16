@@ -10,43 +10,153 @@ import type {
   SimplePlaylist,
 } from './types.js';
 
+// ── Core pagination primitive ─────────────────────────────────────────────────
+
+type SpotifyInt = any; // Spotify SDK uses literal number union for limit/offset
+
+interface PaginateOptions<TAcc> {
+  /** The raw API call to make (will be wrapped with ctx.call). */
+  fetch: (limit: SpotifyInt, offset: SpotifyInt) => Promise<unknown>;
+  /** Description for ctx.call logging. */
+  description: string;
+  /** Items per page (default: 50). */
+  limit?: number;
+  /** Stop fetching after this offset is reached. */
+  maxOffset?: number;
+  /** Create initial accumulator. */
+  init: () => TAcc;
+  /** Process one page of items into the accumulator. */
+  onPage: (
+    acc: TAcc,
+    items: unknown[],
+    meta: { offset: number; total: number; pageIndex: number },
+  ) => void;
+  /** Called after each page with progress info. */
+  onProgress?: (fetched: number, total: number) => void;
+}
+
+/**
+ * Core pagination loop. Handles offset tracking, error semantics
+ * (throw on authError, return partial accumulator on other failures),
+ * and termination (items < limit or maxOffset reached).
+ */
+export async function paginateWith<TAcc>(
+  ctx: SpotifyContext,
+  opts: PaginateOptions<TAcc>,
+): Promise<TAcc> {
+  const limit = opts.limit ?? 50;
+  const acc = opts.init();
+  let offset = 0;
+  let total = 0;
+  let pageIndex = 0;
+
+  while (true) {
+    const result = await ctx.call(
+      () => opts.fetch(limit, offset),
+      opts.description,
+    );
+
+    if (!result.success) {
+      if (result.authError) throw result.error;
+      return acc;
+    }
+
+    const page = result.data as { items?: unknown[]; total?: number };
+    if (pageIndex === 0 && page.total != null) {
+      total = page.total;
+    }
+
+    const items = (page.items ?? (result.data as unknown[])) as unknown[];
+    opts.onPage(acc, items, { offset, total, pageIndex });
+
+    const fetched = items.length;
+    offset += fetched;
+    opts.onProgress?.(offset, total);
+
+    if (fetched < limit) break;
+    if (opts.maxOffset != null && offset >= opts.maxOffset) break;
+    pageIndex++;
+  }
+
+  return acc;
+}
+
+/**
+ * Fetch all items from a playlist and map each to a value.
+ * Return null from the map function to skip an item.
+ */
+export async function fetchAll<T>(
+  ctx: SpotifyContext,
+  playlistId: string,
+  map: (item: unknown, index: number) => T | null,
+  opts?: {
+    limit?: number;
+    maxOffset?: number;
+    onProgress?: (fetched: number, total: number) => void;
+  },
+): Promise<T[]> {
+  let index = 0;
+  return paginateWith(ctx, {
+    fetch: (limit, offset) =>
+      ctx.api.playlists.getPlaylistItems(
+        playlistId,
+        undefined,
+        undefined,
+        limit,
+        offset,
+      ),
+    description: `playlist items ${playlistId}`,
+    limit: opts?.limit,
+    maxOffset: opts?.maxOffset,
+    init: () => [] as T[],
+    onPage: (acc, items) => {
+      for (const item of items) {
+        const mapped = map(item, index++);
+        if (mapped !== null) acc.push(mapped);
+      }
+    },
+    onProgress: opts?.onProgress,
+  });
+}
+
+/**
+ * Fetch all items from an arbitrary paginated endpoint and map each to a value.
+ * Return null from the map function to skip an item.
+ */
+export async function fetchAllFrom<T>(
+  ctx: SpotifyContext,
+  source: {
+    fetch: (limit: SpotifyInt, offset: SpotifyInt) => Promise<unknown>;
+    description: string;
+    limit?: number;
+  },
+  map: (item: unknown, index: number) => T | null,
+): Promise<T[]> {
+  let index = 0;
+  return paginateWith(ctx, {
+    fetch: source.fetch,
+    description: source.description,
+    limit: source.limit,
+    init: () => [] as T[],
+    onPage: (acc, items) => {
+      for (const item of items) {
+        const mapped = map(item, index++);
+        if (mapped !== null) acc.push(mapped);
+      }
+    },
+  });
+}
+
+// ── Playlist functions (using pagination primitives) ──────────────────────────
+
+type Item = any; // Spotify SDK types are untyped at item level
+
 /** Get all track IDs from a playlist. */
 export async function getAllPlaylistTracks(
   ctx: SpotifyContext,
   playlistId: string,
 ): Promise<string[]> {
-  const tracks: string[] = [];
-  let offset = 0;
-  const limit = 50;
-
-  while (true) {
-    const result = await ctx.call(
-      () =>
-        ctx.api.playlists.getPlaylistItems(
-          playlistId,
-          undefined,
-          undefined,
-          limit,
-          offset,
-        ),
-      `playlist tracks ${playlistId}`,
-    );
-
-    if (!result.success) {
-      if (result.authError) throw result.error;
-      return tracks;
-    }
-
-    for (const item of result.data.items) {
-      if (item.track?.id) {
-        tracks.push(item.track.id);
-      }
-    }
-    if (result.data.items.length < limit) break;
-    offset += limit;
-  }
-
-  return tracks;
+  return fetchAll(ctx, playlistId, (item: Item) => item.track?.id ?? null);
 }
 
 /** Get all playlists owned by a user. */
@@ -54,35 +164,18 @@ export async function getAllUserPlaylists(
   ctx: SpotifyContext,
   userId: string,
 ): Promise<SimplePlaylist[]> {
-  const playlists: SimplePlaylist[] = [];
-  let offset = 0;
-  const limit = 50;
-
-  while (true) {
-    const result = await ctx.call(
-      () => ctx.api.playlists.getUsersPlaylists(userId, limit, offset),
-      'user playlists',
-    );
-
-    if (!result.success) {
-      if (result.authError) throw result.error;
-      return playlists;
-    }
-
-    for (const playlist of result.data.items) {
-      if (playlist.owner.id === userId) {
-        playlists.push({
-          id: playlist.id,
-          name: playlist.name,
-          trackCount: playlist.tracks.total,
-        });
-      }
-    }
-    if (result.data.items.length < limit) break;
-    offset += limit;
-  }
-
-  return playlists;
+  return fetchAllFrom(
+    ctx,
+    {
+      fetch: (limit, offset) =>
+        ctx.api.playlists.getUsersPlaylists(userId, limit, offset),
+      description: 'user playlists',
+    },
+    (item: Item) =>
+      item.owner.id === userId
+        ? { id: item.id, name: item.name, trackCount: item.tracks.total }
+        : null,
+  );
 }
 
 const NON_LISTENED_CACHE = 'non-listened-cache.json';
@@ -103,14 +196,19 @@ export interface DurationSnapshot {
 
 export type DurationSnapshots = Record<string, DurationSnapshot>;
 
+export interface FrequentArtistEntry {
+  label: string; // "Artist (N)"
+  album: string; // album name for tooltip
+}
+
 export interface WeekBreakdownEntry {
   date: string; // dd.mm.yy release week
   addedAt: string; // dd.mm.yy date added to AW
   trackCount: number;
   durationMs: number;
-  repeatArtists: number;
-  repeatArtistTracks: number;
-  frequentArtists: string[]; // artists with 3+ tracks this week
+  albumCount: number;
+  albumTracks: number;
+  frequentArtists: FrequentArtistEntry[];
 }
 
 /** Invalidate the non-listened playlists and listening time caches. */
@@ -150,9 +248,7 @@ export async function getNonListenedPlaylists(
       fs.readFileSync(cachePath, 'utf8'),
     );
     if (cached.playlists != null) {
-      emit(
-        `Using cached non-listened playlists (${cached.playlists.length})`,
-      );
+      emit(`Using cached non-listened playlists (${cached.playlists.length})`);
       return { playlists: cached.playlists, awTrackIds };
     }
   } catch {
@@ -166,9 +262,7 @@ export async function getNonListenedPlaylists(
   const weeklyPattern = /^(\d{2})\.(\d{2})\.(\d{2})$/;
   const weeklies = allPlaylists
     .filter((pl) => pl.trackCount > 0 && weeklyPattern.test(pl.name))
-    .sort(
-      (a, b) => parseDate(b.name).getTime() - parseDate(a.name).getTime(),
-    ); // newest first
+    .sort((a, b) => parseDate(b.name).getTime() - parseDate(a.name).getTime()); // newest first
 
   emit(`Found ${weeklies.length} weekly playlists, scanning from newest...`);
 
@@ -205,36 +299,23 @@ export async function getAlbumTracks(
   ctx: SpotifyContext,
   albumId: string,
 ): Promise<AlbumTrack[]> {
-  const tracks: AlbumTrack[] = [];
-  let offset = 0;
-
-  while (true) {
-    const result = await ctx.call(
-      () => ctx.api.albums.tracks(albumId, undefined, 50, offset),
-      `tracks for album ${albumId}`,
-    );
-
-    if (!result.success) {
-      if (result.authError) throw result.error;
-      return tracks;
-    }
-
-    for (const track of result.data.items) {
-      const artistNames = track.artists.map((a: { name: string }) => a.name);
-      const key = trackKey(artistNames, track.name);
-      tracks.push({
-        id: track.id,
-        name: track.name,
-        key,
-        explicit: (track as unknown as { explicit?: boolean }).explicit,
-      });
-    }
-
-    if (result.data.items.length < 50) break;
-    offset += 50;
-  }
-
-  return tracks;
+  return fetchAllFrom(
+    ctx,
+    {
+      fetch: (limit, offset) =>
+        ctx.api.albums.tracks(albumId, undefined, limit, offset),
+      description: `tracks for album ${albumId}`,
+    },
+    (item: Item) => {
+      const artistNames = item.artists.map((a: { name: string }) => a.name);
+      return {
+        id: item.id,
+        name: item.name,
+        key: trackKey(artistNames, item.name),
+        explicit: item.explicit as boolean | undefined,
+      };
+    },
+  );
 }
 
 /** Get unique albums referenced by tracks in a playlist. */
@@ -243,46 +324,33 @@ export async function getPlaylistAlbums(
   playlistId: string,
   maxOffset = 200,
 ): Promise<Map<string, PlaylistAlbumInfo>> {
-  const albums = new Map<string, PlaylistAlbumInfo>();
-  let offset = 0;
-
-  while (true) {
-    const result = await ctx.call(
-      () =>
-        ctx.api.playlists.getPlaylistItems(
-          playlistId,
-          undefined,
-          undefined,
-          50,
-          offset,
-        ),
-      `editorial playlist ${playlistId}`,
-    );
-    if (!result.success) {
-      if (result.authError) throw result.error;
-      break;
-    }
-
-    for (const item of result.data.items) {
-      if (item.track?.album) {
-        const albumId = item.track.album.id;
-        if (!albums.has(albumId)) {
-          albums.set(albumId, {
-            id: albumId,
-            name: item.track.album.name,
-            artistName:
-              (item.track as unknown as { artists?: Array<{ name: string }> })
-                .artists?.[0]?.name ?? 'Unknown',
-          });
+  return paginateWith(ctx, {
+    fetch: (limit, offset) =>
+      ctx.api.playlists.getPlaylistItems(
+        playlistId,
+        undefined,
+        undefined,
+        limit,
+        offset,
+      ),
+    description: `editorial playlist ${playlistId}`,
+    maxOffset,
+    init: () => new Map<string, PlaylistAlbumInfo>(),
+    onPage: (albums, items) => {
+      for (const item of items as Item[]) {
+        if (item.track?.album) {
+          const albumId = item.track.album.id;
+          if (!albums.has(albumId)) {
+            albums.set(albumId, {
+              id: albumId,
+              name: item.track.album.name,
+              artistName: item.track.artists?.[0]?.name ?? 'Unknown',
+            });
+          }
         }
       }
-    }
-    if (result.data.items.length < 50) break;
-    offset += 50;
-    if (offset > maxOffset) break;
-  }
-
-  return albums;
+    },
+  });
 }
 
 /** Get all tracks from a playlist with normalized dedup keys. */
@@ -290,54 +358,17 @@ export async function getPlaylistTracksDetailed(
   ctx: SpotifyContext,
   playlistId: string,
 ): Promise<Array<{ uri: string; name: string; key: string; artists: string }>> {
-  const tracks: Array<{
-    uri: string;
-    name: string;
-    key: string;
-    artists: string;
-  }> = [];
-  let offset = 0;
-  const limit = 50;
-
-  while (true) {
-    const result = await ctx.call(
-      () =>
-        ctx.api.playlists.getPlaylistItems(
-          playlistId,
-          undefined,
-          undefined,
-          limit,
-          offset,
-        ),
-      `playlist tracks detailed ${playlistId}`,
-    );
-
-    if (!result.success) {
-      if (result.authError) throw result.error;
-      return tracks;
-    }
-
-    for (const item of result.data.items) {
-      if (item.track?.id) {
-        const trackArtists =
-          (item.track as unknown as { artists?: Array<{ name: string }> })
-            .artists ?? [];
-        const artistNames = trackArtists.map((a) => a.name);
-        const key = trackKey(artistNames, item.track.name);
-        const displayArtists = artistNames.join(', ');
-        tracks.push({
-          uri: item.track.uri,
-          name: item.track.name,
-          key,
-          artists: displayArtists,
-        });
-      }
-    }
-    if (result.data.items.length < limit) break;
-    offset += limit;
-  }
-
-  return tracks;
+  return fetchAll(ctx, playlistId, (item: Item) => {
+    if (!item.track?.id) return null;
+    const trackArtists: Array<{ name: string }> = item.track.artists ?? [];
+    const artistNames = trackArtists.map((a) => a.name);
+    return {
+      uri: item.track.uri,
+      name: item.track.name,
+      key: trackKey(artistNames, item.track.name),
+      artists: artistNames.join(', '),
+    };
+  });
 }
 
 // ── Playlist tracks with individual artist names ────────────────────────────
@@ -355,48 +386,18 @@ export async function getPlaylistTracksWithArtists(
   ctx: SpotifyContext,
   playlistId: string,
 ): Promise<PlaylistTrackWithArtists[]> {
-  const tracks: PlaylistTrackWithArtists[] = [];
-  let offset = 0;
-  const limit = 50;
-
-  while (true) {
-    const result = await ctx.call(
-      () =>
-        ctx.api.playlists.getPlaylistItems(
-          playlistId,
-          undefined,
-          undefined,
-          limit,
-          offset,
-        ),
-      `playlist tracks with artists ${playlistId}`,
-    );
-
-    if (!result.success) {
-      if (result.authError) throw result.error;
-      return tracks;
-    }
-
-    for (const item of result.data.items) {
-      if (item.track?.id) {
-        const t = item.track as unknown as {
-          artists?: Array<{ name: string }>;
-          album?: { id: string };
-        };
-        tracks.push({
-          uri: item.track.uri,
-          id: item.track.id,
-          name: item.track.name,
-          artistNames: (t.artists ?? []).map((a) => a.name),
-          albumId: t.album?.id ?? '',
-        });
-      }
-    }
-    if (result.data.items.length < limit) break;
-    offset += limit;
-  }
-
-  return tracks;
+  return fetchAll(ctx, playlistId, (item: Item) => {
+    if (!item.track?.id) return null;
+    return {
+      uri: item.track.uri,
+      id: item.track.id,
+      name: item.track.name,
+      artistNames: (item.track.artists ?? []).map(
+        (a: { name: string }) => a.name,
+      ),
+      albumId: item.track.album?.id ?? '',
+    };
+  });
 }
 
 /** Get total duration of all tracks in a playlist. */
@@ -404,41 +405,26 @@ export async function getPlaylistTotalDuration(
   ctx: SpotifyContext,
   playlistId: string,
 ): Promise<{ totalMs: number; trackCount: number }> {
-  let totalMs = 0;
-  let trackCount = 0;
-  let offset = 0;
-  const limit = 50;
-
-  while (true) {
-    const result = await ctx.call(
-      () =>
-        ctx.api.playlists.getPlaylistItems(
-          playlistId,
-          undefined,
-          undefined,
-          limit,
-          offset,
-        ),
-      `playlist duration ${playlistId}`,
-    );
-
-    if (!result.success) {
-      if (result.authError) throw result.error;
-      return { totalMs, trackCount };
-    }
-
-    for (const item of result.data.items) {
-      if (item.track) {
-        totalMs +=
-          (item.track as unknown as { duration_ms?: number }).duration_ms ?? 0;
-        trackCount++;
+  return paginateWith(ctx, {
+    fetch: (limit, offset) =>
+      ctx.api.playlists.getPlaylistItems(
+        playlistId,
+        undefined,
+        undefined,
+        limit,
+        offset,
+      ),
+    description: `playlist duration ${playlistId}`,
+    init: () => ({ totalMs: 0, trackCount: 0 }),
+    onPage: (acc, items) => {
+      for (const item of items as Item[]) {
+        if (item.track) {
+          acc.totalMs += item.track.duration_ms ?? 0;
+          acc.trackCount++;
+        }
       }
-    }
-    if (result.data.items.length < limit) break;
-    offset += limit;
-  }
-
-  return { totalMs, trackCount };
+    },
+  });
 }
 
 /** Fetch album popularity in batches of 20. */
@@ -465,29 +451,69 @@ export async function fetchReleasePopularities(
   return popularities;
 }
 
-/** Scan playlist tracks with position info for recency calculations. */
-export async function getPlaylistTracksWithPositions(
-  ctx: SpotifyContext,
-  playlistId: string,
-): Promise<{
+type TracksWithPositionsResult = {
   artistData: Map<
     string,
     { positions: number[]; trackCount: number; id: string | null }
   >;
   totalTracks: number;
-}> {
-  const artistData = new Map<
-    string,
-    { positions: number[]; trackCount: number; id: string | null }
-  >();
-  let offset = 0;
-  const limit = 50;
-  let position = 0;
-  let totalTracks = 0;
+};
 
-  while (true) {
-    const result = await ctx.call(
-      () =>
+function paginateTracksWithPositions(
+  ctx: SpotifyContext,
+  source: {
+    fetch: (limit: SpotifyInt, offset: SpotifyInt) => Promise<unknown>;
+    description: string;
+    invertPositions?: boolean;
+  },
+  onProgress?: (fetched: number, total: number) => void,
+): Promise<TracksWithPositionsResult> {
+  let position = 0;
+  return paginateWith(ctx, {
+    fetch: source.fetch,
+    description: source.description,
+    init: (): TracksWithPositionsResult => ({
+      artistData: new Map(),
+      totalTracks: 0,
+    }),
+    onPage: (acc, items, { total, pageIndex }) => {
+      if (pageIndex === 0) acc.totalTracks = total;
+      for (const item of items as Item[]) {
+        const track = item.track;
+        if (track?.artists) {
+          const logicalPosition = source.invertPositions
+            ? total - 1 - position
+            : position;
+          for (const artist of track.artists as Array<{
+            id: string;
+            name: string;
+          }>) {
+            let data = acc.artistData.get(artist.name);
+            if (!data) {
+              data = { positions: [], trackCount: 0, id: artist.id };
+              acc.artistData.set(artist.name, data);
+            }
+            data.positions.push(logicalPosition);
+            data.trackCount++;
+          }
+        }
+        position++;
+      }
+    },
+    onProgress,
+  });
+}
+
+/** Scan playlist tracks with position info for recency calculations. */
+export function getPlaylistTracksWithPositions(
+  ctx: SpotifyContext,
+  playlistId: string,
+  onProgress?: (fetched: number, total: number) => void,
+): Promise<TracksWithPositionsResult> {
+  return paginateTracksWithPositions(
+    ctx,
+    {
+      fetch: (limit, offset) =>
         ctx.api.playlists.getPlaylistItems(
           playlistId,
           undefined,
@@ -495,57 +521,49 @@ export async function getPlaylistTracksWithPositions(
           limit,
           offset,
         ),
-      `playlist tracks with positions ${playlistId}`,
-    );
-
-    if (!result.success) {
-      if (result.authError) throw result.error;
-      break;
-    }
-
-    if (offset === 0) {
-      totalTracks = result.data.total;
-    }
-
-    for (const item of result.data.items) {
-      if (item.track?.artists) {
-        for (const artist of item.track.artists as Array<{
-          id: string;
-          name: string;
-        }>) {
-          const name = artist.name;
-          if (!artistData.has(name)) {
-            artistData.set(name, {
-              positions: [],
-              trackCount: 0,
-              id: artist.id,
-            });
-          }
-          const data = artistData.get(name);
-          data?.positions.push(position);
-          if (data) data.trackCount++;
-        }
-      }
-      position++;
-    }
-
-    if (result.data.items.length < limit) break;
-    offset += limit;
-  }
-
-  return { artistData, totalTracks };
+      description: `playlist tracks with positions ${playlistId}`,
+    },
+    onProgress,
+  );
 }
+
+/**
+ * Scan Liked Songs (saved tracks) with position info for recency calculations.
+ * Liked Songs are newest-first, so positions are inverted to match playlist
+ * convention (higher position = more recent).
+ */
+export function getLikedTracksWithPositions(
+  ctx: SpotifyContext,
+  onProgress?: (fetched: number, total: number) => void,
+): Promise<TracksWithPositionsResult> {
+  return paginateTracksWithPositions(
+    ctx,
+    {
+      fetch: (limit, offset) =>
+        ctx.api.currentUser.tracks.savedTracks(limit, offset),
+      description: 'liked songs with positions',
+      invertPositions: true,
+    },
+    onProgress,
+  );
+}
+
+// ── Weekly breakdown ──────────────────────────────────────────────────────────
 
 interface RawTrack {
   durationMs: number;
   artists: string[];
+  albumId: string;
+  albumArtist: string;
+  albumName: string;
   addedAtDate: string; // YYYY-MM-DD or 'unknown'
 }
 
 /** Derive release Friday label from a track's release date, falling back to added_at. */
 function trackFriday(releaseDate: string | undefined, addedAt: string): string {
   if (releaseDate) return formatDdMmYy(toReleaseFriday(new Date(releaseDate)));
-  if (addedAt !== 'unknown') return formatDdMmYy(toReleaseFriday(new Date(addedAt)));
+  if (addedAt !== 'unknown')
+    return formatDdMmYy(toReleaseFriday(new Date(addedAt)));
   return 'unknown';
 }
 
@@ -555,59 +573,60 @@ export async function getPlaylistTracksGroupedByWeek(
   playlistId: string,
   onProgress?: (fetched: number, total: number) => void,
 ): Promise<WeekBreakdownEntry[]> {
-  const byFriday = new Map<string, RawTrack[]>();
-  // Track the most common added_at date per Friday group
-  const addedAtCounts = new Map<string, Map<string, number>>();
-  let offset = 0;
-  const limit = 50;
-  let total = 0;
+  const { byFriday, addedAtCounts } = await paginateWith(ctx, {
+    fetch: (limit, offset) =>
+      ctx.api.playlists.getPlaylistItems(
+        playlistId,
+        undefined,
+        undefined,
+        limit,
+        offset,
+      ),
+    description: `playlist tracks grouped ${playlistId}`,
+    init: () => ({
+      byFriday: new Map<string, RawTrack[]>(),
+      addedAtCounts: new Map<string, Map<string, number>>(),
+    }),
+    onPage: (acc, items) => {
+      for (const item of items as Item[]) {
+        if (!item.track) continue;
+        const addedAt = item.added_at as string | undefined;
+        const addedAtDate = addedAt ? addedAt.slice(0, 10) : 'unknown';
+        const durationMs = item.track.duration_ms ?? 0;
+        const artists = (item.track.artists as Array<{ name: string }>).map(
+          (a) => a.name,
+        );
+        const album = item.track.album as
+          | {
+              id?: string;
+              name?: string;
+              release_date?: string;
+              artists?: Array<{ name: string }>;
+            }
+          | undefined;
+        const releaseDate = album?.release_date;
+        const albumId = album?.id ?? '';
+        const albumArtist = album?.artists?.[0]?.name ?? '';
+        const albumName = album?.name ?? '';
 
-  while (true) {
-    const result = await ctx.call(
-      () =>
-        ctx.api.playlists.getPlaylistItems(
-          playlistId,
-          undefined,
-          undefined,
-          limit,
-          offset,
-        ),
-      `playlist tracks grouped ${playlistId}`,
-    );
+        const fri = trackFriday(releaseDate, addedAtDate);
+        if (!acc.byFriday.has(fri)) acc.byFriday.set(fri, []);
+        acc.byFriday.get(fri)?.push({
+          durationMs,
+          artists,
+          albumId,
+          albumArtist,
+          albumName,
+          addedAtDate,
+        });
 
-    if (!result.success) {
-      if (result.authError) throw result.error;
-      break;
-    }
-
-    if (offset === 0) total = result.data.total;
-
-    for (const item of result.data.items) {
-      if (!item.track) continue;
-      const addedAt = (item as unknown as { added_at?: string }).added_at;
-      const addedAtDate = addedAt ? addedAt.slice(0, 10) : 'unknown';
-      const durationMs =
-        (item.track as unknown as { duration_ms?: number }).duration_ms ?? 0;
-      const artists = (
-        item.track.artists as Array<{ name: string }>
-      ).map((a) => a.name);
-      const releaseDate = (
-        item.track as unknown as { album?: { release_date?: string } }
-      ).album?.release_date;
-
-      const fri = trackFriday(releaseDate, addedAtDate);
-      if (!byFriday.has(fri)) byFriday.set(fri, []);
-      byFriday.get(fri)!.push({ durationMs, artists, addedAtDate });
-
-      if (!addedAtCounts.has(fri)) addedAtCounts.set(fri, new Map());
-      const counts = addedAtCounts.get(fri)!;
-      counts.set(addedAtDate, (counts.get(addedAtDate) ?? 0) + 1);
-    }
-
-    offset += result.data.items.length;
-    onProgress?.(offset, total);
-    if (result.data.items.length < limit) break;
-  }
+        if (!acc.addedAtCounts.has(fri)) acc.addedAtCounts.set(fri, new Map());
+        const counts = acc.addedAtCounts.get(fri);
+        counts?.set(addedAtDate, (counts.get(addedAtDate) ?? 0) + 1);
+      }
+    },
+    onProgress,
+  });
 
   // Sort Fridays chronologically (pre-parse to avoid repeated parseDate calls)
   const sortedFridays = [...byFriday.keys()]
@@ -620,13 +639,13 @@ export async function getPlaylistTracksGroupedByWeek(
   const unknownTracks = byFriday.get('unknown');
   if (unknownTracks?.length && sortedFridays.length > 0) {
     const lastFri = sortedFridays[sortedFridays.length - 1];
-    byFriday.get(lastFri)!.push(...unknownTracks);
+    byFriday.get(lastFri)?.push(...unknownTracks);
   } else if (unknownTracks?.length) {
     sortedFridays.push('unknown');
   }
 
   return sortedFridays.map((dateLabel) => {
-    const tracks = byFriday.get(dateLabel)!;
+    const tracks = byFriday.get(dateLabel) ?? [];
 
     // Find the most common added_at date (inline max, no sort)
     const counts = addedAtCounts.get(dateLabel);
@@ -634,36 +653,61 @@ export async function getPlaylistTracksGroupedByWeek(
     let topCount = 0;
     if (counts) {
       for (const [date, count] of counts) {
-        if (count > topCount) { topCount = count; topAdded = date; }
+        if (count > topCount) {
+          topCount = count;
+          topAdded = date;
+        }
       }
     }
-    const addedAt = topAdded === 'unknown'
-      ? 'unknown'
-      : formatDdMmYy(new Date(topAdded));
+    const addedAt =
+      topAdded === 'unknown' ? 'unknown' : formatDdMmYy(new Date(topAdded));
 
     const trackCount = tracks.length;
     const durationMs = tracks.reduce((s, t) => s + t.durationMs, 0);
 
-    const artistCounts = new Map<string, number>();
+    // Group by album — find albums with 3+ tracks, show the main artist
+    const albumTrackCounts = new Map<string, number>();
+    const albumMeta = new Map<string, { artist: string; name: string }>();
     for (const t of tracks) {
-      for (const a of t.artists) {
-        artistCounts.set(a, (artistCounts.get(a) ?? 0) + 1);
-      }
+      if (!t.albumId) continue;
+      albumTrackCounts.set(
+        t.albumId,
+        (albumTrackCounts.get(t.albumId) ?? 0) + 1,
+      );
+      if (!albumMeta.has(t.albumId))
+        albumMeta.set(t.albumId, { artist: t.albumArtist, name: t.albumName });
     }
-    let repeatArtists = 0;
-    let repeatArtistTracks = 0;
-    const frequentArtists: string[] = [];
-    for (const [name, count] of artistCounts) {
-      if (count > 1) {
-        repeatArtists++;
-        repeatArtistTracks += count;
-      }
-      if (count >= 3) {
-        frequentArtists.push(`${name} (${count})`);
-      }
+    const repeatAlbumIds = new Set<string>();
+    const frequentEntries: { artist: string; album: string; count: number }[] =
+      [];
+    for (const [albumId, count] of albumTrackCounts) {
+      if (count < 3) continue;
+      repeatAlbumIds.add(albumId);
+      const meta = albumMeta.get(albumId);
+      if (meta)
+        frequentEntries.push({ artist: meta.artist, album: meta.name, count });
     }
-    frequentArtists.sort();
+    frequentEntries.sort(
+      (a, b) => b.count - a.count || a.artist.localeCompare(b.artist),
+    );
+    const frequentArtists: FrequentArtistEntry[] = frequentEntries.map((e) => ({
+      label: `${e.artist} (${e.count})`,
+      album: e.album,
+    }));
+    const albumCount = repeatAlbumIds.size;
+    let albumTracks = 0;
+    for (const t of tracks) {
+      if (t.albumId && repeatAlbumIds.has(t.albumId)) albumTracks++;
+    }
 
-    return { date: dateLabel, addedAt, trackCount, durationMs, repeatArtists, repeatArtistTracks, frequentArtists };
+    return {
+      date: dateLabel,
+      addedAt,
+      trackCount,
+      durationMs,
+      albumCount,
+      albumTracks,
+      frequentArtists,
+    };
   });
 }

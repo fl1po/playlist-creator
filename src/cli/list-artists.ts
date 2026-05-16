@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import type { TrustedArtistsFile } from "../lib/types.js";
+import { UserConfigStore, secondaryLabel } from "../lib/user-config.js";
 
 const TRUSTED_ARTISTS_PATH = "./trusted-artists.json";
 
@@ -7,6 +8,7 @@ const data: TrustedArtistsFile = JSON.parse(
   fs.readFileSync(TRUSTED_ARTISTS_PATH, "utf8"),
 );
 const artists = data.artistCounts;
+const sl = secondaryLabel(new UserConfigStore().load());
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -56,7 +58,7 @@ for (const p of [1, 2, 3]) {
   console.log(`\n=== ${priorityLabels[p]} — ${list.length} artists ===\n`);
 
   for (const a of list) {
-    console.log(`  [${String(a.score).padStart(3)}] ${a.name}  (AW:${a.allWeekly} BoAW:${a.bestOfAllWeekly})`);
+    console.log(`  [${String(a.score).padStart(3)}] ${a.name}  (AW:${a.allWeekly} ${sl}:${a.bestOfAllWeekly})`);
   }
   totalShown += list.length;
 }

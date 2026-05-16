@@ -31,6 +31,7 @@ export const recalculateTask: TaskDefinition = {
       {
         allWeeklyId: userConfig.sourcePlaylists.allWeeklyId,
         bestOfAllWeeklyId: userConfig.sourcePlaylists.bestOfAllWeeklyId,
+        useLikedSongs: userConfig.sourcePlaylists.useLikedSongs,
         scoringWeights: userConfig.scoring,
         priorityThresholds: userConfig.scoring.priorityThresholds,
       },

@@ -1,55 +1,38 @@
 import { abortableSleep } from './abort.js';
-import { RateLimitError } from './rate-limit-error.js';
 import type { RequestPacer } from './request-pacer.js';
+import {
+  type ClassifiedError,
+  type ErrorKind,
+  classifyError,
+} from './resilience/errors.js';
 import type { ApiCallOptions, ApiResult, SpotifyClient } from './types.js';
 
-function isRateLimitError(e: Error): boolean {
-  if (e instanceof RateLimitError) return true;
-  const msg = e.message?.toLowerCase() ?? '';
-  return (
-    msg.includes('429') ||
-    msg.includes('rate limit') ||
-    msg.includes('too many requests')
-  );
+export { classifyError };
+export type { ClassifiedError, ErrorKind };
+
+export function isAuthError(e: Error): boolean {
+  return classifyError(e).kind === 'auth';
 }
 
-function getRetryAfterSeconds(e: Error): number | null {
-  if (e instanceof RateLimitError) return e.retryAfterSeconds;
-  return null;
+export interface RetryPolicy {
+  server: { maxRetries: number; baseDelayMs: number };
+  network: { maxRetries: number; baseDelayMs: number };
+  rateLimit: {
+    maxRetries: number;
+    escalateAfter: number;
+    longSleepMs: (count: number) => number;
+  };
 }
 
-function isAuthError(e: Error): boolean {
-  const msg = e.message?.toLowerCase() ?? '';
-  return (
-    msg.includes('401') ||
-    msg.includes('invalid_request') ||
-    msg.includes('invalid_grant') ||
-    msg.includes('refresh token') ||
-    msg.includes('expired token') ||
-    msg.includes('re-authenticate') ||
-    msg.includes('unauthorized') ||
-    msg.includes('bad request')
-  );
-}
-
-function isServerError(e: Error): boolean {
-  const msg = e.message ?? '';
-  return msg.includes('502') || msg.includes('503') || msg.includes('504');
-}
-
-function isNetworkError(e: Error): boolean {
-  const msg = e.message?.toLowerCase() ?? '';
-  return (
-    msg.includes('fetch failed') ||
-    msg.includes('network') ||
-    msg.includes('econnrefused') ||
-    msg.includes('enotfound') ||
-    msg.includes('etimedout') ||
-    msg.includes('socket')
-  );
-}
-
-export { isAuthError, isRateLimitError, isNetworkError };
+const DEFAULT_RETRY_POLICY: RetryPolicy = {
+  server: { maxRetries: 3, baseDelayMs: 5000 },
+  network: { maxRetries: 10, baseDelayMs: 10000 },
+  rateLimit: {
+    maxRetries: 5,
+    escalateAfter: 5,
+    longSleepMs: (n) => (1 + n) * 60 * 60 * 1000,
+  },
+};
 
 export interface ApiWrapperState {
   longSleepCount: number;
@@ -57,14 +40,19 @@ export interface ApiWrapperState {
 
 /**
  * Create an apiCall function bound to a SpotifyClient.
- * The returned function handles retries, rate-limits, backoff, and auth errors
- * identically to the original apiCall() pattern.
+ * Handles retries, rate-limits, backoff, and auth errors.
  */
 export function createApiCall(
   client: SpotifyClient,
   callbacks?: ApiCallOptions,
   pacer?: RequestPacer,
+  retryPolicy?: Partial<RetryPolicy>,
 ) {
+  const policy: RetryPolicy = {
+    server: { ...DEFAULT_RETRY_POLICY.server, ...retryPolicy?.server },
+    network: { ...DEFAULT_RETRY_POLICY.network, ...retryPolicy?.network },
+    rateLimit: { ...DEFAULT_RETRY_POLICY.rateLimit, ...retryPolicy?.rateLimit },
+  };
   const state: ApiWrapperState = { longSleepCount: 0 };
 
   async function apiCall<T>(
@@ -76,7 +64,6 @@ export function createApiCall(
     try {
       callbacks?.onBeforeCall?.();
       if (pacer) await pacer.pace(client);
-      // Access client.api to trigger any abort checks on the client
       void client.api;
       const result = await fn();
       pacer?.onSuccess();
@@ -93,75 +80,83 @@ export function createApiCall(
         throw err;
       }
 
-      // Auth errors → try refreshing token once, then bubble up
-      if (isAuthError(err)) {
-        if (!authRetried) {
-          try {
-            await client.recreateApi();
-            return apiCall(fn, description, 0, true);
-          } catch (refreshErr) {
-            // Abort during refresh → propagate
-            if (
-              refreshErr instanceof Error &&
-              (refreshErr.name === 'AbortError' ||
-                refreshErr.message === 'Stopped by user')
-            ) {
-              throw refreshErr;
+      const classified = classifyError(err);
+
+      switch (classified.kind) {
+        case 'auth': {
+          if (!authRetried) {
+            try {
+              await client.recreateApi();
+              return apiCall(fn, description, 0, true);
+            } catch (refreshErr) {
+              if (
+                refreshErr instanceof Error &&
+                (refreshErr.name === 'AbortError' ||
+                  refreshErr.message === 'Stopped by user')
+              ) {
+                throw refreshErr;
+              }
+              return { success: false, authError: true, error: err };
             }
-            return { success: false, authError: true, error: err };
           }
+          return { success: false, authError: true, error: err };
         }
-        return { success: false, authError: true, error: err };
-      }
 
-      // Server errors (502/503/504) → retry with short delay
-      if (isServerError(err)) {
-        if (retryCount >= 3) {
+        case 'server': {
+          if (retryCount >= policy.server.maxRetries) {
+            callbacks?.onError?.(description, err);
+            return { success: false, error: err };
+          }
+          await abortableSleep(
+            policy.server.baseDelayMs * (retryCount + 1),
+            client,
+          );
+          return apiCall(fn, description, retryCount + 1);
+        }
+
+        case 'network': {
+          if (retryCount >= policy.network.maxRetries) {
+            callbacks?.onError?.(description, err);
+            return { success: false, error: err };
+          }
+          callbacks?.onNetworkRetry?.(
+            retryCount + 1,
+            policy.network.maxRetries,
+          );
+          await abortableSleep(
+            policy.network.baseDelayMs * (retryCount + 1),
+            client,
+          );
+          return apiCall(fn, description, retryCount + 1);
+        }
+
+        case 'rate_limit': {
+          pacer?.onRateLimit();
+          if (retryCount >= policy.rateLimit.maxRetries) {
+            state.longSleepCount++;
+            const sleepMs = policy.rateLimit.longSleepMs(state.longSleepCount);
+            const wakeTime = new Date(Date.now() + sleepMs);
+            const sleepHours = sleepMs / (60 * 60 * 1000);
+            callbacks?.onLongSleep?.(sleepHours, wakeTime);
+            await abortableSleep(sleepMs, client);
+            callbacks?.onLongSleepWake?.();
+            await client.recreateApi();
+            return apiCall(fn, description, 0);
+          }
+          const waitTime =
+            classified.retryAfterSeconds != null
+              ? classified.retryAfterSeconds + 1
+              : 60 * (retryCount + 1);
+          callbacks?.onRateLimitWait?.(waitTime);
+          await abortableSleep(waitTime * 1000, client);
+          return apiCall(fn, description, retryCount + 1);
+        }
+
+        default: {
           callbacks?.onError?.(description, err);
           return { success: false, error: err };
         }
-        await abortableSleep(5000 * (retryCount + 1), client);
-        return apiCall(fn, description, retryCount + 1);
       }
-
-      // Network errors → retry with growing delay
-      if (isNetworkError(err)) {
-        if (retryCount >= 10) {
-          callbacks?.onError?.(description, err);
-          return { success: false, error: err };
-        }
-        callbacks?.onNetworkRetry?.(retryCount + 1, 10);
-        await abortableSleep(10000 * (retryCount + 1), client);
-        return apiCall(fn, description, retryCount + 1);
-      }
-
-      // Rate limit → backoff, then long sleep after 5 failures
-      if (isRateLimitError(err)) {
-        pacer?.onRateLimit();
-        if (retryCount >= 5) {
-          state.longSleepCount++;
-          const sleepHours = 1 + state.longSleepCount;
-          const sleepMs = sleepHours * 60 * 60 * 1000;
-          const wakeTime = new Date(Date.now() + sleepMs);
-          callbacks?.onLongSleep?.(sleepHours, wakeTime);
-          await abortableSleep(sleepMs, client);
-          callbacks?.onLongSleepWake?.();
-          await client.recreateApi();
-          return apiCall(fn, description, 0);
-        }
-        const retryAfter = getRetryAfterSeconds(err);
-        const waitTime =
-          retryAfter !== null
-            ? retryAfter + 1 // Spotify's value + 1s buffer
-            : 60 * (retryCount + 1); // fallback when header missing
-        callbacks?.onRateLimitWait?.(waitTime);
-        await abortableSleep(waitTime * 1000, client);
-        return apiCall(fn, description, retryCount + 1);
-      }
-
-      // Other errors
-      callbacks?.onError?.(description, err);
-      return { success: false, error: err };
     }
   }
 

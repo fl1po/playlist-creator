@@ -1,7 +1,5 @@
 import { FileConfigStore } from '../lib/config.js';
-import { RequestPacer } from '../lib/request-pacer.js';
-import { createSpotifyClient } from '../lib/spotify-client.js';
-import { createSpotifyContext } from '../lib/spotify-context.js';
+import { spotifyContext } from '../lib/spotify-context.js';
 import { PlaylistClearerService } from '../services/playlist-clearer.js';
 
 const targetName = process.argv[2];
@@ -10,11 +8,7 @@ if (!targetName) {
   process.exit(1);
 }
 
-const configStore = new FileConfigStore();
-const client = createSpotifyClient({ configStore });
-
-const pacer = new RequestPacer(1);
-const ctx = createSpotifyContext(client, undefined, pacer);
+const ctx = spotifyContext({ configStore: new FileConfigStore() });
 
 const service = new PlaylistClearerService(ctx, {
   onPlaylistFound: (name, count) =>

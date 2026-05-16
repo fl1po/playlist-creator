@@ -3,10 +3,11 @@ import {
   type ScoringWeights,
   computeArtistData,
 } from '../domain/artists.js';
-import { getPlaylistTracksWithPositions } from '../lib/pagination.js';
+import { getLikedTracksWithPositions, getPlaylistTracksWithPositions } from '../lib/pagination.js';
 import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
 import type { ArtistData, TrustedArtistsFile } from '../lib/types.js';
+import { secondarySourceName } from '../lib/user-config.js';
 
 // ── Events ──────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,7 @@ export interface PriorityStats {
 export interface PriorityCalculatorOptions {
   allWeeklyId?: string;
   bestOfAllWeeklyId?: string;
+  useLikedSongs?: boolean;
   scoringWeights?: ScoringWeights;
   priorityThresholds?: PriorityThresholds;
 }
@@ -57,30 +59,27 @@ export class PriorityCalculatorService {
       allWeeklyId: options?.allWeeklyId ?? DEFAULTS.allWeeklyId,
       bestOfAllWeeklyId:
         options?.bestOfAllWeeklyId ?? DEFAULTS.bestOfAllWeeklyId,
+      useLikedSongs: options?.useLikedSongs ?? false,
       scoringWeights: options?.scoringWeights,
       priorityThresholds: options?.priorityThresholds,
     } as Required<PriorityCalculatorOptions>;
   }
 
   async run(): Promise<TrustedArtistsFile> {
-    // Scan both playlists
+    const progressFor = (name: string) => (fetched: number, total: number) =>
+      this.emitter.emit('scanProgress', name, fetched, total);
+
     this.emitter.emit('scanStart', 'All Weekly');
     const { artistData: awData, totalTracks: awTotal } =
-      await getPlaylistTracksWithPositions(this.ctx, this.opts.allWeeklyId);
+      await getPlaylistTracksWithPositions(this.ctx, this.opts.allWeeklyId, progressFor('All Weekly'));
     this.emitter.emit('scanComplete', 'All Weekly', awData.size, awTotal);
 
-    this.emitter.emit('scanStart', 'Best of All Weekly');
-    const { artistData: boawData, totalTracks: boawTotal } =
-      await getPlaylistTracksWithPositions(
-        this.ctx,
-        this.opts.bestOfAllWeeklyId,
-      );
-    this.emitter.emit(
-      'scanComplete',
-      'Best of All Weekly',
-      boawData.size,
-      boawTotal,
-    );
+    const boawSourceName = secondarySourceName({ sourcePlaylists: { useLikedSongs: this.opts.useLikedSongs } });
+    this.emitter.emit('scanStart', boawSourceName);
+    const { artistData: boawData, totalTracks: boawTotal } = this.opts.useLikedSongs
+      ? await getLikedTracksWithPositions(this.ctx, progressFor(boawSourceName))
+      : await getPlaylistTracksWithPositions(this.ctx, this.opts.bestOfAllWeeklyId, progressFor(boawSourceName));
+    this.emitter.emit('scanComplete', boawSourceName, boawData.size, boawTotal);
 
     // Combine all unique artists
     const allArtists = new Set([...awData.keys(), ...boawData.keys()]);
@@ -141,8 +140,7 @@ export class PriorityCalculatorService {
     const today = new Date().toISOString().split('T')[0];
     const output: TrustedArtistsFile = {
       metadata: {
-        source:
-          'Dynamic priority calculation from All Weekly + Best of All Weekly',
+        source: `Dynamic priority calculation from All Weekly + ${boawSourceName}`,
         lastFullAnalysis: today,
         playlists: {
           allWeekly: {

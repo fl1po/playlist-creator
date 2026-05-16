@@ -54,6 +54,17 @@
   button.danger { background: #e74c3c; }
 
   .hint { font-size: 12px; color: #666; margin-top: 8px; line-height: 1.4; }
+
+  .tip {
+    position: relative; cursor: help; border-bottom: 1px dotted #555;
+  }
+  .tip::after {
+    content: attr(data-tip); position: absolute; bottom: 100%; left: 50%;
+    transform: translateX(-50%); padding: 4px 8px; background: #333;
+    color: #e0e0e0; font-size: 12px; white-space: nowrap; border-radius: 4px;
+    pointer-events: none; opacity: 0;
+  }
+  .tip:hover::after { opacity: 1; }
   button.danger:hover { background: #c0392b; }
 
   input[type="text"] {
@@ -447,7 +458,7 @@
       <div class="card-row">
         <button id="recalcBtn" onclick="startRecalc()">Recalculate</button>
       </div>
-      <p class="hint">Scan All Weekly and Best of All Weekly playlists to recalculate artist scores and priority tiers (P1-P4).</p>
+      <p class="hint" id="recalcHint">Scan All Weekly and Best of All Weekly playlists to recalculate artist scores and priority tiers (P1-P4).</p>
       <div class="progress-bar" id="recalcProgress"><div class="fill" id="recalcProgressFill"></div></div>
       <div class="progress-text" id="recalcProgressText"></div>
     </div>
@@ -458,6 +469,7 @@
       <div class="card-row">
         <input type="text" id="artistQuery" placeholder="Artist name..." onkeydown="if(event.key==='Enter')findArtist()">
         <button id="findArtistBtn" onclick="findArtist()">Search</button>
+        <button id="clearArtistBtn" class="secondary" style="display:none" onclick="clearArtistResults()">Clear</button>
       </div>
       <p class="hint">Look up an artist's priority, score, popularity, and playlist stats. Searches by partial name match.</p>
       <div class="results" id="artistResults"></div>
@@ -488,10 +500,19 @@
       <h2>Listening Time</h2>
       <div class="card-row">
         <button id="listeningTimeBtn" onclick="calcListeningTime()">Calculate</button>
+        <label class="toggle"><input type="checkbox" id="ltForceRecalc"> Force</label>
       </div>
       <p class="hint">Calculate total listening time of non-listened weekly playlists.</p>
       <p id="ltProgressText" class="progress-text"></p>
       <div id="ltResult" style="display:none; margin-top:8px; font-weight:600;"></div>
+      <div id="ltCatchup" style="display:none; margin-top:10px; font-size:13px; color:#b3b3b3;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+          <label style="font-size:12px;">Budget:</label>
+          <input type="number" id="ltBudgetHours" min="1" step="1" value="15" style="width:50px; background:#282828; border:1px solid #383838; border-radius:4px; color:#e0e0e0; padding:2px 6px; font-size:13px;">
+          <span style="font-size:12px;">h/week</span>
+        </div>
+        <div id="ltCatchupText"></div>
+      </div>
       <button id="ltExpandBtn" class="secondary" style="display:none; margin-top:6px; font-size:12px;" onclick="toggleLtBreakdown()">Show breakdown</button>
       <div id="ltBreakdown" style="display:none; margin-top:8px;">
         <table id="ltBreakdownTable">
@@ -519,7 +540,7 @@
   <!-- AW Breakdown Table (full width, outside grid) -->
   <div id="awBreakdown" style="display:none; margin-bottom:24px; overflow-x:auto;">
     <table id="awBreakdownTable" style="width:100%;">
-      <thead><tr><th style="text-align:left">Week</th><th style="text-align:left">Added</th><th style="text-align:right">Tracks</th><th style="text-align:right">Duration</th><th style="text-align:right">Repeat Artists</th><th style="text-align:right">Repeat Tracks</th><th style="text-align:left">Frequent Artists (3+)</th></tr></thead>
+      <thead><tr><th style="text-align:left">Week</th><th style="text-align:left">Added</th><th style="text-align:right">Tracks</th><th style="text-align:right">Duration</th><th style="text-align:right">Albums</th><th style="text-align:right">Album Tracks</th><th style="text-align:left">Frequent Artists (3+)</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -549,7 +570,7 @@
     </div>
     <div class="artist-table-wrap" id="artistTableWrap">
       <table>
-        <thead><tr><th>Name</th><th>Priority</th><th>Score</th><th>AW</th><th>BoAW</th></tr></thead>
+        <thead><tr><th>Name</th><th>Priority</th><th>Score</th><th>AW</th><th id="boawColHeader">BoAW</th></tr></thead>
         <tbody id="artistTableBody"></tbody>
       </table>
     </div>
@@ -613,13 +634,22 @@
         <input type="text" id="cfgAwId" style="font-family:monospace;font-size:11px;color:#666" readonly>
       </div>
       <div class="settings-row">
-        <label>Best of AW</label>
-        <input type="text" id="cfgBoawName" readonly placeholder="Not set">
-        <button class="pick-btn" onclick="pickPlaylist('boaw')">Change</button>
+        <label>Secondary Source</label>
+        <select id="cfgBoawSource" onchange="toggleBoawSource()" style="max-width:180px;">
+          <option value="playlist">BoAW Playlist</option>
+          <option value="liked">Liked Songs</option>
+        </select>
       </div>
-      <div class="settings-row">
-        <label style="display:none">ID</label>
-        <input type="text" id="cfgBoawId" style="font-family:monospace;font-size:11px;color:#666" readonly>
+      <div id="boawPlaylistRows">
+        <div class="settings-row">
+          <label>Best of AW</label>
+          <input type="text" id="cfgBoawName" readonly placeholder="Not set">
+          <button class="pick-btn" onclick="pickPlaylist('boaw')">Change</button>
+        </div>
+        <div class="settings-row">
+          <label style="display:none">ID</label>
+          <input type="text" id="cfgBoawId" style="font-family:monospace;font-size:11px;color:#666" readonly>
+        </div>
       </div>
     </div>
 
@@ -667,7 +697,7 @@
         <input type="number" id="cfgAwWeight" min="1" step="1" style="max-width:80px;">
       </div>
       <div class="settings-row">
-        <label>BoAW Weight</label>
+        <label id="boawWeightLabel">BoAW Weight</label>
         <input type="number" id="cfgBoawWeight" min="1" step="1" style="max-width:80px;">
       </div>
       <div class="settings-row">
@@ -1182,7 +1212,6 @@ async function findArtist() {
   container.innerHTML = '';
   container.classList.remove('visible');
   searchPending = true;
-  log('info', `Searching for "${query}"...`);
   const res = await api('POST', '/api/find-artist', { query });
   searchPending = false;
   if (res.error) {
@@ -1191,19 +1220,29 @@ async function findArtist() {
   }
   if (res.results?.length) {
     container.classList.add('visible');
+    document.getElementById('clearArtistBtn').style.display = '';
+    const sl = secondaryLabel();
     for (const r of res.results) {
       const div = document.createElement('div');
       div.className = 'result-item';
       const pLabel = r.data.priority ? `P${r.data.priority}` : 'N/A';
       const rankStr = r.priorityRank ? ` #${r.priorityRank}/${r.priorityGroupSize}` : '';
       div.innerHTML = `<div class="name">${esc(r.name)}</div>
-        <div class="meta">${pLabel}${rankStr} &middot; Score: ${r.data.score} &middot; AW: ${r.data.allWeekly} &middot; BoAW: ${r.data.bestOfAllWeekly}</div>
-        <div class="meta">Recency: AW +${r.data.recencyBonusAW} &middot; BoAW +${r.data.recencyBonusBoAW}</div>`;
+        <div class="meta">${pLabel}${rankStr} &middot; Score: ${r.data.score} &middot; AW: ${r.data.allWeekly} &middot; ${sl}: ${r.data.bestOfAllWeekly}</div>
+        <div class="meta">Recency: AW +${r.data.recencyBonusAW} &middot; ${sl} +${r.data.recencyBonusBoAW}</div>`;
       container.appendChild(div);
     }
   } else {
     log('warn', `No results for "${query}"`);
   }
+}
+
+function clearArtistResults() {
+  const container = document.getElementById('artistResults');
+  container.innerHTML = '';
+  container.classList.remove('visible');
+  document.getElementById('clearArtistBtn').style.display = 'none';
+  document.getElementById('artistQuery').value = '';
 }
 
 async function clearPlaylist() {
@@ -1269,6 +1308,9 @@ function showListeningTimeResult(data) {
     expandBtn.style.display = 'none';
     breakdown.style.display = 'none';
   }
+
+  _ltData = data;
+  updateCatchupEstimate();
 }
 
 function toggleLtBreakdown() {
@@ -1279,6 +1321,56 @@ function toggleLtBreakdown() {
   btn.textContent = visible ? 'Show breakdown' : 'Hide breakdown';
 }
 
+// ── Catchup Estimate ──────────────────────────────────────────────
+let _ltData = null;
+let _awData = null;
+
+async function updateCatchupEstimate() {
+  if (!_ltData || _ltData.playlistCount === 0) return;
+  const catchupEl = document.getElementById('ltCatchup');
+  const textEl = document.getElementById('ltCatchupText');
+  const budgetInput = document.getElementById('ltBudgetHours');
+
+  // Load AW breakdown if not cached
+  if (!_awData) {
+    const res = await api('GET', '/api/aw-breakdown');
+    if (res.ok && res.weekCount > 0) _awData = res;
+  }
+
+  const budgetHours = parseFloat(budgetInput.value) || 15;
+  const budgetMs = budgetHours * 3600000;
+  const avgWeeklyMs = _ltData.totalMs / _ltData.playlistCount;
+
+  let overheadRate = 0;
+  if (_awData && _awData.weekCount > 0) {
+    const avgAwWeekMs = _awData.totalDurationMs / _awData.weekCount;
+    overheadRate = avgAwWeekMs / avgWeeklyMs;
+  }
+
+  const netReductionMs = budgetMs - avgWeeklyMs;
+
+  catchupEl.style.display = 'block';
+
+  if (netReductionMs <= 0) {
+    textEl.innerHTML = `<span style="color:#e74c3c">Cannot catch up at ${budgetHours}h/week — avg weekly playlist is ${formatDuration(avgWeeklyMs)}</span>`;
+    return;
+  }
+
+  const weeks = _ltData.totalMs / netReductionMs;
+  const days = Math.ceil(weeks * 7);
+  const awExtra = overheadRate > 0 ? ` · +${formatDuration(_ltData.totalMs * overheadRate)} AW trimming` : '';
+
+  textEl.innerHTML = `~<strong>${Math.ceil(weeks)} weeks</strong> (${days} days) to catch up · ${formatDuration(budgetMs)}/week budget · avg weekly ${formatDuration(avgWeeklyMs)}${awExtra}`;
+}
+
+document.getElementById('ltBudgetHours').addEventListener('change', async function() {
+  const val = parseFloat(this.value) || 15;
+  updateCatchupEstimate();
+  if (!currentConfig || currentConfig.weeklyListeningBudget === val) return;
+  currentConfig.weeklyListeningBudget = val;
+  await api('PUT', '/api/config', currentConfig);
+});
+
 async function loadListeningTime() {
   const res = await api('GET', '/api/listening-time');
   if (res.ok) showListeningTimeResult(res);
@@ -1287,7 +1379,8 @@ async function loadListeningTime() {
 async function calcListeningTime() {
   document.getElementById('ltResult').style.display = 'none';
   shouldScrollToLog = true;
-  const res = await api('POST', '/api/listening-time');
+  const force = document.getElementById('ltForceRecalc').checked;
+  const res = await api('POST', '/api/listening-time', { force });
   if (!res.ok) log('error', res.error || 'Failed to start listening time calculation');
 }
 
@@ -1307,14 +1400,21 @@ function showAwBreakdownResult(data) {
     tbody.innerHTML = '';
     for (const w of data.weeks) {
       const tr = document.createElement('tr');
-      const freq = (w.frequentArtists || []).join(', ');
-      tr.innerHTML = `<td>${w.date}</td><td>${w.addedAt || ''}</td><td style="text-align:right">${w.trackCount}</td><td style="text-align:right">${formatDuration(w.durationMs)}</td><td style="text-align:right">${w.repeatArtists}</td><td style="text-align:right">${w.repeatArtistTracks}</td><td style="font-size:12px;color:#b3b3b3">${freq}</td>`;
+      const freq = (w.frequentArtists || []).map(a => {
+        const label = typeof a === 'string' ? a : a.label;
+        const album = typeof a === 'string' ? '' : (a.album || '');
+        return album ? `<span class="tip" data-tip="${esc(album)}">${esc(label)}</span>` : esc(label);
+      }).join(', ');
+      tr.innerHTML = `<td>${w.date}</td><td>${w.addedAt || ''}</td><td style="text-align:right">${w.trackCount}</td><td style="text-align:right">${formatDuration(w.durationMs)}</td><td style="text-align:right">${w.albumCount}</td><td style="text-align:right">${w.albumTracks}</td><td style="font-size:12px;color:#b3b3b3">${freq}</td>`;
       tbody.appendChild(tr);
     }
   } else {
     expandBtn.style.display = 'none';
     breakdown.style.display = 'none';
   }
+
+  _awData = data;
+  updateCatchupEstimate();
 }
 
 function toggleAwBreakdown() {
@@ -1353,7 +1453,8 @@ async function loadArtists() {
     if (searchedArtists.has(a.name)) tr.classList.add('artist-searched');
     if (currentSearchArtist === a.name) { tr.classList.remove('artist-searched'); tr.classList.add('artist-active'); }
     const pClass = a.priority <= 3 ? `p${a.priority}` : '';
-    const scoreTooltip = `(AW ${a.allWeekly} × 2) + (BoAW ${a.bestOfAllWeekly} × 3) + recency AW +${a.recencyBonusAW} + recency BoAW +${a.recencyBonusBoAW} = ${a.score}`;
+    const sl = secondaryLabel();
+    const scoreTooltip = `(AW ${a.allWeekly} × 2) + (${sl} ${a.bestOfAllWeekly} × 3) + recency AW +${a.recencyBonusAW} + recency ${sl} +${a.recencyBonusBoAW} = ${a.score}`;
     const awTooltip = `Count: ${a.allWeekly}\nLatest position: ${a.latestPositionAW || '—'}\nRecency bonus: +${a.recencyBonusAW}`;
     const boawTooltip = `Count: ${a.bestOfAllWeekly}\nLatest position: ${a.latestPositionBoAW || '—'}\nRecency bonus: +${a.recencyBonusBoAW}`;
     tr.innerHTML = `<td>${esc(a.name)}</td>
@@ -1478,6 +1579,23 @@ async function api(method, url, body) {
   }
 }
 
+function secondaryLabel() {
+  return currentConfig?.sourcePlaylists?.useLikedSongs ? 'Liked' : 'BoAW';
+}
+
+function toggleBoawSource() {
+  const isLiked = document.getElementById('cfgBoawSource').value === 'liked';
+  document.getElementById('boawPlaylistRows').style.display = isLiked ? 'none' : '';
+}
+
+function updateSecondaryLabels() {
+  const sl = secondaryLabel();
+  const el = (id) => document.getElementById(id);
+  if (el('boawColHeader')) el('boawColHeader').textContent = sl;
+  if (el('boawWeightLabel')) el('boawWeightLabel').textContent = sl + ' Weight';
+  if (el('recalcHint')) el('recalcHint').textContent = `Scan All Weekly and ${currentConfig?.sourcePlaylists?.useLikedSongs ? 'Liked Songs' : 'Best of All Weekly'} playlists to recalculate artist scores and priority tiers (P1-P4).`;
+}
+
 // ── Settings ─────────────────────────────────────────────────────
 let currentConfig = null;
 let cachedPlaylists = null;
@@ -1492,6 +1610,9 @@ async function loadConfig() {
     currentConfig = res.config;
     configLoaded = true;
     populateSettings(currentConfig);
+    if (currentConfig.weeklyListeningBudget) {
+      document.getElementById('ltBudgetHours').value = currentConfig.weeklyListeningBudget;
+    }
     if (!res.configured) {
       document.getElementById('settingsOverlay').classList.remove('hidden');
       document.getElementById('welcomeBanner').classList.remove('hidden');
@@ -1518,6 +1639,9 @@ function populateSettings(cfg) {
   document.getElementById('cfgAwId').value = cfg.sourcePlaylists.allWeeklyId || '';
   document.getElementById('cfgBoawName').value = cfg.sourcePlaylists.bestOfAllWeeklyName || '';
   document.getElementById('cfgBoawId').value = cfg.sourcePlaylists.bestOfAllWeeklyId || '';
+  document.getElementById('cfgBoawSource').value = cfg.sourcePlaylists.useLikedSongs ? 'liked' : 'playlist';
+  toggleBoawSource();
+  updateSecondaryLabels();
 
   // Editorial playlists
   renderEditorialList(cfg.editorialPlaylists);
@@ -1574,6 +1698,7 @@ function collectSettings() {
       allWeeklyName: document.getElementById('cfgAwName').value.trim(),
       bestOfAllWeeklyId: document.getElementById('cfgBoawId').value.trim(),
       bestOfAllWeeklyName: document.getElementById('cfgBoawName').value.trim(),
+      useLikedSongs: document.getElementById('cfgBoawSource').value === 'liked',
     },
     editorialPlaylists: getEditorial(),
     externalPlaylistSources: getExtSources(),
@@ -1887,7 +2012,7 @@ function renderStats(stats) {
     metric('Total Artists', o.totalArtists.toLocaleString()),
     metric('Last Analysis', analysisDate),
     metric('AW Tracks', o.awTrackCount.toLocaleString()),
-    metric('BoAW Tracks', o.boawTrackCount.toLocaleString()),
+    metric((currentConfig?.sourcePlaylists?.useLikedSongs ? 'Liked' : 'BoAW') + ' Tracks', o.boawTrackCount.toLocaleString()),
   ].join('');
 
   // Fill history

@@ -1,24 +1,29 @@
 import fs from 'node:fs';
 import { FileConfigStore } from '../lib/config.js';
-import { RequestPacer } from '../lib/request-pacer.js';
-import { createSpotifyClient } from '../lib/spotify-client.js';
-import { createSpotifyContext } from '../lib/spotify-context.js';
+import { spotifyContext } from '../lib/spotify-context.js';
+import { UserConfigStore, secondaryLabel } from '../lib/user-config.js';
 import { PriorityCalculatorService } from '../services/priority-calculator.js';
 
-const configStore = new FileConfigStore();
-const client = createSpotifyClient({ configStore });
-
-const pacer = new RequestPacer(1);
-const ctx = createSpotifyContext(client, undefined, pacer);
+const ctx = spotifyContext({ configStore: new FileConfigStore() });
+const userConfig = new UserConfigStore().load();
+const sl = secondaryLabel(userConfig);
 
 const service = new PriorityCalculatorService(
   ctx,
-  {},
+  {
+    allWeeklyId: userConfig.sourcePlaylists.allWeeklyId,
+    bestOfAllWeeklyId: userConfig.sourcePlaylists.bestOfAllWeeklyId,
+    useLikedSongs: userConfig.sourcePlaylists.useLikedSongs,
+    scoringWeights: userConfig.scoring,
+    priorityThresholds: userConfig.scoring.priorityThresholds,
+  },
   {
     onScanStart: (name) => console.log(`\nScanning ${name}...`),
+    onScanProgress: (_name, offset, total) =>
+      process.stdout.write(`\r  Fetched ${offset}/${total} tracks`),
     onScanComplete: (_name, artistCount, trackCount) =>
       console.log(
-        `  Found ${artistCount} unique artists in ${trackCount} tracks`,
+        `\n  Found ${artistCount} unique artists in ${trackCount} tracks`,
       ),
     onCalculationComplete: (stats) => {
       console.log('\n=== Priority Distribution ===');
@@ -31,7 +36,7 @@ const service = new PriorityCalculatorService(
       console.log('\n=== Top 30 Artists ===');
       for (const [name, data] of artists) {
         console.log(
-          `P${data.priority} [${data.score}] ${name} - AW:${data.allWeekly} BoAW:${data.bestOfAllWeekly} (recAW:+${data.recencyBonusAW} recBoAW:+${data.recencyBonusBoAW})`,
+          `P${data.priority} [${data.score}] ${name} - AW:${data.allWeekly} ${sl}:${data.bestOfAllWeekly} (recAW:+${data.recencyBonusAW} rec${sl}:+${data.recencyBonusBoAW})`,
         );
       }
     },
