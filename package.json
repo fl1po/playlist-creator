@@ -19,7 +19,13 @@
   "files": [
     "build"
   ],
-  "keywords": ["spotify", "playlist", "automation", "music", "new-releases"],
+  "keywords": [
+    "spotify",
+    "playlist",
+    "automation",
+    "music",
+    "new-releases"
+  ],
   "author": "Igor Mitryakov",
   "license": "MIT",
   "repository": {
@@ -29,14 +35,15 @@
   "description": "Automated weekly playlist generation driven by your listening history",
   "dependencies": {
     "@spotify/web-api-ts-sdk": "^1.2.0",
-    "express": "^5.2.1",
-    "ws": "^8.19.0"
+    "@upstash/redis": "^1.38.0",
+    "compression": "^1.8.1",
+    "express": "^5.2.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
+    "@types/compression": "^1.8.1",
     "@types/express": "^5.0.6",
     "@types/node": "^22.13.8",
-    "@types/ws": "^8.18.1",
     "typescript": "^5.8.2"
   }
 }

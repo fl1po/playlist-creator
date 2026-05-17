@@ -747,8 +747,18 @@
 </div>
 
 <script>
+// ── Client Storage ──────────────────────────────────────────────
+const Store = {
+  get(key) { try { return JSON.parse(localStorage.getItem(`sp_${key}`)); } catch { return null; } },
+  set(key, val) { localStorage.setItem(`sp_${key}`, JSON.stringify(val)); },
+  remove(key) { localStorage.removeItem(`sp_${key}`); },
+  getTokens() { return this.get('tokens'); },
+  setTokens(t) { this.set('tokens', t); },
+  getUserId() { return this.get('userId'); },
+  setUserId(id) { this.set('userId', id); },
+};
+
 // ── State ────────────────────────────────────────────────────────
-let ws;
 let activeFilters = new Set([1, 2]);
 let busy = false;
 let wsConnected = false;
@@ -822,29 +832,26 @@ function updateFillProgress() {
   txt.textContent = `Overall: ${currentDate}/${totalDates} dates`;
 }
 
-// ── WebSocket ────────────────────────────────────────────────────
+// ── SSE Connection ──────────────────────────────────────────────
 function connect() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}`);
+  const es = new EventSource('/api/events');
 
-  ws.onopen = () => {
+  es.onopen = () => {
     wsConnected = true;
     document.getElementById('statusDot').className = 'status-dot connected';
     document.getElementById('statusText').textContent = 'Connected';
     updateButtons();
-    log('success', 'WebSocket connected');
+    log('success', 'Connected');
   };
 
-  ws.onclose = () => {
+  es.onerror = () => {
     wsConnected = false;
     document.getElementById('statusDot').className = 'status-dot error';
     document.getElementById('statusText').textContent = 'Disconnected';
     updateButtons();
-    log('warn', 'WebSocket disconnected — reconnecting in 3s...');
-    setTimeout(connect, 3000);
   };
 
-  ws.onmessage = (e) => {
+  es.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     handleMessage(msg);
   };
@@ -1077,8 +1084,15 @@ function handleMessage({ type, data }) {
 
     // Auth
     case 'auth':
-      if (data.authenticated && data.token) {
-        // Exchange token for cookie on our origin, close popup, reload
+      if (data.authenticated && data.credentials) {
+        // Store credentials in localStorage (Bearer auth mode)
+        Store.setTokens({ accessToken: data.credentials.accessToken, refreshToken: data.credentials.refreshToken });
+        Store.setUserId(data.credentials.userId);
+        if (authPopup && !authPopup.closed) authPopup.close();
+        authPopup = null;
+        location.reload();
+      } else if (data.authenticated && data.token) {
+        // Fallback: exchange token for cookie (legacy mode)
         fetch(`/api/auth/complete?token=${encodeURIComponent(data.token)}`)
           .finally(() => {
             if (authPopup && !authPopup.closed) authPopup.close();
@@ -1100,6 +1114,13 @@ function handleMessage({ type, data }) {
       }
       break;
 
+    // Data persistence (server -> client localStorage)
+    case 'data:save':
+      if (data.key && data.value !== undefined) {
+        Store.set(data.key, data.value);
+      }
+      break;
+
     case 'reload':
       location.reload();
       break;
@@ -1110,13 +1131,19 @@ function handleMessage({ type, data }) {
 async function startFill() {
   shouldScrollToLog = true;
   const fresh = document.getElementById('freshToggle').checked;
-  const res = await api('POST', '/api/fill', { fresh });
+  const caches = {};
+  const ta = Store.get('trustedArtists'); if (ta) caches.trustedArtists = ta;
+  const bc = Store.get('batchCache'); if (bc) caches.batchCache = bc;
+  const fh = Store.get('fillHistory'); if (fh) caches.fillHistory = fh;
+  const res = await api('POST', '/api/fill', { fresh, caches });
   if (!res.ok) log('error', res.error || 'Failed to start fill');
 }
 
 async function startRecalc() {
   shouldScrollToLog = true;
-  const res = await api('POST', '/api/recalculate');
+  const caches = {};
+  const ta = Store.get('trustedArtists'); if (ta) caches.trustedArtists = ta;
+  const res = await api('POST', '/api/recalculate', { caches });
   if (!res.ok) log('error', res.error || 'Failed to start recalculation');
 }
 
@@ -1195,10 +1222,26 @@ async function checkAuth() {
   document.getElementById('authConnectBtn').style.display = 'none';
   const res = await api('GET', '/api/auth/status');
   setAuthenticated(res.authenticated, res.displayName, res.reason);
+  if (res.authenticated) await migrateDataToLocalStorage();
+}
+
+async function migrateDataToLocalStorage() {
+  // Skip if we already have data locally
+  if (Store.get('trustedArtists')) return;
+  const res = await api('GET', '/api/export-data');
+  if (!res.ok) return;
+  const keys = ['trustedArtists', 'batchCache', 'fillHistory', 'durationSnapshots', 'listeningTime', 'awBreakdown'];
+  let migrated = 0;
+  for (const key of keys) {
+    if (res[key]) { Store.set(key, res[key]); migrated++; }
+  }
+  if (migrated > 0) log('success', `Migrated ${migrated} data files to local storage`);
 }
 
 async function logout() {
   await api('POST', '/api/logout');
+  Store.remove('tokens');
+  Store.remove('userId');
   setAuthenticated(false, null, 'no_session');
 }
 
@@ -1372,6 +1415,9 @@ document.getElementById('ltBudgetHours').addEventListener('change', async functi
 });
 
 async function loadListeningTime() {
+  // Try localStorage first, then server
+  const cached = Store.get('listeningTime');
+  if (cached) { showListeningTimeResult(cached); return; }
   const res = await api('GET', '/api/listening-time');
   if (res.ok) showListeningTimeResult(res);
 }
@@ -1380,7 +1426,9 @@ async function calcListeningTime() {
   document.getElementById('ltResult').style.display = 'none';
   shouldScrollToLog = true;
   const force = document.getElementById('ltForceRecalc').checked;
-  const res = await api('POST', '/api/listening-time', { force });
+  const caches = {};
+  const ds = Store.get('durationSnapshots'); if (ds) caches.durationSnapshots = ds;
+  const res = await api('POST', '/api/listening-time', { force, caches });
   if (!res.ok) log('error', res.error || 'Failed to start listening time calculation');
 }
 
@@ -1426,6 +1474,9 @@ function toggleAwBreakdown() {
 }
 
 async function loadAwBreakdown() {
+  // Try localStorage first, then server
+  const cached = Store.get('awBreakdown');
+  if (cached) { showAwBreakdownResult(cached); return; }
   const res = await api('GET', '/api/aw-breakdown');
   if (res.ok) showAwBreakdownResult(res);
 }
@@ -1434,7 +1485,9 @@ async function calcAwBreakdown() {
   document.getElementById('awResult').style.display = 'none';
   shouldScrollToLog = true;
   const force = document.getElementById('awForceRecalc').checked;
-  const res = await api('POST', '/api/aw-breakdown', { force });
+  const caches = {};
+  const ab = Store.get('awBreakdown'); if (ab) caches.awBreakdown = ab;
+  const res = await api('POST', '/api/aw-breakdown', { force, caches });
   if (!res.ok) log('error', res.error || 'Failed to start AW breakdown calculation');
 }
 
@@ -1564,6 +1617,17 @@ function esc(s) {
 async function api(method, url, body) {
   try {
     const opts = { method, headers: {} };
+    // Add Bearer auth if we have tokens
+    const tokens = Store.getTokens();
+    if (tokens?.accessToken) {
+      opts.headers['Authorization'] = `Bearer ${tokens.accessToken}`;
+      const userId = Store.getUserId();
+      if (userId) opts.headers['X-User-Id'] = userId;
+      // Include refreshToken in POST bodies
+      if (method === 'POST' && body) {
+        body = { ...body, refreshToken: tokens.refreshToken };
+      }
+    }
     if (body) {
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(body);

@@ -1,14 +1,14 @@
+import type { Response } from 'express';
 import type { EventMap, EventHandlers } from '../lib/service-events.js';
-import type { WebSocket } from 'ws';
 
 export interface Broadcaster {
   broadcast(type: string, data: unknown): void;
   addClient(
-    ws: WebSocket,
+    res: Response,
     currentTask: string | null,
     searchedArtists: ReadonlySet<string>,
   ): void;
-  removeClient(ws: WebSocket): void;
+  removeClient(res: Response): void;
   clearHistory(): void;
 }
 
@@ -25,8 +25,12 @@ const SKIP_HISTORY = new Set([
 ]);
 
 export function createBroadcaster(): Broadcaster {
-  const clients = new Set<WebSocket>();
+  const clients = new Set<Response>();
   const logHistory: string[] = [];
+
+  function send(res: Response, msg: string) {
+    if (!res.writableEnded) res.write(`data: ${msg}\n\n`);
+  }
 
   function broadcast(type: string, data: unknown) {
     const msg = JSON.stringify({ type, data });
@@ -35,37 +39,37 @@ export function createBroadcaster(): Broadcaster {
       if (logHistory.length > MAX_LOG_HISTORY)
         logHistory.splice(0, logHistory.length - MAX_LOG_HISTORY);
     }
-    for (const ws of clients) {
-      if (ws.readyState === ws.OPEN) ws.send(msg);
-    }
+    for (const res of clients) send(res, msg);
   }
 
   function addClient(
-    ws: WebSocket,
+    res: Response,
     currentTask: string | null,
     searchedArtists: ReadonlySet<string>,
   ) {
-    clients.add(ws);
-    ws.send(
+    clients.add(res);
+    send(
+      res,
       JSON.stringify({
         type: 'status',
         data: { busy: !!currentTask, task: currentTask },
       }),
     );
     if (searchedArtists.size > 0) {
-      ws.send(
+      send(
+        res,
         JSON.stringify({
           type: 'fill:searchedArtists',
           data: [...searchedArtists],
         }),
       );
     }
-    for (const msg of logHistory) ws.send(msg);
-    ws.on('close', () => clients.delete(ws));
+    for (const msg of logHistory) send(res, msg);
+    res.on('close', () => clients.delete(res));
   }
 
-  function removeClient(ws: WebSocket) {
-    clients.delete(ws);
+  function removeClient(res: Response) {
+    clients.delete(res);
   }
 
   function clearHistory() {

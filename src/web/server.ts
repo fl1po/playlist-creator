@@ -1,16 +1,15 @@
 import fs from 'node:fs';
-import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import compression from 'compression';
 import express from 'express';
-import { WebSocketServer } from 'ws';
-import { AppConfigStore, UserTokenStore } from '../lib/config.js';
+import { UserTokenStore, createAppConfigStore } from '../lib/config.js';
 import { RequestPacer } from '../lib/request-pacer.js';
 import { createSpotifyContext } from '../lib/spotify-context.js';
 import type { AppConfig } from '../lib/types.js';
 import {
-  PlaylistClearerService,
   type PlaylistClearerEventMap,
+  PlaylistClearerService,
 } from '../services/playlist-clearer.js';
 import { createAuthManager, fetchSpotifyUserId } from './auth.js';
 import { broadcastEvents, createBroadcaster } from './broadcast.js';
@@ -18,12 +17,12 @@ import { createRouteContext } from './route-context.js';
 import { authRoutes } from './routes/auth.js';
 import { configRoutes } from './routes/config.js';
 import { queryRoutes } from './routes/queries.js';
-import { createTaskRunner } from './task-runner.js';
 import { createTaskMutex } from './task-mutex.js';
+import { createTaskRunner } from './task-runner.js';
+import { awBreakdownTask } from './tasks/aw-breakdown.js';
 import { dedupRemoveTask } from './tasks/dedup-remove.js';
 import { dedupScanTask } from './tasks/dedup-scan.js';
 import { fillTask, getSearchedArtists } from './tasks/fill.js';
-import { awBreakdownTask } from './tasks/aw-breakdown.js';
 import { listeningTimeTask } from './tasks/listening-time.js';
 import { recalculateTask } from './tasks/recalculate.js';
 
@@ -36,7 +35,7 @@ const PORT = Number(process.env.PORT ?? 3005);
 // ── Shared singletons ──────────────────────────────────────────────────────
 
 const pacer = new RequestPacer(1);
-const appConfigStore = new AppConfigStore();
+const appConfigStore = createAppConfigStore();
 const broadcaster = createBroadcaster();
 const broadcast = broadcaster.broadcast;
 
@@ -66,20 +65,29 @@ const ctx = createRouteContext({
   port: PORT,
 });
 
-// ── Express + WebSocket ─────────────────────────────────────────────────────
+// ── Express + SSE ───────────────────────────────────────────────────────────
 
 const app = express();
-app.use(express.json());
+app.use(
+  compression({
+    filter: (req) => !req.url.startsWith('/api/events'),
+  }),
+);
+app.use(express.json({ limit: '5mb' }));
 const publicDir = fs.existsSync(path.join(__dirname, '../../src/web/public'))
   ? path.join(__dirname, '../../src/web/public')
   : path.join(__dirname, 'public');
 app.use(express.static(publicDir));
 
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
-
-wss.on('connection', (ws) => {
-  broadcaster.addClient(ws, taskMutex.currentTask, getSearchedArtists());
+app.get('/api/events', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  res.flushHeaders();
+  broadcaster.addClient(res, taskMutex.currentTask, getSearchedArtists());
+  req.on('close', () => broadcaster.removeClient(res));
 });
 
 // ── Mount route modules ─────────────────────────────────────────────────────
@@ -99,6 +107,30 @@ taskRunner.register(listeningTimeTask);
 taskRunner.register(awBreakdownTask);
 
 // ── Simple inline routes ────────────────────────────────────────────────────
+
+// Export all user data for localStorage migration
+app.get('/api/export-data', (req, res) => {
+  const session = ctx.requireSession(req, res);
+  if (!session) return;
+
+  const read = (file: string) => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(session.dataDir, file), 'utf8'));
+    } catch {
+      return null;
+    }
+  };
+
+  res.json({
+    ok: true,
+    trustedArtists: read('trusted-artists.json'),
+    batchCache: read('batch-cache.json'),
+    fillHistory: read('fill-history.json'),
+    durationSnapshots: read('duration-snapshots.json'),
+    listeningTime: read('listening-time-cache.json'),
+    awBreakdown: read('aw-breakdown.json'),
+  });
+});
 
 // Clear playlist (synchronous — no mutex)
 app.post('/api/clear', async (req, res) => {
@@ -170,6 +202,8 @@ app.get('/api/status', (_req, res) => {
 // ── Migration ───────────────────────────────────────────────────────────────
 
 async function migrateFromLegacy() {
+  // Skip migration when running with env-based config (production)
+  if (process.env.SPOTIFY_CLIENT_ID) return;
   if (appConfigStore.exists()) return;
 
   const legacyPath = path.join(PROJECT_ROOT, 'spotify-config.json');
@@ -185,7 +219,9 @@ async function migrateFromLegacy() {
       clientSecret: legacy.clientSecret,
       redirectUri: legacy.redirectUri,
     };
-    appConfigStore.save(appConfig);
+    (appConfigStore as import('../lib/config.js').AppConfigStore).save(
+      appConfig,
+    );
     console.log('  Created data/app-config.json');
 
     const envUserId = process.env.SPOTIFY_USER_ID;
@@ -299,7 +335,7 @@ if (fs.existsSync(srcPublic)) {
 // ── Start ───────────────────────────────────────────────────────────────────
 
 migrateFromLegacy().then(() => {
-  server.listen(PORT, () => {
+  app.listen(PORT, () => {
     console.log(`Dashboard running at http://localhost:${PORT}`);
   });
 });

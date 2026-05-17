@@ -10,7 +10,7 @@ export const dedupScanTask: TaskDefinition = {
   startMessage: 'Dedup scan started',
 
   async run(tc: TaskContext) {
-    const userConfig = tc.userConfigStore.load();
+    const userConfig = await tc.userConfigStore.load();
     const me = await tc.client.api.currentUser.profile();
 
     const { playlists: candidates } = await getNonListenedPlaylists(

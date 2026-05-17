@@ -22,28 +22,35 @@ export const awBreakdownTask: TaskDefinition = {
   startMessage: 'AW breakdown calculation started',
 
   async run(tc: TaskContext) {
-    const userConfig = tc.userConfigStore.load();
+    const userConfig = await tc.userConfigStore.load();
     const awId = userConfig.sourcePlaylists.allWeeklyId;
 
     // Check if AW snapshot changed
     const cachePath = path.join(tc.dataDir, AW_BREAKDOWN_CACHE);
-    let cached: AwBreakdownCache | null = null;
-    try {
-      cached = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
-    } catch {
-      /* no cache yet */
+    let cached: AwBreakdownCache | null =
+      (tc.caches.awBreakdown as AwBreakdownCache) ?? null;
+    if (!cached) {
+      try {
+        cached = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+      } catch {
+        /* no cache yet */
+      }
     }
 
     const awInfo = await tc.ctx.call(
-      () =>
-        tc.ctx.api.playlists.getPlaylist(awId, undefined, 'snapshot_id'),
+      () => tc.ctx.api.playlists.getPlaylist(awId, undefined, 'snapshot_id'),
       'AW playlist info',
     );
     const liveSnapshot = awInfo.success ? awInfo.data.snapshot_id : undefined;
 
     const force = !!tc.body.force;
 
-    if (!force && cached && liveSnapshot && cached.snapshotId === liveSnapshot) {
+    if (
+      !force &&
+      cached &&
+      liveSnapshot &&
+      cached.snapshotId === liveSnapshot
+    ) {
       tc.broadcast('awBreakdown:complete', cached);
       tc.broadcast('log', {
         level: 'success',
@@ -78,7 +85,9 @@ export const awBreakdownTask: TaskDefinition = {
       weeks,
     };
 
+    fs.mkdirSync(tc.dataDir, { recursive: true });
     fs.writeFileSync(cachePath, JSON.stringify(result, null, 2));
+    tc.emitData('awBreakdown', result);
     tc.broadcast('awBreakdown:complete', result);
 
     const avgTracks =

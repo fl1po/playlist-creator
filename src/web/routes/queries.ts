@@ -3,8 +3,8 @@ import path from 'node:path';
 import { Router } from 'express';
 import {
   AW_BREAKDOWN_CACHE,
-  getAllUserPlaylists,
   LISTENING_TIME_CACHE,
+  getAllUserPlaylists,
 } from '../../lib/pagination.js';
 import { createSpotifyContext } from '../../lib/spotify-context.js';
 import type { RouteContext } from '../route-context.js';
@@ -23,7 +23,11 @@ export function queryRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const trusted = ctx.loadTrustedArtists(session.dataDir);
+    // Accept client-provided trusted artists or load from file
+    const trusted = (req.body?.trustedArtists ??
+      ctx.loadTrustedArtists(session.dataDir)) as
+      | import('../../lib/types.js').TrustedArtistsFile
+      | null;
     if (!trusted) {
       res.status(500).json({
         error: 'trusted-artists.json not found — run recalculate first',
@@ -282,7 +286,9 @@ export function queryRoutes(ctx: RouteContext): Router {
       const session = ctx.requireSession(req, res);
       if (!session) return;
       try {
-        const cached = JSON.parse(fs.readFileSync(path.join(session.dataDir, cacheFile), 'utf8'));
+        const cached = JSON.parse(
+          fs.readFileSync(path.join(session.dataDir, cacheFile), 'utf8'),
+        );
         res.json({ ok: true, ...cached });
       } catch {
         res.json({ ok: false });

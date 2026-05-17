@@ -1,9 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { TrustedArtistsFile } from '../../lib/types.js';
 import {
-  PriorityCalculatorService,
   type PriorityCalculatorEventMap,
+  PriorityCalculatorService,
 } from '../../services/priority-calculator.js';
 import { broadcastEvents } from '../broadcast.js';
 import {
@@ -24,7 +23,16 @@ export const recalculateTask: TaskDefinition = {
       message: 'Starting priority recalculation...',
     });
 
-    const userConfig = tc.userConfigStore.load();
+    // Hydrate data dir from client caches
+    if (tc.caches.trustedArtists) {
+      fs.mkdirSync(tc.dataDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(tc.dataDir, 'trusted-artists.json'),
+        JSON.stringify(tc.caches.trustedArtists, null, 2),
+      );
+    }
+
+    const userConfig = await tc.userConfigStore.load();
 
     const service = new PriorityCalculatorService(
       tc.ctx,
@@ -80,10 +88,12 @@ export const recalculateTask: TaskDefinition = {
 
     const changes = diffPriorities(oldPriorities, output);
     changes.sort(
-      (a, b) =>
-        (a.to ?? 99) - (b.to ?? 99) || (a.from ?? 99) - (b.from ?? 99),
+      (a, b) => (a.to ?? 99) - (b.to ?? 99) || (a.from ?? 99) - (b.from ?? 99),
     );
     tc.broadcast('recalc:changes', { changes });
+
+    // Emit updated trusted artists to client
+    tc.emitData('trustedArtists', output);
 
     tc.broadcast('log', {
       level: 'success',

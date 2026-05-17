@@ -13,6 +13,7 @@ export function authRoutes(ctx: RouteContext): Router {
 
   router.get('/api/auth/complete', (req, res) => {
     const token = req.query.token as string;
+    const format = req.query.format as string | undefined;
     if (!token) {
       res.status(400).send('<h1>Missing token</h1>');
       return;
@@ -22,6 +23,19 @@ export function authRoutes(ctx: RouteContext): Router {
       res.status(400).send('<h1>Invalid or expired token</h1>');
       return;
     }
+
+    // JSON format: return tokens for client-side storage (Bearer auth mode)
+    if (format === 'json') {
+      const tokens = ctx.auth.getTokensForUser(userId);
+      if (!tokens) {
+        res.status(500).json({ error: 'Tokens not found' });
+        return;
+      }
+      res.json({ userId, ...tokens });
+      return;
+    }
+
+    // HTML format: set cookie (legacy mode)
     const appConfig = ctx.loadAppConfig();
     setSessionCookie(res, userId, appConfig.clientSecret);
     res.send(
@@ -37,7 +51,36 @@ export function authRoutes(ctx: RouteContext): Router {
       res.json({ authenticated: false, reason: 'no_session' });
       return;
     }
-    const { getSessionUserId } = await import('../session.js');
+
+    const { getBearerToken, getSessionUserId } = await import('../session.js');
+
+    // Try Bearer token first
+    const bearerToken = getBearerToken(req);
+    if (bearerToken) {
+      try {
+        const profileRes = await fetch('https://api.spotify.com/v1/me', {
+          headers: { Authorization: `Bearer ${bearerToken}` },
+        });
+        if (!profileRes.ok) {
+          res.json({ authenticated: false, reason: 'expired' });
+          return;
+        }
+        const profile = (await profileRes.json()) as {
+          id: string;
+          display_name?: string;
+        };
+        res.json({
+          authenticated: true,
+          userId: profile.id,
+          displayName: profile.display_name ?? profile.id,
+        });
+      } catch {
+        res.json({ authenticated: false, reason: 'expired' });
+      }
+      return;
+    }
+
+    // Fall back to cookie
     const userId = getSessionUserId(req, appConfig.clientSecret);
     if (!userId) {
       res.json({ authenticated: false, reason: 'no_session' });

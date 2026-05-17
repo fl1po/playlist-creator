@@ -27,6 +27,9 @@ export interface AuthManager {
     res: express.Response,
   ): Promise<void>;
   consumeAuthToken(token: string): string | null;
+  getTokensForUser(
+    userId: string,
+  ): { accessToken: string; refreshToken: string; displayName?: string } | null;
   waitForAuth(): Promise<boolean>;
   readonly authResolve: (() => void) | null;
 }
@@ -53,6 +56,17 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
   const pendingAuthTokens = new Map<
     string,
     { userId: string; expires: number }
+  >();
+
+  // Recently authenticated user tokens (kept for 60s for /api/auth/complete?format=json)
+  const recentTokens = new Map<
+    string,
+    {
+      accessToken: string;
+      refreshToken: string;
+      displayName?: string;
+      expires: number;
+    }
   >();
 
   function createAuthToken(userId: string): string {
@@ -100,17 +114,6 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
     }>;
   }
 
-  async function fetchSpotifyUserId(
-    accessToken: string,
-  ): Promise<{ id: string; displayName: string }> {
-    const res = await fetch('https://api.spotify.com/v1/me', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!res.ok) throw new Error('Failed to fetch user profile');
-    const data = (await res.json()) as { id: string; display_name?: string };
-    return { id: data.id, displayName: data.display_name ?? data.id };
-  }
-
   async function completeAuth(
     code: string,
     appConfig: AppConfig,
@@ -118,13 +121,25 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
     const tokens = await exchangeCodeForTokens(code, appConfig);
     const user = await fetchSpotifyUserId(tokens.access_token);
 
-    // Save tokens to user's data directory
+    // Save tokens to user's data directory (for cookie-based/file mode)
     const dataDir = deps.getUserDataDir(user.id);
     fs.mkdirSync(dataDir, { recursive: true });
     const tokenStore = new UserTokenStore(user.id, dataDir);
     tokenStore.save({
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
+    });
+
+    // Keep tokens in memory for Bearer auth retrieval (opportunistic cleanup of expired entries)
+    const now = Date.now();
+    for (const [k, v] of recentTokens) {
+      if (v.expires < now) recentTokens.delete(k);
+    }
+    recentTokens.set(user.id, {
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token,
+      displayName: user.displayName,
+      expires: now + 60_000,
     });
 
     // Create/update session in registry
@@ -189,6 +204,7 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
         const appConfig = deps.loadAppConfig();
         const user = await completeAuth(code, appConfig);
         const authToken = createAuthToken(user.userId);
+        const tokens = recentTokens.get(user.userId);
 
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(buildAuthSuccessPage(user.displayName));
@@ -196,7 +212,18 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
           level: 'success',
           message: `Spotify authenticated: ${user.displayName}`,
         });
-        deps.broadcast('auth', { authenticated: true, token: authToken });
+        deps.broadcast('auth', {
+          authenticated: true,
+          token: authToken,
+          credentials: tokens
+            ? {
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken,
+                userId: user.userId,
+                displayName: user.displayName,
+              }
+            : undefined,
+        });
         if (authResolve) {
           authResolve();
           authResolve = null;
@@ -274,13 +301,25 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
       const appConfig = deps.loadAppConfig();
       const user = await completeAuth(code, appConfig);
       const authToken = createAuthToken(user.userId);
+      const tokens = recentTokens.get(user.userId);
 
       res.send(buildAuthSuccessPage(user.displayName));
       deps.broadcast('log', {
         level: 'success',
         message: `Spotify authenticated: ${user.displayName}`,
       });
-      deps.broadcast('auth', { authenticated: true, token: authToken });
+      deps.broadcast('auth', {
+        authenticated: true,
+        token: authToken,
+        credentials: tokens
+          ? {
+              accessToken: tokens.accessToken,
+              refreshToken: tokens.refreshToken,
+              userId: user.userId,
+              displayName: user.displayName,
+            }
+          : undefined,
+      });
       if (authResolve) {
         authResolve();
         authResolve = null;
@@ -309,10 +348,27 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
     });
   }
 
+  function getTokensForUser(userId: string): {
+    accessToken: string;
+    refreshToken: string;
+    displayName?: string;
+  } | null {
+    const entry = recentTokens.get(userId);
+    if (!entry) return null;
+    recentTokens.delete(userId);
+    if (Date.now() > entry.expires) return null;
+    return {
+      accessToken: entry.accessToken,
+      refreshToken: entry.refreshToken,
+      displayName: entry.displayName,
+    };
+  }
+
   return {
     buildAuthUrl,
     handleAuthCallback,
     consumeAuthToken,
+    getTokensForUser,
     waitForAuth,
     get authResolve() {
       return authResolve;
@@ -320,7 +376,6 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
   };
 }
 
-// Re-export fetchSpotifyUserId for migration use
 export async function fetchSpotifyUserId(
   accessToken: string,
 ): Promise<{ id: string; displayName: string }> {

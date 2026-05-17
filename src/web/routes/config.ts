@@ -4,15 +4,18 @@ import type { RouteContext } from '../route-context.js';
 export function configRoutes(ctx: RouteContext): Router {
   const router = Router();
 
-  router.get('/config', (req, res) => {
+  router.get('/config', async (req, res) => {
     const session = ctx.requireSession(req, res);
     if (!session) return;
 
-    const config = session.userConfigStore.load();
-    res.json({ ok: true, config, configured: session.userConfigStore.exists() });
+    const [config, configured] = await Promise.all([
+      session.userConfigStore.load(),
+      session.userConfigStore.exists(),
+    ]);
+    res.json({ ok: true, config, configured });
   });
 
-  router.put('/config', (req, res) => {
+  router.put('/config', async (req, res) => {
     const session = ctx.requireSession(req, res);
     if (!session) return;
 
@@ -25,8 +28,13 @@ export function configRoutes(ctx: RouteContext): Router {
     const errors: string[] = [];
     if (!config.sourcePlaylists?.allWeeklyId)
       errors.push('All Weekly playlist ID required');
-    if (!config.sourcePlaylists?.useLikedSongs && !config.sourcePlaylists?.bestOfAllWeeklyId)
-      errors.push('Best of All Weekly playlist ID required (or enable Liked Songs)');
+    if (
+      !config.sourcePlaylists?.useLikedSongs &&
+      !config.sourcePlaylists?.bestOfAllWeeklyId
+    )
+      errors.push(
+        'Best of All Weekly playlist ID required (or enable Liked Songs)',
+      );
 
     const t = config.scoring?.priorityThresholds;
     if (t && !(t.p1 > t.p2 && t.p2 > t.p3 && t.p3 > t.p4 && t.p4 > 0)) {
@@ -45,7 +53,7 @@ export function configRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    session.userConfigStore.save(config);
+    await session.userConfigStore.save(config);
     ctx.broadcast('log', { level: 'success', message: 'Settings saved' });
     res.json({ ok: true });
   });

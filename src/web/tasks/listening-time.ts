@@ -3,9 +3,9 @@ import path from 'node:path';
 import { formatHm } from '../../domain/tracks.js';
 import {
   DURATION_SNAPSHOT_CACHE,
+  LISTENING_TIME_CACHE,
   getNonListenedPlaylists,
   getPlaylistTotalDuration,
-  LISTENING_TIME_CACHE,
 } from '../../lib/pagination.js';
 import type { DurationSnapshots } from '../../lib/pagination.js';
 import type { TaskContext, TaskDefinition } from '../task-runner.js';
@@ -16,7 +16,16 @@ export const listeningTimeTask: TaskDefinition = {
   startMessage: 'Listening time calculation started',
 
   async run(tc: TaskContext) {
-    const userConfig = tc.userConfigStore.load();
+    // Hydrate caches from client
+    if (tc.caches.durationSnapshots) {
+      fs.mkdirSync(tc.dataDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(tc.dataDir, DURATION_SNAPSHOT_CACHE),
+        JSON.stringify(tc.caches.durationSnapshots, null, 2),
+      );
+    }
+
+    const userConfig = await tc.userConfigStore.load();
     const me = await tc.client.api.currentUser.profile();
 
     const { playlists: candidates } = await getNonListenedPlaylists(
@@ -125,6 +134,10 @@ export const listeningTimeTask: TaskDefinition = {
     );
 
     tc.broadcast('listeningTime:complete', result);
+
+    // Emit data to client
+    tc.emitData('durationSnapshots', snapshots);
+    tc.emitData('listeningTime', result);
 
     const avg = candidates.length > 0 ? totalMs / candidates.length : 0;
     tc.broadcast('log', {

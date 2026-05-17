@@ -1,8 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type express from 'express';
-import { BridgedConfigStore, UserTokenStore } from '../lib/config.js';
-import type { AppConfigStore } from '../lib/config.js';
+import {
+  BridgedConfigStore,
+  InMemoryTokenStore,
+  UserTokenStore,
+} from '../lib/config.js';
+import type { IAppConfigStore } from '../lib/config.js';
 import type { RequestPacer } from '../lib/request-pacer.js';
 import { createSpotifyClient } from '../lib/spotify-client.js';
 import type {
@@ -10,17 +14,21 @@ import type {
   SpotifyClient,
   TrustedArtistsFile,
 } from '../lib/types.js';
-import { UserConfigStore } from '../lib/user-config.js';
+import { type IUserConfigStore, UserConfigStore } from '../lib/user-config.js';
 import type { AuthManager } from './auth.js';
 import type { Broadcaster } from './broadcast.js';
-import { getSessionUserId } from './session.js';
+import {
+  RedisUserConfigStore,
+  isRedisConfigured,
+} from './redis-config-store.js';
+import { getBearerToken, getSessionUserId } from './session.js';
 import type { TaskMutex } from './task-mutex.js';
 
 export interface UserSession {
   userId: string;
   displayName?: string;
   client: SpotifyClient;
-  userConfigStore: UserConfigStore;
+  userConfigStore: IUserConfigStore;
   dataDir: string;
 }
 
@@ -29,7 +37,7 @@ export interface RouteContext {
   readonly broadcast: (type: string, data: unknown) => void;
   readonly taskMutex: TaskMutex;
   readonly pacer: RequestPacer;
-  readonly appConfigStore: AppConfigStore;
+  readonly appConfigStore: IAppConfigStore;
   readonly auth: AuthManager;
   readonly sessions: Map<string, UserSession>;
   readonly searchedArtists: Set<string>;
@@ -51,7 +59,7 @@ export interface RouteContextDeps {
   broadcaster: Broadcaster;
   taskMutex: TaskMutex;
   pacer: RequestPacer;
-  appConfigStore: AppConfigStore;
+  appConfigStore: IAppConfigStore;
   auth: AuthManager;
   usersDir: string;
   projectRoot: string;
@@ -72,6 +80,31 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
   const broadcast = broadcaster.broadcast;
   const sessions = new Map<string, UserSession>();
   const searchedArtists = new Set<string>();
+  const bearerTokenCache = new Map<string, string>();
+
+  function buildSpotifyClient(configStore: BridgedConfigStore): SpotifyClient {
+    return createSpotifyClient({
+      configStore,
+      reauth: {
+        type: 'custom',
+        handler: async () => {
+          broadcast('log', {
+            level: 'warn',
+            message:
+              'Token expired — opening Spotify login. Task paused, waiting...',
+          });
+          const url = auth.buildAuthUrl();
+          broadcast('auth', { authenticated: false, url });
+          return auth.waitForAuth();
+        },
+      },
+      onAuthFailed: (err) =>
+        broadcast('log', {
+          level: 'error',
+          message: `Auth failed: ${err.message}`,
+        }),
+    });
+  }
 
   function loadAppConfig(): AppConfig {
     return appConfigStore.load();
@@ -93,31 +126,11 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
 
     const tokenStore = new UserTokenStore(userId, dataDir);
     const configStore = new BridgedConfigStore(appConfig, tokenStore);
-    const userConfigStore = new UserConfigStore(
-      path.join(dataDir, 'user-config.json'),
-    );
+    const userConfigStore: IUserConfigStore = isRedisConfigured()
+      ? new RedisUserConfigStore(userId)
+      : new UserConfigStore(path.join(dataDir, 'user-config.json'));
 
-    const client = createSpotifyClient({
-      configStore,
-      reauth: {
-        type: 'custom',
-        handler: async () => {
-          broadcast('log', {
-            level: 'warn',
-            message:
-              'Token expired — opening Spotify login. Task paused, waiting...',
-          });
-          const url = auth.buildAuthUrl();
-          broadcast('auth', { authenticated: false, url });
-          return auth.waitForAuth();
-        },
-      },
-      onAuthFailed: (err) =>
-        broadcast('log', {
-          level: 'error',
-          message: `Auth failed: ${err.message}`,
-        }),
-    });
+    const client = buildSpotifyClient(configStore);
 
     const session: UserSession = { userId, client, userConfigStore, dataDir };
     sessions.set(userId, session);
@@ -135,12 +148,71 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
       res.status(401).json({ error: 'Not authenticated' });
       return null;
     }
+
+    // Try Bearer token auth first (stateless mode)
+    const bearerToken = getBearerToken(req);
+    if (bearerToken) {
+      const userId = req.headers['x-user-id'] as string | undefined;
+      if (!userId) {
+        res
+          .status(401)
+          .json({ error: 'X-User-Id header required with Bearer auth' });
+        return null;
+      }
+      return getOrCreateBearerSession(userId, appConfig, bearerToken, req);
+    }
+
+    // Fall back to cookie auth
     const userId = getSessionUserId(req, appConfig.clientSecret);
     if (!userId) {
       res.status(401).json({ error: 'Not authenticated' });
       return null;
     }
     return getOrCreateUserSession(userId, appConfig);
+  }
+
+  function getOrCreateBearerSession(
+    userId: string,
+    appConfig: AppConfig,
+    accessToken: string,
+    req: express.Request,
+  ): UserSession {
+    const existing = sessions.get(userId);
+    if (existing) {
+      const refreshToken = req.body?.refreshToken as string | undefined;
+      if (refreshToken && bearerTokenCache.get(userId) !== accessToken) {
+        const tokenStore = new InMemoryTokenStore(
+          { accessToken, refreshToken },
+          (tokens) => broadcast('data:save', { key: 'tokens', value: tokens }),
+        );
+        const configStore = new BridgedConfigStore(appConfig, tokenStore);
+        existing.client = buildSpotifyClient(configStore);
+        bearerTokenCache.set(userId, accessToken);
+      }
+      return existing;
+    }
+
+    const refreshToken = (req.body?.refreshToken as string) ?? '';
+    const tokenStore = new InMemoryTokenStore(
+      { accessToken, refreshToken },
+      (tokens) => broadcast('data:save', { key: 'tokens', value: tokens }),
+    );
+    const configStore = new BridgedConfigStore(appConfig, tokenStore);
+    const userConfigStore: IUserConfigStore = isRedisConfigured()
+      ? new RedisUserConfigStore(userId)
+      : new UserConfigStore(path.join(usersDir, userId, 'user-config.json'));
+
+    const client = buildSpotifyClient(configStore);
+    bearerTokenCache.set(userId, accessToken);
+
+    const session: UserSession = {
+      userId,
+      client,
+      userConfigStore,
+      dataDir: path.join(usersDir, userId),
+    };
+    sessions.set(userId, session);
+    return session;
   }
 
   function loadTrustedArtists(dataDir: string): TrustedArtistsFile | null {

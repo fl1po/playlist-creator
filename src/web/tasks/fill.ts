@@ -2,13 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { filterByPriority } from '../../domain/artists.js';
 import { invalidateNonListenedCache } from '../../lib/pagination.js';
-import type {
-  ApiCallOptions,
-  TrustedArtistsFile,
-} from '../../lib/types.js';
+import type { ApiCallOptions, TrustedArtistsFile } from '../../lib/types.js';
 import {
-  PlaylistFillerService,
   type PlaylistFillerEventMap,
+  PlaylistFillerService,
 } from '../../services/playlist-filler.js';
 import { broadcastEvents } from '../broadcast.js';
 import {
@@ -24,30 +21,69 @@ export function getSearchedArtists(): ReadonlySet<string> {
   return searchedArtists;
 }
 
-function restoreSearchedArtistsFromCache(
-  dataDir: string,
-  broadcast: (type: string, data: unknown) => void,
-) {
+function restoreSearchedArtistsFromCache(tc: TaskContext) {
   try {
-    const cachePath = path.join(dataDir, 'batch-cache.json');
-    const trustedPath = path.join(dataDir, 'trusted-artists.json');
-    const cache = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+    // Try client-provided caches first, then filesystem
+    let cache: any = tc.caches.batchCache;
+    if (!cache) {
+      const cachePath = path.join(tc.dataDir, 'batch-cache.json');
+      cache = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+    }
     const progress = cache?.artistSearchProgress;
     if (progress?.artistsSearched > 0) {
-      const trusted = JSON.parse(fs.readFileSync(trustedPath, 'utf8'));
+      let trusted: any = tc.caches.trustedArtists;
+      if (!trusted) {
+        const trustedPath = path.join(tc.dataDir, 'trusted-artists.json');
+        trusted = JSON.parse(fs.readFileSync(trustedPath, 'utf8'));
+      }
       const p1p2 = filterByPriority(trusted.artistCounts, [1, 2]);
       const count = Math.min(progress.artistsSearched, p1p2.length);
       for (let i = 0; i < count; i++) {
         searchedArtists.add(p1p2[i][0]);
       }
-      broadcast('fill:searchedArtists', [...searchedArtists]);
-      broadcast('log', {
+      tc.broadcast('fill:searchedArtists', [...searchedArtists]);
+      tc.broadcast('log', {
         level: 'info',
         message: `Restored ${searchedArtists.size} searched artists from cache (date: ${progress.date})`,
       });
     }
   } catch {
     /* no cache or trusted-artists file */
+  }
+}
+
+/** Write client-provided caches to the data dir so services can read them. */
+function hydrateFromCaches(tc: TaskContext) {
+  fs.mkdirSync(tc.dataDir, { recursive: true });
+  if (tc.caches.trustedArtists) {
+    fs.writeFileSync(
+      path.join(tc.dataDir, 'trusted-artists.json'),
+      JSON.stringify(tc.caches.trustedArtists, null, 2),
+    );
+  }
+  if (tc.caches.batchCache) {
+    fs.writeFileSync(
+      path.join(tc.dataDir, 'batch-cache.json'),
+      JSON.stringify(tc.caches.batchCache, null, 2),
+    );
+  }
+  if (tc.caches.fillHistory) {
+    fs.writeFileSync(
+      path.join(tc.dataDir, 'fill-history.json'),
+      JSON.stringify(tc.caches.fillHistory, null, 2),
+    );
+  }
+}
+
+/** Read file and emit to client for localStorage persistence. */
+function emitFileAsData(tc: TaskContext, key: string, filename: string) {
+  try {
+    const data = JSON.parse(
+      fs.readFileSync(path.join(tc.dataDir, filename), 'utf8'),
+    );
+    tc.emitData(key, data);
+  } catch {
+    /* file may not exist */
   }
 }
 
@@ -106,9 +142,13 @@ export const fillTask: TaskDefinition = {
       level: 'info',
       message: `Starting playlist fill (fresh=${freshMode})...`,
     });
-    if (!freshMode) restoreSearchedArtistsFromCache(tc.dataDir, tc.broadcast);
 
-    const userConfig = tc.userConfigStore.load();
+    // Hydrate data dir from client-provided caches
+    hydrateFromCaches(tc);
+
+    if (!freshMode) restoreSearchedArtistsFromCache(tc);
+
+    const userConfig = await tc.userConfigStore.load();
 
     const service = new PlaylistFillerService(
       tc.ctx,
@@ -188,8 +228,7 @@ export const fillTask: TaskDefinition = {
             `Deluxe detected: "${name}" -> "${baseName}"`,
         },
         singleSkipped: {
-          log: (name) =>
-            `Skipped single "${name}" (tracks already on album)`,
+          log: (name) => `Skipped single "${name}" (tracks already on album)`,
         },
         dateCompleted: {
           type: 'fill:dateComplete',
@@ -235,10 +274,7 @@ export const fillTask: TaskDefinition = {
     );
 
     // Append to fill history
-    const totalTracks = completed.reduce(
-      (s, r) => s + (r.tracksAdded || 0),
-      0,
-    );
+    const totalTracks = completed.reduce((s, r) => s + (r.tracksAdded || 0), 0);
     if (totalTracks > 0) {
       const historyPath = path.join(tc.dataDir, 'fill-history.json');
       let history: unknown[] = [];
@@ -261,14 +297,8 @@ export const fillTask: TaskDefinition = {
         datesTotal: results.length,
         totalTracks,
         totalAlbums: completed.reduce((s, r) => s + (r.albumsCount || 0), 0),
-        totalSingles: completed.reduce(
-          (s, r) => s + (r.singlesCount || 0),
-          0,
-        ),
-        totalSkipped: completed.reduce(
-          (s, r) => s + (r.skippedCount || 0),
-          0,
-        ),
+        totalSingles: completed.reduce((s, r) => s + (r.singlesCount || 0), 0),
+        totalSkipped: completed.reduce((s, r) => s + (r.skippedCount || 0), 0),
         releasesByPriority,
       });
       fs.writeFileSync(historyPath, JSON.stringify(history, null, 2));
@@ -294,6 +324,11 @@ export const fillTask: TaskDefinition = {
         message: `Post-fill sync failed: ${syncErr}`,
       });
     }
+
+    // Emit updated data back to client
+    emitFileAsData(tc, 'trustedArtists', 'trusted-artists.json');
+    emitFileAsData(tc, 'batchCache', 'batch-cache.json');
+    emitFileAsData(tc, 'fillHistory', 'fill-history.json');
   },
 
   onError(tc: TaskContext, error: unknown, aborted: boolean) {

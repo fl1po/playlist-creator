@@ -3,10 +3,8 @@ import type { RequestPacer } from '../lib/request-pacer.js';
 import { createSpotifyContext } from '../lib/spotify-context.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
 import type { ApiCallOptions, SpotifyClient } from '../lib/types.js';
-import type { UserConfigStore } from '../lib/user-config.js';
-import type { Broadcaster } from './broadcast.js';
-import type { RouteContext, UserSession } from './route-context.js';
-import type { TaskMutex } from './task-mutex.js';
+import type { IUserConfigStore } from '../lib/user-config.js';
+import type { RouteContext } from './route-context.js';
 
 export interface TaskContext {
   /** Abort-wrapped Spotify client. */
@@ -16,12 +14,12 @@ export interface TaskContext {
   /** Parsed request body. */
   body: Record<string, unknown>;
   /** User's config store. */
-  userConfigStore: UserConfigStore;
+  userConfigStore: IUserConfigStore;
   /** User's data directory path. */
   dataDir: string;
   /** User ID. */
   userId: string;
-  /** Send a typed WebSocket message to all clients. */
+  /** Send a typed message to all clients. */
   broadcast: (type: string, data: unknown) => void;
   /** Throws if the user requested abort. */
   checkAbort: () => void;
@@ -29,6 +27,10 @@ export interface TaskContext {
   pacer: RequestPacer;
   /** Un-wrapped client for post-task work (e.g. sync). */
   rawClient: SpotifyClient;
+  /** Client-provided caches (from request body). */
+  caches: Record<string, unknown>;
+  /** Emit data back to client for localStorage persistence. */
+  emitData: (key: string, value: unknown) => void;
 }
 
 export interface TaskDefinition {
@@ -67,73 +69,89 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
   return {
     register(def: TaskDefinition) {
       const method = def.method ?? 'post';
-      app[method](`/api${def.path}`, (req: express.Request, res: express.Response) => {
-        const session = routeCtx.requireSession(req, res);
-        if (!session) return;
+      app[method](
+        `/api${def.path}`,
+        (req: express.Request, res: express.Response) => {
+          const session = routeCtx.requireSession(req, res);
+          if (!session) return;
 
-        if (def.validate) {
-          const err = def.validate((req.body as Record<string, unknown>) ?? {});
-          if (err) {
-            res.status(400).json({ error: err });
+          if (def.validate) {
+            const err = def.validate(
+              (req.body as Record<string, unknown>) ?? {},
+            );
+            if (err) {
+              res.status(400).json({ error: err });
+              return;
+            }
+          }
+
+          const abort = taskMutex.setBusy(def.name, session.userId);
+          if (!abort) {
+            res
+              .status(409)
+              .json({ error: `Busy: "${taskMutex.currentTask}" is running` });
             return;
           }
-        }
 
-        const abort = taskMutex.setBusy(def.name, session.userId);
-        if (!abort) {
-          res
-            .status(409)
-            .json({ error: `Busy: "${taskMutex.currentTask}" is running` });
-          return;
-        }
+          const abortableClient = taskMutex.createAbortableClient(
+            session.client,
+          );
+          const apiCallbacks = def.apiCallbacks?.(broadcast);
+          const ctx = createSpotifyContext(
+            abortableClient,
+            apiCallbacks,
+            pacer,
+          );
 
-        const abortableClient = taskMutex.createAbortableClient(session.client);
-        const apiCallbacks = def.apiCallbacks?.(broadcast);
-        const ctx = createSpotifyContext(abortableClient, apiCallbacks, pacer);
+          const body = (req.body as Record<string, unknown>) ?? {};
+          const tc: TaskContext = {
+            client: abortableClient,
+            ctx,
+            body,
+            userConfigStore: session.userConfigStore,
+            dataDir: session.dataDir,
+            userId: session.userId,
+            broadcast,
+            checkAbort: () => taskMutex.checkAbort(),
+            pacer,
+            rawClient: session.client,
+            caches: (body.caches as Record<string, unknown>) ?? {},
+            emitData: (key: string, value: unknown) => {
+              broadcast('data:save', { key, value });
+            },
+          };
 
-        const tc: TaskContext = {
-          client: abortableClient,
-          ctx,
-          body: (req.body as Record<string, unknown>) ?? {},
-          userConfigStore: session.userConfigStore,
-          dataDir: session.dataDir,
-          userId: session.userId,
-          broadcast,
-          checkAbort: () => taskMutex.checkAbort(),
-          pacer,
-          rawClient: session.client,
-        };
-
-        res.json({
-          ok: true,
-          message: def.startMessage ?? `${def.name} started`,
-        });
-
-        def
-          .run(tc)
-          .catch((err) => {
-            def.onError?.(tc, err, abort.aborted);
-            if (abort.aborted) {
-              broadcast('log', {
-                level: 'warn',
-                message: `${def.name} stopped by user`,
-              });
-            } else {
-              broadcast('log', {
-                level: 'error',
-                message: `${def.name} failed: ${err}`,
-              });
-            }
-          })
-          .finally(async () => {
-            try {
-              await def.cleanup?.(tc);
-            } catch {
-              /* swallow cleanup errors */
-            }
-            taskMutex.setIdle();
+          res.json({
+            ok: true,
+            message: def.startMessage ?? `${def.name} started`,
           });
-      });
+
+          def
+            .run(tc)
+            .catch((err) => {
+              def.onError?.(tc, err, abort.aborted);
+              if (abort.aborted) {
+                broadcast('log', {
+                  level: 'warn',
+                  message: `${def.name} stopped by user`,
+                });
+              } else {
+                broadcast('log', {
+                  level: 'error',
+                  message: `${def.name} failed: ${err}`,
+                });
+              }
+            })
+            .finally(async () => {
+              try {
+                await def.cleanup?.(tc);
+              } catch {
+                /* swallow cleanup errors */
+              }
+              taskMutex.setIdle();
+            });
+        },
+      );
     },
   };
 }
