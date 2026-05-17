@@ -132,6 +132,31 @@ app.get('/api/export-data', (req, res) => {
   });
 });
 
+// Import data (for migrating from local to production)
+app.post('/api/import-data', async (req, res) => {
+  const session = ctx.requireSession(req, res);
+  if (!session) return;
+
+  const { config, trustedArtists, batchCache, fillHistory, durationSnapshots, listeningTime, awBreakdown } = req.body;
+
+  // Save config to the config store (Redis in production)
+  if (config) {
+    await session.userConfigStore.save(config);
+  }
+
+  // Broadcast all caches to the client's localStorage via SSE
+  const caches = { trustedArtists, batchCache, fillHistory, durationSnapshots, listeningTime, awBreakdown };
+  let imported = 0;
+  for (const [key, value] of Object.entries(caches)) {
+    if (value) {
+      broadcast('data:save', { key, value });
+      imported++;
+    }
+  }
+
+  res.json({ ok: true, imported });
+});
+
 // Clear playlist (synchronous — no mutex)
 app.post('/api/clear', async (req, res) => {
   const session = ctx.requireSession(req, res);
