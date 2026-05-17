@@ -45,7 +45,7 @@ export const DEFAULT_USER_CONFIG: UserConfig = {
     allWeeklyName: '',
     bestOfAllWeeklyId: '',
     bestOfAllWeeklyName: '',
-    useLikedSongs: false,
+    useLikedSongs: true,
   },
   editorialPlaylists: [],
   externalPlaylistSources: [],

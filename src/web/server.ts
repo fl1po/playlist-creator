@@ -143,11 +143,17 @@ app.post('/api/import-data', async (req, res) => {
   const { config, trustedArtists, batchCache, fillHistory, durationSnapshots, listeningTime, awBreakdown } = req.body;
 
   // Save config to the config store (Redis in production)
+  let configSaved = false;
   if (config) {
-    await session.userConfigStore.save(config);
+    try {
+      await session.userConfigStore.save(config);
+      configSaved = true;
+    } catch (err) {
+      console.error('Failed to save config:', err);
+    }
   }
 
-  // Return caches directly — the client will save to localStorage
+  // Return caches AND config — the client will save to localStorage
   const caches: Record<string, unknown> = {};
   if (trustedArtists) caches.trustedArtists = trustedArtists;
   if (batchCache) caches.batchCache = batchCache;
@@ -156,7 +162,7 @@ app.post('/api/import-data', async (req, res) => {
   if (listeningTime) caches.listeningTime = listeningTime;
   if (awBreakdown) caches.awBreakdown = awBreakdown;
 
-  res.json({ ok: true, configSaved: !!config, caches });
+  res.json({ ok: true, configSaved, configReceived: !!config, caches, config: config || null });
 });
 
 // Clear playlist (synchronous — no mutex)

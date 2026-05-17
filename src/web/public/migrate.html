@@ -141,8 +141,14 @@ importBtn.addEventListener('click', async () => {
           saved++;
         }
       }
+      // Also save config to localStorage as fallback
+      if (result.config) {
+        localStorage.setItem('sp_config', JSON.stringify(result.config));
+      }
       const parts = [];
       if (result.configSaved) parts.push('config saved to server');
+      else if (result.configReceived) parts.push('config received but server save failed (saved locally)');
+      else parts.push('no config in file');
       if (saved > 0) parts.push(`${saved} cache(s) saved to localStorage`);
       setStatus('success', `Import complete! ${parts.join(', ')}. Go back to the dashboard.`);
     } else {

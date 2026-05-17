@@ -1494,13 +1494,28 @@ async function calcAwBreakdown() {
 async function loadArtists() {
   const countEl = document.getElementById('artistCount');
   countEl.textContent = 'Loading...';
-  const priorities = [...activeFilters].join(',');
-  const res = await api('GET', `/api/artists?priorities=${priorities}&sort=score`);
-  if (!res.ok) { countEl.textContent = ''; log('error', res.error || 'Failed to load artists'); return; }
+  const priorities = activeFilters;
+
+  // Try localStorage first (stateless mode), then server
+  const trusted = Store.get('trustedArtists');
+  let artists;
+  if (trusted?.artistCounts) {
+    artists = Object.entries(trusted.artistCounts)
+      .filter(([, d]) => d.priority !== null && priorities.has(d.priority))
+      .sort((a, b) => {
+        if (a[1].priority !== b[1].priority) return (a[1].priority ?? 99) - (b[1].priority ?? 99);
+        return b[1].score - a[1].score;
+      })
+      .map(([name, data]) => ({ name, ...data }));
+  } else {
+    const res = await api('GET', `/api/artists?priorities=${[...priorities].join(',')}&sort=score`);
+    if (!res.ok) { countEl.textContent = ''; log('error', res.error || 'Failed to load artists'); return; }
+    artists = res.artists;
+  }
 
   const tbody = document.getElementById('artistTableBody');
   tbody.innerHTML = '';
-  for (const a of res.artists) {
+  for (const a of artists) {
     const tr = document.createElement('tr');
     tr.dataset.artist = a.name;
     if (searchedArtists.has(a.name)) tr.classList.add('artist-searched');
@@ -1516,7 +1531,7 @@ async function loadArtists() {
     tbody.appendChild(tr);
   }
   document.getElementById('artistTableWrap').classList.add('visible');
-  countEl.textContent = `${res.artists.length} artists`;
+  countEl.textContent = `${artists.length} artists`;
 }
 
 function toggleFilter(p) {
@@ -1677,9 +1692,20 @@ async function loadConfig() {
     if (currentConfig.weeklyListeningBudget) {
       document.getElementById('ltBudgetHours').value = currentConfig.weeklyListeningBudget;
     }
+    // If server has no config but we have it in localStorage (from migration), push it
     if (!res.configured) {
-      document.getElementById('settingsOverlay').classList.remove('hidden');
-      document.getElementById('welcomeBanner').classList.remove('hidden');
+      const localConfig = Store.get('config');
+      if (localConfig?.sourcePlaylists?.allWeeklyId) {
+        currentConfig = localConfig;
+        configLoaded = true;
+        populateSettings(currentConfig);
+        await api('PUT', '/api/config', currentConfig);
+        Store.remove('config');
+        log('success', 'Restored config from local migration');
+      } else {
+        document.getElementById('settingsOverlay').classList.remove('hidden');
+        document.getElementById('welcomeBanner').classList.remove('hidden');
+      }
     }
   }
 }
