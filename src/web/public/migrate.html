@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Import Data</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #121212; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+.card { background: #1e1e1e; border-radius: 12px; padding: 40px; max-width: 520px; width: 100%; }
+h1 { font-size: 20px; margin-bottom: 8px; }
+p { color: #999; font-size: 14px; margin-bottom: 24px; }
+.drop-zone { border: 2px dashed #333; border-radius: 8px; padding: 40px 20px; text-align: center; cursor: pointer; transition: border-color 0.2s; margin-bottom: 16px; }
+.drop-zone:hover, .drop-zone.dragover { border-color: #1DB954; }
+.drop-zone span { color: #999; font-size: 14px; }
+input[type="file"] { display: none; }
+.status { font-size: 14px; min-height: 20px; margin-top: 12px; }
+.status.success { color: #1DB954; }
+.status.error { color: #e74c3c; }
+.status.info { color: #999; }
+button { background: #1DB954; color: #000; border: none; padding: 10px 24px; border-radius: 20px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 16px; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.back { display: inline-block; margin-top: 20px; color: #1DB954; text-decoration: none; font-size: 13px; }
+.instructions { background: #161616; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 13px; color: #b3b3b3; line-height: 1.6; }
+.instructions code { background: #252525; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Import Local Data</h1>
+  <p>Migrate your data from the local setup to this server.</p>
+
+  <div class="instructions">
+    <strong>How to export from local:</strong><br>
+    1. Make sure your local server is running<br>
+    2. Open <code>http://localhost:3005/api/export-data</code> in your browser<br>
+    3. Save the page as a <code>.json</code> file<br>
+    4. Also save your config: <code>http://localhost:3005/api/config</code> (optional if you've already configured this server)<br>
+    5. Drop the export file below
+  </div>
+
+  <div class="drop-zone" id="dropZone">
+    <span>Drop your export JSON file here, or click to browse</span>
+    <input type="file" id="fileInput" accept=".json,application/json">
+  </div>
+
+  <button id="importBtn" disabled>Import Data</button>
+  <div class="status" id="status"></div>
+  <a class="back" href="/">← Back to dashboard</a>
+</div>
+
+<script>
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const importBtn = document.getElementById('importBtn');
+const statusEl = document.getElementById('status');
+let fileData = null;
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+
+function handleFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      fileData = JSON.parse(e.target.result);
+      const keys = ['trustedArtists', 'batchCache', 'fillHistory', 'durationSnapshots', 'listeningTime', 'awBreakdown', 'config'].filter(k => fileData[k]);
+      dropZone.querySelector('span').textContent = `${file.name} — ${keys.length} data keys found`;
+      importBtn.disabled = false;
+      setStatus('info', `Ready to import: ${keys.join(', ')}`);
+    } catch {
+      setStatus('error', 'Invalid JSON file');
+    }
+  };
+  reader.readAsText(file);
+}
+
+function setStatus(type, msg) {
+  statusEl.textContent = msg;
+  statusEl.className = `status ${type}`;
+}
+
+importBtn.addEventListener('click', async () => {
+  if (!fileData) return;
+  importBtn.disabled = true;
+  setStatus('info', 'Importing...');
+
+  // Get tokens from localStorage
+  let tokens, userId;
+  try {
+    tokens = JSON.parse(localStorage.getItem('sp_tokens'));
+    userId = JSON.parse(localStorage.getItem('sp_userId'));
+  } catch {}
+
+  if (!tokens?.accessToken) {
+    setStatus('error', 'Not authenticated. Go to the dashboard and log in first, then come back.');
+    importBtn.disabled = false;
+    return;
+  }
+
+  // If the export file has a nested "config" object from /api/config response, unwrap it
+  const body = {};
+  if (fileData.config?.sourcePlaylists) {
+    body.config = fileData.config;
+  } else if (fileData.config?.config) {
+    body.config = fileData.config.config;
+  }
+
+  const cacheKeys = ['trustedArtists', 'batchCache', 'fillHistory', 'durationSnapshots', 'listeningTime', 'awBreakdown'];
+  for (const key of cacheKeys) {
+    if (fileData[key]) body[key] = fileData[key];
+  }
+
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${tokens.accessToken}`,
+      'X-User-Id': userId,
+    };
+    if (tokens.refreshToken) body.refreshToken = tokens.refreshToken;
+
+    const res = await fetch('/api/import-data', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    const result = await res.json();
+    if (result.ok) {
+      setStatus('success', `Imported successfully! ${result.imported} cache(s) sent to localStorage via SSE.`);
+    } else {
+      setStatus('error', result.error || 'Import failed');
+      importBtn.disabled = false;
+    }
+  } catch (e) {
+    setStatus('error', `Request failed: ${e.message}`);
+    importBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
