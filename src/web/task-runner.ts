@@ -64,7 +64,6 @@ export interface TaskRunnerDeps {
 export function createTaskRunner(deps: TaskRunnerDeps) {
   const { app, routeCtx } = deps;
   const { taskMutex, broadcaster, pacer } = routeCtx;
-  const broadcast = broadcaster.broadcast;
 
   return {
     register(def: TaskDefinition) {
@@ -96,7 +95,9 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
           const abortableClient = taskMutex.createAbortableClient(
             session.client,
           );
-          const apiCallbacks = def.apiCallbacks?.(broadcast);
+          const userBroadcast = (type: string, data: unknown) =>
+            broadcaster.broadcastTo(session.userId, type, data);
+          const apiCallbacks = def.apiCallbacks?.(userBroadcast);
           const ctx = createSpotifyContext(
             abortableClient,
             apiCallbacks,
@@ -111,13 +112,13 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
             userConfigStore: session.userConfigStore,
             dataDir: session.dataDir,
             userId: session.userId,
-            broadcast,
+            broadcast: userBroadcast,
             checkAbort: () => taskMutex.checkAbort(),
             pacer,
             rawClient: session.client,
             caches: (body.caches as Record<string, unknown>) ?? {},
             emitData: (key: string, value: unknown) => {
-              broadcast('data:save', { key, value });
+              userBroadcast('data:save', { key, value });
             },
           };
 
@@ -131,12 +132,12 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
             .catch((err) => {
               def.onError?.(tc, err, abort.aborted);
               if (abort.aborted) {
-                broadcast('log', {
+                userBroadcast('log', {
                   level: 'warn',
                   message: `${def.name} stopped by user`,
                 });
               } else {
-                broadcast('log', {
+                userBroadcast('log', {
                   level: 'error',
                   message: `${def.name} failed: ${err}`,
                 });

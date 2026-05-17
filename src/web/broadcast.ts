@@ -1,10 +1,12 @@
 import type { Response } from 'express';
-import type { EventMap, EventHandlers } from '../lib/service-events.js';
+import type { EventHandlers, EventMap } from '../lib/service-events.js';
 
 export interface Broadcaster {
   broadcast(type: string, data: unknown): void;
+  broadcastTo(userId: string, type: string, data: unknown): void;
   addClient(
     res: Response,
+    userId: string | null,
     currentTask: string | null,
     searchedArtists: ReadonlySet<string>,
   ): void;
@@ -25,29 +27,49 @@ const SKIP_HISTORY = new Set([
 ]);
 
 export function createBroadcaster(): Broadcaster {
-  const clients = new Set<Response>();
-  const logHistory: string[] = [];
+  const clients = new Map<Response, string | null>(); // res -> userId
+  const logHistory = new Map<string, string[]>(); // userId -> messages
 
   function send(res: Response, msg: string) {
     if (!res.writableEnded) res.write(`data: ${msg}\n\n`);
   }
 
+  function getUserHistory(userId: string): string[] {
+    let h = logHistory.get(userId);
+    if (!h) {
+      h = [];
+      logHistory.set(userId, h);
+    }
+    return h;
+  }
+
+  /** Broadcast to ALL connected clients (used for global events like reload) */
   function broadcast(type: string, data: unknown) {
     const msg = JSON.stringify({ type, data });
+    for (const [res] of clients) send(res, msg);
+  }
+
+  /** Broadcast to a specific user's clients only */
+  function broadcastTo(userId: string, type: string, data: unknown) {
+    const msg = JSON.stringify({ type, data });
     if (!SKIP_HISTORY.has(type)) {
-      logHistory.push(msg);
-      if (logHistory.length > MAX_LOG_HISTORY)
-        logHistory.splice(0, logHistory.length - MAX_LOG_HISTORY);
+      const history = getUserHistory(userId);
+      history.push(msg);
+      if (history.length > MAX_LOG_HISTORY)
+        history.splice(0, history.length - MAX_LOG_HISTORY);
     }
-    for (const res of clients) send(res, msg);
+    for (const [res, uid] of clients) {
+      if (uid === userId) send(res, msg);
+    }
   }
 
   function addClient(
     res: Response,
+    userId: string | null,
     currentTask: string | null,
     searchedArtists: ReadonlySet<string>,
   ) {
-    clients.add(res);
+    clients.set(res, userId);
     send(
       res,
       JSON.stringify({
@@ -64,7 +86,13 @@ export function createBroadcaster(): Broadcaster {
         }),
       );
     }
-    for (const msg of logHistory) send(res, msg);
+    // Send user-specific history
+    if (userId) {
+      const history = logHistory.get(userId);
+      if (history) {
+        for (const msg of history) send(res, msg);
+      }
+    }
     res.on('close', () => clients.delete(res));
   }
 
@@ -73,10 +101,10 @@ export function createBroadcaster(): Broadcaster {
   }
 
   function clearHistory() {
-    logHistory.length = 0;
+    logHistory.clear();
   }
 
-  return { broadcast, addClient, removeClient, clearHistory };
+  return { broadcast, broadcastTo, addClient, removeClient, clearHistory };
 }
 
 // ── Declarative event → broadcast wiring ─────────────────────────────────────

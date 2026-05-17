@@ -14,6 +14,7 @@ import {
 import { createAuthManager, fetchSpotifyUserId } from './auth.js';
 import { broadcastEvents, createBroadcaster } from './broadcast.js';
 import { createRouteContext } from './route-context.js';
+import { getSessionUserId } from './session.js';
 import { authRoutes } from './routes/auth.js';
 import { configRoutes } from './routes/config.js';
 import { queryRoutes } from './routes/queries.js';
@@ -86,7 +87,15 @@ app.get('/api/events', (req, res) => {
     Connection: 'keep-alive',
   });
   res.flushHeaders();
-  broadcaster.addClient(res, taskMutex.currentTask, getSearchedArtists());
+  // Identify user from Bearer token or cookie
+  let userId: string | null = (req.headers['x-user-id'] as string) ?? null;
+  if (!userId) {
+    try {
+      const appConfig = appConfigStore.load();
+      userId = getSessionUserId(req, appConfig.clientSecret);
+    } catch { /* no config */ }
+  }
+  broadcaster.addClient(res, userId, taskMutex.currentTask, getSearchedArtists());
   req.on('close', () => broadcaster.removeClient(res));
 });
 
@@ -190,7 +199,10 @@ app.post('/api/clear', async (req, res) => {
     return;
   }
 
-  broadcast('log', {
+  const userBroadcast = (type: string, data: unknown) =>
+    broadcaster.broadcastTo(session.userId, type, data);
+
+  userBroadcast('log', {
     level: 'info',
     message: `Clearing playlist "${name}"...`,
   });
@@ -198,7 +210,7 @@ app.post('/api/clear', async (req, res) => {
   const spotifyCtx = createSpotifyContext(session.client, undefined, pacer);
   const service = new PlaylistClearerService(
     spotifyCtx,
-    broadcastEvents<PlaylistClearerEventMap>(broadcast, {
+    broadcastEvents<PlaylistClearerEventMap>(userBroadcast, {
       playlistFound: {
         log: (n, count) => `Found "${n}" (${count} tracks)`,
       },
