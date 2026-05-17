@@ -46,3 +46,22 @@ export function isRedisConfigured(): boolean {
     process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
   );
 }
+
+// ── Trusted Artists Redis Store ─────────────────────────────────────────────
+
+export async function redisSaveTrustedArtists(
+  userId: string,
+  data: unknown,
+): Promise<void> {
+  if (!isRedisConfigured()) return;
+  await getRedis().set(`trustedArtists:${userId}`, JSON.stringify(data));
+}
+
+export async function redisLoadTrustedArtists(
+  userId: string,
+): Promise<unknown | null> {
+  if (!isRedisConfigured()) return null;
+  const raw = await getRedis().get<string>(`trustedArtists:${userId}`);
+  if (!raw) return null;
+  return typeof raw === 'string' ? JSON.parse(raw) : raw;
+}

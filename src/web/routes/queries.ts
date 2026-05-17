@@ -7,6 +7,7 @@ import {
   getAllUserPlaylists,
 } from '../../lib/pagination.js';
 import { createSpotifyContext } from '../../lib/spotify-context.js';
+import { redisLoadTrustedArtists } from '../redis-config-store.js';
 import type { RouteContext } from '../route-context.js';
 
 export function queryRoutes(ctx: RouteContext): Router {
@@ -68,11 +69,12 @@ export function queryRoutes(ctx: RouteContext): Router {
   });
 
   // List artists
-  router.get('/artists', (req, res) => {
+  router.get('/artists', async (req, res) => {
     const session = ctx.requireSession(req, res);
     if (!session) return;
 
-    const trusted = ctx.loadTrustedArtists(session.dataDir);
+    const trusted = ctx.loadTrustedArtists(session.dataDir)
+      ?? (await redisLoadTrustedArtists(session.userId)) as import('../../lib/types.js').TrustedArtistsFile | null;
     if (!trusted) {
       res.status(500).json({ error: 'trusted-artists.json not found' });
       return;

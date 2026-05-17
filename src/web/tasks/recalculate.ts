@@ -10,6 +10,7 @@ import {
   snapshotPriorities,
   syncIfNeeded,
 } from '../priority-diff.js';
+import { redisSaveTrustedArtists } from '../redis-config-store.js';
 import type { TaskContext, TaskDefinition } from '../task-runner.js';
 
 export const recalculateTask: TaskDefinition = {
@@ -92,8 +93,9 @@ export const recalculateTask: TaskDefinition = {
     );
     tc.broadcast('recalc:changes', { changes });
 
-    // Emit updated trusted artists to client
+    // Emit updated trusted artists to client + persist to Redis
     tc.emitData('trustedArtists', output);
+    await redisSaveTrustedArtists(tc.userId, output);
 
     tc.broadcast('log', {
       level: 'success',

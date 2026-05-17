@@ -13,6 +13,7 @@ import {
   snapshotPriorities,
   syncIfNeeded,
 } from '../priority-diff.js';
+import { redisSaveTrustedArtists } from '../redis-config-store.js';
 import type { TaskContext, TaskDefinition } from '../task-runner.js';
 
 const searchedArtists = new Set<string>();
@@ -325,8 +326,14 @@ export const fillTask: TaskDefinition = {
       });
     }
 
-    // Emit updated data back to client
+    // Emit updated data back to client + persist trustedArtists to Redis
     emitFileAsData(tc, 'trustedArtists', 'trusted-artists.json');
+    try {
+      const ta = JSON.parse(
+        fs.readFileSync(path.join(tc.dataDir, 'trusted-artists.json'), 'utf8'),
+      );
+      await redisSaveTrustedArtists(tc.userId, ta);
+    } catch { /* ok if file missing */ }
     emitFileAsData(tc, 'batchCache', 'batch-cache.json');
     emitFileAsData(tc, 'fillHistory', 'fill-history.json');
   },

@@ -156,6 +156,16 @@ app.post('/api/import-data', async (req, res) => {
     }
   }
 
+  // Save trustedArtists to Redis for cross-device access
+  if (trustedArtists) {
+    try {
+      const { redisSaveTrustedArtists } = await import('./redis-config-store.js');
+      await redisSaveTrustedArtists(session.userId, trustedArtists);
+    } catch (err) {
+      console.error('Failed to save trustedArtists to Redis:', err);
+    }
+  }
+
   // Return caches AND config — the client will save to localStorage
   const caches: Record<string, unknown> = {};
   if (trustedArtists) caches.trustedArtists = trustedArtists;
