@@ -133,7 +133,18 @@ importBtn.addEventListener('click', async () => {
     });
     const result = await res.json();
     if (result.ok) {
-      setStatus('success', `Imported successfully! ${result.imported} cache(s) sent to localStorage via SSE.`);
+      // Save caches to localStorage
+      let saved = 0;
+      if (result.caches) {
+        for (const [key, value] of Object.entries(result.caches)) {
+          localStorage.setItem(`sp_${key}`, JSON.stringify(value));
+          saved++;
+        }
+      }
+      const parts = [];
+      if (result.configSaved) parts.push('config saved to server');
+      if (saved > 0) parts.push(`${saved} cache(s) saved to localStorage`);
+      setStatus('success', `Import complete! ${parts.join(', ')}. Go back to the dashboard.`);
     } else {
       setStatus('error', result.error || 'Import failed');
       importBtn.disabled = false;

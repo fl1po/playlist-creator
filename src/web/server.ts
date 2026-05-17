@@ -109,7 +109,7 @@ taskRunner.register(awBreakdownTask);
 // ── Simple inline routes ────────────────────────────────────────────────────
 
 // Export all user data for localStorage migration
-app.get('/api/export-data', (req, res) => {
+app.get('/api/export-data', async (req, res) => {
   const session = ctx.requireSession(req, res);
   if (!session) return;
 
@@ -121,8 +121,11 @@ app.get('/api/export-data', (req, res) => {
     }
   };
 
+  const config = await session.userConfigStore.load();
+
   res.json({
     ok: true,
+    config,
     trustedArtists: read('trusted-artists.json'),
     batchCache: read('batch-cache.json'),
     fillHistory: read('fill-history.json'),
@@ -144,17 +147,16 @@ app.post('/api/import-data', async (req, res) => {
     await session.userConfigStore.save(config);
   }
 
-  // Broadcast all caches to the client's localStorage via SSE
-  const caches = { trustedArtists, batchCache, fillHistory, durationSnapshots, listeningTime, awBreakdown };
-  let imported = 0;
-  for (const [key, value] of Object.entries(caches)) {
-    if (value) {
-      broadcast('data:save', { key, value });
-      imported++;
-    }
-  }
+  // Return caches directly — the client will save to localStorage
+  const caches: Record<string, unknown> = {};
+  if (trustedArtists) caches.trustedArtists = trustedArtists;
+  if (batchCache) caches.batchCache = batchCache;
+  if (fillHistory) caches.fillHistory = fillHistory;
+  if (durationSnapshots) caches.durationSnapshots = durationSnapshots;
+  if (listeningTime) caches.listeningTime = listeningTime;
+  if (awBreakdown) caches.awBreakdown = awBreakdown;
 
-  res.json({ ok: true, imported });
+  res.json({ ok: true, configSaved: !!config, caches });
 });
 
 // Clear playlist (synchronous — no mutex)
