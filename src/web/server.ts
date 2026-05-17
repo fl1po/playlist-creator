@@ -115,13 +115,16 @@ app.get('/api/export-data', async (req, res) => {
 
   const read = (file: string) => {
     try {
-      return JSON.parse(fs.readFileSync(path.join(session.dataDir, file), 'utf8'));
+      return JSON.parse(
+        fs.readFileSync(path.join(session.dataDir, file), 'utf8'),
+      );
     } catch {
       return null;
     }
   };
 
-  const config = await session.userConfigStore.load();
+  // Read config from file directly (store may return defaults if file missing)
+  const config = read('user-config.json') ?? await session.userConfigStore.load();
 
   res.json({
     ok: true,

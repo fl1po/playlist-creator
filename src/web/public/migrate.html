@@ -11,7 +11,9 @@ h1 { font-size: 20px; margin-bottom: 8px; }
 p { color: #999; font-size: 14px; margin-bottom: 24px; }
 .drop-zone { border: 2px dashed #333; border-radius: 8px; padding: 40px 20px; text-align: center; cursor: pointer; transition: border-color 0.2s; margin-bottom: 16px; }
 .drop-zone:hover, .drop-zone.dragover { border-color: #1DB954; }
+.drop-zone.has-file { border-color: #1DB954; border-style: solid; }
 .drop-zone span { color: #999; font-size: 14px; }
+.drop-zone.has-file span { color: #1DB954; }
 input[type="file"] { display: none; }
 .status { font-size: 14px; min-height: 20px; margin-top: 12px; }
 .status.success { color: #1DB954; }
@@ -30,12 +32,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   <p>Migrate your data from the local setup to this server.</p>
 
   <div class="instructions">
-    <strong>How to export from local:</strong><br>
-    1. Make sure your local server is running<br>
-    2. Open <code>http://localhost:3005/api/export-data</code> in your browser<br>
-    3. Save the page as a <code>.json</code> file<br>
-    4. Also save your config: <code>http://localhost:3005/api/config</code> (optional if you've already configured this server)<br>
-    5. Drop the export file below
+    On your local machine, open <code>http://localhost:3005/api/export-data</code> and save the page as a JSON file. Then drop it here.
   </div>
 
   <div class="drop-zone" id="dropZone">
@@ -71,15 +68,35 @@ function handleFile(file) {
   reader.onload = (e) => {
     try {
       fileData = JSON.parse(e.target.result);
-      const keys = ['trustedArtists', 'batchCache', 'fillHistory', 'durationSnapshots', 'listeningTime', 'awBreakdown', 'config'].filter(k => fileData[k]);
-      dropZone.querySelector('span').textContent = `${file.name} — ${keys.length} data keys found`;
-      importBtn.disabled = false;
-      setStatus('info', `Ready to import: ${keys.join(', ')}`);
+      // Detect what's in the file
+      const parts = [];
+      const cacheKeys = ['trustedArtists', 'batchCache', 'fillHistory', 'durationSnapshots', 'listeningTime', 'awBreakdown'];
+      const caches = cacheKeys.filter(k => fileData[k]);
+      if (caches.length) parts.push(`${caches.length} caches`);
+      // Config: could be top-level sourcePlaylists, nested in .config, or from /api/config response
+      const config = getConfig();
+      if (config) parts.push('config' + (config.editorialPlaylists?.length ? ` (${config.editorialPlaylists.length} editorial)` : ''));
+
+      dropZone.classList.add('has-file');
+      dropZone.querySelector('span').textContent = `${file.name} — ${parts.join(', ') || 'no recognized data'}`;
+      importBtn.disabled = parts.length === 0;
+      setStatus('info', parts.length ? `Ready to import` : 'No recognized data in file');
     } catch {
       setStatus('error', 'Invalid JSON file');
     }
   };
   reader.readAsText(file);
+}
+
+function getConfig() {
+  if (!fileData) return null;
+  // Direct user-config.json (has sourcePlaylists at top level)
+  if (fileData.sourcePlaylists) return fileData;
+  // Embedded in export as .config
+  if (fileData.config?.sourcePlaylists) return fileData.config;
+  // From /api/config response: { ok, config: {...} }
+  if (fileData.ok && fileData.config?.sourcePlaylists) return fileData.config;
+  return null;
 }
 
 function setStatus(type, msg) {
@@ -92,7 +109,6 @@ importBtn.addEventListener('click', async () => {
   importBtn.disabled = true;
   setStatus('info', 'Importing...');
 
-  // Get tokens from localStorage
   let tokens, userId;
   try {
     tokens = JSON.parse(localStorage.getItem('sp_tokens'));
@@ -105,13 +121,9 @@ importBtn.addEventListener('click', async () => {
     return;
   }
 
-  // If the export file has a nested "config" object from /api/config response, unwrap it
   const body = {};
-  if (fileData.config?.sourcePlaylists) {
-    body.config = fileData.config;
-  } else if (fileData.config?.config) {
-    body.config = fileData.config.config;
-  }
+  const config = getConfig();
+  if (config) body.config = config;
 
   const cacheKeys = ['trustedArtists', 'batchCache', 'fillHistory', 'durationSnapshots', 'listeningTime', 'awBreakdown'];
   for (const key of cacheKeys) {
@@ -119,21 +131,18 @@ importBtn.addEventListener('click', async () => {
   }
 
   try {
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${tokens.accessToken}`,
-      'X-User-Id': userId,
-    };
     if (tokens.refreshToken) body.refreshToken = tokens.refreshToken;
-
     const res = await fetch('/api/import-data', {
       method: 'POST',
-      headers,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${tokens.accessToken}`,
+        'X-User-Id': userId,
+      },
       body: JSON.stringify(body),
     });
     const result = await res.json();
     if (result.ok) {
-      // Save caches to localStorage
       let saved = 0;
       if (result.caches) {
         for (const [key, value] of Object.entries(result.caches)) {
@@ -141,16 +150,13 @@ importBtn.addEventListener('click', async () => {
           saved++;
         }
       }
-      // Also save config to localStorage as fallback
       if (result.config) {
         localStorage.setItem('sp_config', JSON.stringify(result.config));
       }
       const parts = [];
-      if (result.configSaved) parts.push('config saved to server');
-      else if (result.configReceived) parts.push('config received but server save failed (saved locally)');
-      else parts.push('no config in file');
-      if (saved > 0) parts.push(`${saved} cache(s) saved to localStorage`);
-      setStatus('success', `Import complete! ${parts.join(', ')}. Go back to the dashboard.`);
+      if (result.configSaved) parts.push('config saved');
+      if (saved > 0) parts.push(`${saved} cache(s) imported`);
+      setStatus('success', `Done! ${parts.join(', ')}. Go back to the dashboard.`);
     } else {
       setStatus('error', result.error || 'Import failed');
       importBtn.disabled = false;
