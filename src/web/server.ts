@@ -156,13 +156,14 @@ app.post('/api/import-data', async (req, res) => {
     }
   }
 
-  // Save trustedArtists to Redis for cross-device access
-  if (trustedArtists) {
+  // Save trustedArtists + fillHistory to Redis for cross-device access
+  if (trustedArtists || fillHistory) {
     try {
-      const { redisSaveTrustedArtists } = await import('./redis-config-store.js');
-      await redisSaveTrustedArtists(session.userId, trustedArtists);
+      const { redisSaveTrustedArtists, redisSaveFillHistory } = await import('./redis-config-store.js');
+      if (trustedArtists) await redisSaveTrustedArtists(session.userId, trustedArtists);
+      if (fillHistory) await redisSaveFillHistory(session.userId, fillHistory);
     } catch (err) {
-      console.error('Failed to save trustedArtists to Redis:', err);
+      console.error('Failed to save to Redis:', err);
     }
   }
 

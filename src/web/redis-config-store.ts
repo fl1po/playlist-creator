@@ -65,3 +65,22 @@ export async function redisLoadTrustedArtists(
   if (!raw) return null;
   return typeof raw === 'string' ? JSON.parse(raw) : raw;
 }
+
+// ── Fill History Redis Store ────────────────────────────────────────────────
+
+export async function redisSaveFillHistory(
+  userId: string,
+  data: unknown,
+): Promise<void> {
+  if (!isRedisConfigured()) return;
+  await getRedis().set(`fillHistory:${userId}`, JSON.stringify(data));
+}
+
+export async function redisLoadFillHistory(
+  userId: string,
+): Promise<unknown[] | null> {
+  if (!isRedisConfigured()) return null;
+  const raw = await getRedis().get<string>(`fillHistory:${userId}`);
+  if (!raw) return null;
+  return typeof raw === 'string' ? JSON.parse(raw) : raw;
+}

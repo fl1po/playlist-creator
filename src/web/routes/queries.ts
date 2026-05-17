@@ -7,7 +7,10 @@ import {
   getAllUserPlaylists,
 } from '../../lib/pagination.js';
 import { createSpotifyContext } from '../../lib/spotify-context.js';
-import { redisLoadTrustedArtists } from '../redis-config-store.js';
+import {
+  redisLoadFillHistory,
+  redisLoadTrustedArtists,
+} from '../redis-config-store.js';
 import type { RouteContext } from '../route-context.js';
 
 export function queryRoutes(ctx: RouteContext): Router {
@@ -102,11 +105,12 @@ export function queryRoutes(ctx: RouteContext): Router {
   });
 
   // Stats
-  router.get('/stats', (req, res) => {
+  router.get('/stats', async (req, res) => {
     const session = ctx.requireSession(req, res);
     if (!session) return;
 
-    const trusted = ctx.loadTrustedArtists(session.dataDir);
+    const trusted = ctx.loadTrustedArtists(session.dataDir)
+      ?? (await redisLoadTrustedArtists(session.userId)) as import('../../lib/types.js').TrustedArtistsFile | null;
 
     let overview: unknown = null;
     let scoreDistribution: unknown[] | null = null;
@@ -151,7 +155,9 @@ export function queryRoutes(ctx: RouteContext): Router {
         ),
       );
     } catch {
-      /* no file */
+      /* no file — try Redis */
+      const redisFH = await redisLoadFillHistory(session.userId);
+      if (redisFH) fillHistory = redisFH;
     }
 
     res.json({

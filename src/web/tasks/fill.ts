@@ -13,7 +13,10 @@ import {
   snapshotPriorities,
   syncIfNeeded,
 } from '../priority-diff.js';
-import { redisSaveTrustedArtists } from '../redis-config-store.js';
+import {
+  redisSaveFillHistory,
+  redisSaveTrustedArtists,
+} from '../redis-config-store.js';
 import type { TaskContext, TaskDefinition } from '../task-runner.js';
 
 const searchedArtists = new Set<string>();
@@ -336,6 +339,12 @@ export const fillTask: TaskDefinition = {
     } catch { /* ok if file missing */ }
     emitFileAsData(tc, 'batchCache', 'batch-cache.json');
     emitFileAsData(tc, 'fillHistory', 'fill-history.json');
+    try {
+      const fh = JSON.parse(
+        fs.readFileSync(path.join(tc.dataDir, 'fill-history.json'), 'utf8'),
+      );
+      await redisSaveFillHistory(tc.userId, fh);
+    } catch { /* ok if file missing */ }
   },
 
   onError(tc: TaskContext, error: unknown, aborted: boolean) {
