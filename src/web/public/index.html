@@ -1166,10 +1166,19 @@ async function authenticate() {
   connectBtn.disabled = true;
   const res = await api('GET', '/api/auth');
   if (res.url) {
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+      window.location.href = res.url;
+      return;
+    }
     const w = 460, h = 700;
     const left = Math.round(screen.width / 2 - w / 2);
     const top = Math.round(screen.height / 2 - h / 2);
     authPopup = window.open(res.url, 'spotify_auth', `width=${w},height=${h},left=${left},top=${top}`);
+    if (!authPopup || authPopup.closed) {
+      window.location.href = res.url;
+      return;
+    }
     status.textContent = 'Complete the login in the popup...';
   } else {
     status.textContent = 'Failed to start authentication.';

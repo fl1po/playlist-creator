@@ -161,7 +161,7 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
 <h1>Authenticated</h1>
 <p>Welcome, ${displayName.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c] ?? c)}</p>
 <p class="closing">This window will close automatically...</p>
-</div><script>setTimeout(()=>window.close(),1500)</script></body></html>`;
+</div><script>setTimeout(()=>{if(window.opener){window.close()}else{window.location.href='/'}},1500)</script></body></html>`;
   }
 
   function startCallbackServer(port: number, callbackPath: string) {
