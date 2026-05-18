@@ -834,7 +834,9 @@ function updateFillProgress() {
 
 // ── SSE Connection ──────────────────────────────────────────────
 function connect() {
-  const es = new EventSource('/api/events');
+  const userId = Store.getUserId();
+  const url = userId ? `/api/events?userId=${encodeURIComponent(userId)}` : '/api/events';
+  const es = new EventSource(url);
 
   es.onopen = () => {
     wsConnected = true;

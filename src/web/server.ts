@@ -87,8 +87,9 @@ app.get('/api/events', (req, res) => {
     Connection: 'keep-alive',
   });
   res.flushHeaders();
-  // Identify user from Bearer token or cookie
+  // Identify user from header, query param, or cookie
   let userId: string | null = (req.headers['x-user-id'] as string) ?? null;
+  if (!userId) userId = (req.query.userId as string) ?? null;
   if (!userId) {
     try {
       const appConfig = appConfigStore.load();
