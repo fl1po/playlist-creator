@@ -8,8 +8,8 @@ import {
   releaseDateFallbackMatch,
 } from '../domain/releases.js';
 import { getValidDates, parseDate } from '../domain/tracks.js';
+import { fetchDeezerPopularities } from '../lib/deezer-popularity.js';
 import {
-  fetchReleasePopularities,
   getAllPlaylistTracks,
   getNonListenedPlaylists,
   getPlaylistTracksWithArtists,
@@ -250,10 +250,7 @@ export class PlaylistSyncerService {
 
           if (foundReleases.size === 0) continue;
 
-          const popularities = await fetchReleasePopularities(
-            this.ctx,
-            foundReleases,
-          );
+          const popularities = await fetchDeezerPopularities(foundReleases);
           const lowPop = filterLowPopularity(foundReleases, popularities);
           for (const id of lowPop) foundReleases.delete(id);
 
