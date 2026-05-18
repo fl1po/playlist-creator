@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { BatchCache } from '../../lib/types.js';
 import {
   type PriorityCalculatorEventMap,
   PriorityCalculatorService,
@@ -34,6 +35,43 @@ export const recalculateTask: TaskDefinition = {
     }
 
     const userConfig = await tc.userConfigStore.load();
+    const force = !!tc.body.force;
+    const cache = (tc.caches.batchCache ?? {}) as BatchCache;
+
+    // Fetch live snapshots (2 cheap API calls)
+    const awResult = await tc.ctx.call(
+      () => tc.ctx.api.playlists.getPlaylist(userConfig.sourcePlaylists.allWeeklyId, undefined, 'snapshot_id'),
+      'All Weekly snapshot',
+    );
+    const awSnapshot = awResult.success ? awResult.data.snapshot_id : undefined;
+
+    let boawSnapshot: string | undefined;
+    if (userConfig.sourcePlaylists.useLikedSongs) {
+      const likedResult = await tc.ctx.call(
+        () => tc.ctx.api.currentUser.tracks.savedTracks(1, 0),
+        'Liked Songs snapshot',
+      );
+      if (likedResult.success) {
+        const data = likedResult.data as any;
+        boawSnapshot = `${data.total ?? 0}:${data.items?.[0]?.added_at ?? ''}`;
+      }
+    } else {
+      const boawResult = await tc.ctx.call(
+        () => tc.ctx.api.playlists.getPlaylist(userConfig.sourcePlaylists.bestOfAllWeeklyId, undefined, 'snapshot_id'),
+        'BoAW snapshot',
+      );
+      boawSnapshot = boawResult.success ? boawResult.data.snapshot_id : undefined;
+    }
+
+    // Skip if snapshots unchanged
+    if (!force && cache.allWeeklySnapshot && cache.bestOfAllWeeklySnapshot) {
+      const awUnchanged = awSnapshot && cache.allWeeklySnapshot === awSnapshot;
+      const boawUnchanged = boawSnapshot && cache.bestOfAllWeeklySnapshot === boawSnapshot;
+      if (awUnchanged && boawUnchanged) {
+        tc.broadcast('log', { level: 'info', message: 'Snapshots unchanged — skipping recalculation' });
+        return;
+      }
+    }
 
     const service = new PriorityCalculatorService(
       tc.ctx,
@@ -93,8 +131,16 @@ export const recalculateTask: TaskDefinition = {
     );
     tc.broadcast('recalc:changes', { changes });
 
-    // Emit updated trusted artists to client + persist to Redis
+    // Emit updated trusted artists and snapshots to client + persist to Redis
     tc.emitData('trustedArtists', output);
+    if (awSnapshot || boawSnapshot) {
+      const updatedCache: BatchCache = {
+        ...cache,
+        ...(awSnapshot && { allWeeklySnapshot: awSnapshot }),
+        ...(boawSnapshot && { bestOfAllWeeklySnapshot: boawSnapshot }),
+      };
+      tc.emitData('batchCache', updatedCache);
+    }
     await redisSaveTrustedArtists(tc.userId, output);
 
     tc.broadcast('log', {

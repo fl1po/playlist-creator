@@ -368,14 +368,19 @@ export class PlaylistFillerService {
 
     let boawSnapshot: string;
     if (this.opts.useLikedSongs) {
-      // Liked Songs has no snapshot_id — use track count as change indicator
+      // Liked Songs has no snapshot_id — use track count + latest added_at as change indicator
       const likedResult = await this.ctx.call(
         () => this.ctx.api.currentUser.tracks.savedTracks(1, 0),
-        'Liked Songs count',
+        'Liked Songs snapshot',
       );
-      boawSnapshot = likedResult.success
-        ? String((likedResult.data as any).total ?? 0)
-        : this.cache.bestOfAllWeeklySnapshot ?? '0';
+      if (likedResult.success) {
+        const data = likedResult.data as any;
+        const total = data.total ?? 0;
+        const addedAt = data.items?.[0]?.added_at ?? '';
+        boawSnapshot = `${total}:${addedAt}`;
+      } else {
+        boawSnapshot = this.cache.bestOfAllWeeklySnapshot ?? '0';
+      }
     } else {
       const boawResult = await this.ctx.call(
         () => this.ctx.api.playlists.getPlaylist(this.opts.bestOfAllWeeklyId),
