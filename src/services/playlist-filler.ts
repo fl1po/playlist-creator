@@ -14,8 +14,8 @@ import {
 } from '../domain/tracks.js';
 import { abortableSleep } from '../lib/abort.js';
 import { isAuthError } from '../lib/api-wrapper.js';
+import { fetchDeezerPopularities } from '../lib/deezer-popularity.js';
 import {
-  fetchReleasePopularities,
   getAllPlaylistTracks,
   getAllUserPlaylists,
   getPlaylistAlbums,
@@ -588,9 +588,11 @@ export class PlaylistFillerService {
       trustedArtists,
     );
 
-    // Filter low popularity
-    const releasePopularity =
-      await fetchReleasePopularities(this.ctx, foundReleases);
+    // Filter low popularity via Deezer rank
+    const releasePopularity = await fetchDeezerPopularities(foundReleases, {
+      onProgress: (done, total) =>
+        this.emitter.emit('log', `Checking popularity: ${done}/${total}`),
+    });
     const lowPop = filterLowPopularity(foundReleases, releasePopularity);
     for (const id of lowPop) {
       const r = foundReleases.get(id);
