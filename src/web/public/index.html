@@ -1231,6 +1231,19 @@ function setAuthenticated(ok, displayName, reason) {
 async function checkAuth() {
   document.getElementById('authStatus').textContent = 'Checking authentication...';
   document.getElementById('authConnectBtn').style.display = 'none';
+
+  // Handle mobile redirect auth flow: exchange auth_token from URL
+  const urlParams = new URLSearchParams(window.location.search);
+  const authToken = urlParams.get('auth_token');
+  if (authToken) {
+    history.replaceState(null, '', '/');
+    const tokenRes = await api('GET', `/api/auth/complete?token=${encodeURIComponent(authToken)}&format=json`);
+    if (tokenRes.userId && tokenRes.accessToken) {
+      Store.setTokens({ accessToken: tokenRes.accessToken, refreshToken: tokenRes.refreshToken });
+      Store.setUserId(tokenRes.userId);
+    }
+  }
+
   const res = await api('GET', '/api/auth/status');
   setAuthenticated(res.authenticated, res.displayName, res.reason);
   if (res.authenticated) await migrateDataToLocalStorage();

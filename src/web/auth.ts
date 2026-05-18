@@ -150,18 +150,18 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
     return { userId: user.id, displayName: user.displayName };
   }
 
-  function buildAuthSuccessPage(displayName: string): string {
+  function buildAuthSuccessPage(displayName: string, authToken: string): string {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Authenticated</title>
 <style>*{margin:0;padding:0;box-sizing:border-box}body{background:#121212;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center}
 .card{padding:48px 32px}.icon{width:48px;height:48px;margin:0 auto 20px;background:#1a3a25;border-radius:50%;display:flex;align-items:center;justify-content:center}
 .icon svg{width:24px;height:24px}h1{font-size:22px;margin-bottom:6px;color:#1DB954}p{color:#999;font-size:14px}
 .closing{margin-top:16px;font-size:12px;color:#555}</style></head>
-<body><div class="card">
+<body data-token="${authToken}"><div class="card">
 <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="#1DB954" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
 <h1>Authenticated</h1>
 <p>Welcome, ${displayName.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c] ?? c)}</p>
 <p class="closing">This window will close automatically...</p>
-</div><script>setTimeout(()=>{if(window.opener){window.close()}else{window.location.href='/'}},1500)</script></body></html>`;
+</div><script>setTimeout(()=>{if(window.opener){window.close()}else{window.location.href='/?auth_token=' + encodeURIComponent(document.body.dataset.token)}},1500)</script></body></html>`;
   }
 
   function startCallbackServer(port: number, callbackPath: string) {
@@ -207,7 +207,7 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
         const tokens = recentTokens.get(user.userId);
 
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(buildAuthSuccessPage(user.displayName));
+        res.end(buildAuthSuccessPage(user.displayName, authToken));
         deps.broadcast('log', {
           level: 'success',
           message: `Spotify authenticated: ${user.displayName}`,
@@ -303,7 +303,7 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
       const authToken = createAuthToken(user.userId);
       const tokens = recentTokens.get(user.userId);
 
-      res.send(buildAuthSuccessPage(user.displayName));
+      res.send(buildAuthSuccessPage(user.displayName, authToken));
       deps.broadcast('log', {
         level: 'success',
         message: `Spotify authenticated: ${user.displayName}`,
