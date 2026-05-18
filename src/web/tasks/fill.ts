@@ -14,6 +14,7 @@ import {
   syncIfNeeded,
 } from '../priority-diff.js';
 import {
+  redisSaveBatchCache,
   redisSaveFillHistory,
   redisSaveTrustedArtists,
 } from '../redis-config-store.js';
@@ -338,6 +339,12 @@ export const fillTask: TaskDefinition = {
       await redisSaveTrustedArtists(tc.userId, ta);
     } catch { /* ok if file missing */ }
     emitFileAsData(tc, 'batchCache', 'batch-cache.json');
+    try {
+      const bc = JSON.parse(
+        fs.readFileSync(path.join(tc.dataDir, 'batch-cache.json'), 'utf8'),
+      );
+      await redisSaveBatchCache(tc.userId, bc);
+    } catch { /* ok if file missing */ }
     emitFileAsData(tc, 'fillHistory', 'fill-history.json');
     try {
       const fh = JSON.parse(

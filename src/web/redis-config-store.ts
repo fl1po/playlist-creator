@@ -84,3 +84,22 @@ export async function redisLoadFillHistory(
   if (!raw) return null;
   return typeof raw === 'string' ? JSON.parse(raw) : raw;
 }
+
+// ── Batch Cache Redis Store ────────────────────────────────────────────────
+
+export async function redisSaveBatchCache(
+  userId: string,
+  data: unknown,
+): Promise<void> {
+  if (!isRedisConfigured()) return;
+  await getRedis().set(`batchCache:${userId}`, JSON.stringify(data));
+}
+
+export async function redisLoadBatchCache(
+  userId: string,
+): Promise<unknown | null> {
+  if (!isRedisConfigured()) return null;
+  const raw = await getRedis().get<string>(`batchCache:${userId}`);
+  if (!raw) return null;
+  return typeof raw === 'string' ? JSON.parse(raw) : raw;
+}

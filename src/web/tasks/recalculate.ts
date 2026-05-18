@@ -11,7 +11,11 @@ import {
   snapshotPriorities,
   syncIfNeeded,
 } from '../priority-diff.js';
-import { redisSaveTrustedArtists } from '../redis-config-store.js';
+import {
+  redisLoadBatchCache,
+  redisSaveBatchCache,
+  redisSaveTrustedArtists,
+} from '../redis-config-store.js';
 import type { TaskContext, TaskDefinition } from '../task-runner.js';
 
 export const recalculateTask: TaskDefinition = {
@@ -36,7 +40,7 @@ export const recalculateTask: TaskDefinition = {
 
     const userConfig = await tc.userConfigStore.load();
     const force = !!tc.body.force;
-    const cache = (tc.caches.batchCache ?? {}) as BatchCache;
+    const cache = (tc.caches.batchCache ?? await redisLoadBatchCache(tc.userId) ?? {}) as BatchCache;
 
     // Fetch live snapshots (2 cheap API calls)
     const awResult = await tc.ctx.call(
@@ -140,6 +144,7 @@ export const recalculateTask: TaskDefinition = {
         ...(boawSnapshot && { bestOfAllWeeklySnapshot: boawSnapshot }),
       };
       tc.emitData('batchCache', updatedCache);
+      await redisSaveBatchCache(tc.userId, updatedCache);
     }
     await redisSaveTrustedArtists(tc.userId, output);
 
