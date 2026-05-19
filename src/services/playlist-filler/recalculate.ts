@@ -1,6 +1,6 @@
 import type { ServiceEmitter } from '../../lib/service-events.js';
 import type { SpotifyContext } from '../../lib/spotify-context.js';
-import type { BatchCache } from '../../lib/types.js';
+import type { BatchCache, CachedScanResult, PlaylistArtistData, PlaylistScanResult } from '../../lib/types.js';
 import { PriorityCalculatorService } from '../priority-calculator.js';
 import type { PlaylistFillerEventMap } from './events.js';
 import type { FillStorage } from './storage.js';
@@ -14,9 +14,26 @@ export interface RecalculateDeps {
   useLikedSongs: boolean;
 }
 
+function toMap(record: Record<string, PlaylistArtistData>): Map<string, PlaylistArtistData> {
+  return new Map(Object.entries(record));
+}
+
+function toRecord(map: Map<string, PlaylistArtistData>): Record<string, PlaylistArtistData> {
+  return Object.fromEntries(map);
+}
+
+function toScanResult(cached: CachedScanResult): PlaylistScanResult {
+  return { artistData: toMap(cached.artistData), totalTracks: cached.totalTracks };
+}
+
+function toCachedScanResult(scan: PlaylistScanResult): CachedScanResult {
+  return { artistData: toRecord(scan.artistData), totalTracks: scan.totalTracks };
+}
+
 /**
  * Check whether the source playlists changed since the last cached snapshot.
- * If so, re-run the priority calculator and save trusted-artists.
+ * If so, re-run the priority calculator — only scanning the source(s) that
+ * actually changed, reusing cached scan data for the unchanged one.
  *
  * Returns true when a recalculation happened (caller should reload trusted
  * artists). Updates `cache.allWeeklySnapshot` / `bestOfAllWeeklySnapshot` and
@@ -78,13 +95,29 @@ export async function maybeRecalculate(
       progress && progress.date === targetDate && progress.artistsSearched > 0;
     if (!midSearch) {
       emitter.emit('recalculating');
+
+      // Reuse cached scan data for the source that didn't change
+      const preloaded: { aw?: PlaylistScanResult; boaw?: PlaylistScanResult } = {};
+      if (!awChanged && cache.awScanCache) {
+        preloaded.aw = toScanResult(cache.awScanCache);
+      }
+      if (!boawChanged && cache.boawScanCache) {
+        preloaded.boaw = toScanResult(cache.boawScanCache);
+      }
+
       const calcService = new PriorityCalculatorService(ctx, {
         allWeeklyId: deps.allWeeklyId,
         bestOfAllWeeklyId: deps.bestOfAllWeeklyId,
         useLikedSongs: deps.useLikedSongs,
+        preloaded,
       });
-      const output = await calcService.run();
-      await storage.saveTrustedArtists(output);
+      const { scanResults, ...trustedArtists } = await calcService.run();
+      await storage.saveTrustedArtists(trustedArtists);
+
+      // Cache scan results for next time
+      cache.awScanCache = toCachedScanResult(scanResults.aw);
+      cache.boawScanCache = toCachedScanResult(scanResults.boaw);
+
       emitter.emit('recalculated');
       recalculated = true;
     }

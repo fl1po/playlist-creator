@@ -6,7 +6,7 @@ import {
 import { getLikedTracksWithPositions, getPlaylistTracksWithPositions } from '../lib/pagination.js';
 import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
-import type { ArtistData, TrustedArtistsFile } from '../lib/types.js';
+import type { ArtistData, PlaylistScanResult, TrustedArtistsFile } from '../lib/types.js';
 import { secondarySourceName } from '../lib/user-config.js';
 
 // ── Events ──────────────────────────────────────────────────────────────────
@@ -34,6 +34,11 @@ export interface PriorityCalculatorOptions {
   useLikedSongs?: boolean;
   scoringWeights?: ScoringWeights;
   priorityThresholds?: PriorityThresholds;
+  /** Pre-loaded scan data — skips scanning for provided sources. */
+  preloaded?: {
+    aw?: PlaylistScanResult;
+    boaw?: PlaylistScanResult;
+  };
 }
 
 const DEFAULTS = {
@@ -62,26 +67,41 @@ export class PriorityCalculatorService {
       useLikedSongs: options?.useLikedSongs ?? false,
       scoringWeights: options?.scoringWeights,
       priorityThresholds: options?.priorityThresholds,
+      preloaded: options?.preloaded,
     } as Required<PriorityCalculatorOptions>;
   }
 
-  async run(): Promise<TrustedArtistsFile> {
+  async run(): Promise<TrustedArtistsFile & { scanResults: { aw: PlaylistScanResult; boaw: PlaylistScanResult } }> {
     const progressFor = (name: string) => ({
       onProgress: (fetched: number, total: number) =>
         this.emitter.emit('scanProgress', name, fetched, total),
     });
 
-    this.emitter.emit('scanStart', 'All Weekly');
-    const { artistData: awData, totalTracks: awTotal } =
-      await getPlaylistTracksWithPositions(this.ctx, this.opts.allWeeklyId, progressFor('All Weekly'));
-    this.emitter.emit('scanComplete', 'All Weekly', awData.size, awTotal);
+    let awData: Map<string, import('../lib/types.js').PlaylistArtistData>;
+    let awTotal: number;
+    if (this.opts.preloaded?.aw) {
+      ({ artistData: awData, totalTracks: awTotal } = this.opts.preloaded.aw);
+      this.emitter.emit('scanComplete', 'All Weekly (cached)', awData.size, awTotal);
+    } else {
+      this.emitter.emit('scanStart', 'All Weekly');
+      ({ artistData: awData, totalTracks: awTotal } =
+        await getPlaylistTracksWithPositions(this.ctx, this.opts.allWeeklyId, progressFor('All Weekly')));
+      this.emitter.emit('scanComplete', 'All Weekly', awData.size, awTotal);
+    }
 
     const boawSourceName = secondarySourceName({ sourcePlaylists: { useLikedSongs: this.opts.useLikedSongs } });
-    this.emitter.emit('scanStart', boawSourceName);
-    const { artistData: boawData, totalTracks: boawTotal } = this.opts.useLikedSongs
-      ? await getLikedTracksWithPositions(this.ctx, progressFor(boawSourceName))
-      : await getPlaylistTracksWithPositions(this.ctx, this.opts.bestOfAllWeeklyId, progressFor(boawSourceName));
-    this.emitter.emit('scanComplete', boawSourceName, boawData.size, boawTotal);
+    let boawData: Map<string, import('../lib/types.js').PlaylistArtistData>;
+    let boawTotal: number;
+    if (this.opts.preloaded?.boaw) {
+      ({ artistData: boawData, totalTracks: boawTotal } = this.opts.preloaded.boaw);
+      this.emitter.emit('scanComplete', `${boawSourceName} (cached)`, boawData.size, boawTotal);
+    } else {
+      this.emitter.emit('scanStart', boawSourceName);
+      ({ artistData: boawData, totalTracks: boawTotal } = this.opts.useLikedSongs
+        ? await getLikedTracksWithPositions(this.ctx, progressFor(boawSourceName))
+        : await getPlaylistTracksWithPositions(this.ctx, this.opts.bestOfAllWeeklyId, progressFor(boawSourceName)));
+      this.emitter.emit('scanComplete', boawSourceName, boawData.size, boawTotal);
+    }
 
     // Combine all unique artists
     const allArtists = new Set([...awData.keys(), ...boawData.keys()]);
@@ -186,6 +206,12 @@ export class PriorityCalculatorService {
       artistCounts,
     };
 
-    return output;
+    return {
+      ...output,
+      scanResults: {
+        aw: { artistData: awData, totalTracks: awTotal },
+        boaw: { artistData: boawData, totalTracks: boawTotal },
+      },
+    };
   }
 }

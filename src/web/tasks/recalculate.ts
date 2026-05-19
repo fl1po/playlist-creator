@@ -126,7 +126,7 @@ export const recalculateTask: TaskDefinition = {
     const trustedPath = path.join(tc.dataDir, 'trusted-artists.json');
     const oldPriorities = snapshotPriorities(trustedPath);
 
-    const output = await service.run();
+    const { scanResults: _, ...output } = await service.run();
     fs.writeFileSync(trustedPath, JSON.stringify(output, null, 2));
 
     const changes = diffPriorities(oldPriorities, output);

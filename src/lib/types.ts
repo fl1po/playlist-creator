@@ -145,9 +145,16 @@ export interface DateResult {
   error?: string;
 }
 
+export interface CachedScanResult {
+  artistData: Record<string, PlaylistArtistData>;
+  totalTracks: number;
+}
+
 export interface BatchCache {
   allWeeklySnapshot?: string;
   bestOfAllWeeklySnapshot?: string;
+  awScanCache?: CachedScanResult;
+  boawScanCache?: CachedScanResult;
   artistSearchProgress?: {
     date: string;
     artistsSearched: number;

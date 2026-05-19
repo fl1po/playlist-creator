@@ -46,7 +46,7 @@ const service = new PriorityCalculatorService(
 
 console.log('=== Recalculating Artist Priorities ===\n');
 
-const output = await service.run();
+const { scanResults: _, ...output } = await service.run();
 
 const outputPath = './trusted-artists.json';
 fs.writeFileSync(outputPath, JSON.stringify(output, null, 2));
