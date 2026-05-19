@@ -1,6 +1,6 @@
 import type { ServiceEmitter } from '../../lib/service-events.js';
 import type { SpotifyContext } from '../../lib/spotify-context.js';
-import type { BatchCache, CachedScanResult, PlaylistArtistData, PlaylistScanResult } from '../../lib/types.js';
+import { type BatchCache, type PlaylistScanResult, toCachedScanResult, toScanResult } from '../../lib/types.js';
 import { PriorityCalculatorService } from '../priority-calculator.js';
 import type { PlaylistFillerEventMap } from './events.js';
 import type { FillStorage } from './storage.js';
@@ -14,21 +14,6 @@ export interface RecalculateDeps {
   useLikedSongs: boolean;
 }
 
-function toMap(record: Record<string, PlaylistArtistData>): Map<string, PlaylistArtistData> {
-  return new Map(Object.entries(record));
-}
-
-function toRecord(map: Map<string, PlaylistArtistData>): Record<string, PlaylistArtistData> {
-  return Object.fromEntries(map);
-}
-
-function toScanResult(cached: CachedScanResult): PlaylistScanResult {
-  return { artistData: toMap(cached.artistData), totalTracks: cached.totalTracks };
-}
-
-function toCachedScanResult(scan: PlaylistScanResult): CachedScanResult {
-  return { artistData: toRecord(scan.artistData), totalTracks: scan.totalTracks };
-}
 
 /**
  * Check whether the source playlists changed since the last cached snapshot.

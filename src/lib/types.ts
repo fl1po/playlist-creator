@@ -174,3 +174,11 @@ export interface PlaylistScanResult {
   artistData: Map<string, PlaylistArtistData>;
   totalTracks: number;
 }
+
+export function toScanResult(cached: CachedScanResult): PlaylistScanResult {
+  return { artistData: new Map(Object.entries(cached.artistData)), totalTracks: cached.totalTracks };
+}
+
+export function toCachedScanResult(scan: PlaylistScanResult): CachedScanResult {
+  return { artistData: Object.fromEntries(scan.artistData), totalTracks: scan.totalTracks };
+}
