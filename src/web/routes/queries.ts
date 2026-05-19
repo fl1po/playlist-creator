@@ -4,8 +4,8 @@ import { Router } from 'express';
 import {
   AW_BREAKDOWN_CACHE,
   LISTENING_TIME_CACHE,
-  getAllUserPlaylists,
-} from '../../lib/pagination.js';
+} from '../../lib/cache-files.js';
+import { getAllUserPlaylists } from '../../lib/pagination.js';
 import { createSpotifyContext } from '../../lib/spotify-context.js';
 import {
   redisLoadFillHistory,

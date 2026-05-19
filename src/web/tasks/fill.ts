@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { filterByPriority } from '../../domain/artists.js';
-import { invalidateNonListenedCache } from '../../lib/pagination.js';
+import { invalidateNonListenedCache } from '../../services/non-listened-playlists.js';
 import type { ApiCallOptions, TrustedArtistsFile } from '../../lib/types.js';
 import {
   type PlaylistFillerEventMap,

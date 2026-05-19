@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { formatHm } from '../../domain/tracks.js';
 import {
-  AW_BREAKDOWN_CACHE,
   getPlaylistTracksGroupedByWeek,
-} from '../../lib/pagination.js';
-import type { WeekBreakdownEntry } from '../../lib/pagination.js';
+  type WeekBreakdownEntry,
+} from '../../domain/aw-breakdown.js';
+import { AW_BREAKDOWN_CACHE } from '../../lib/cache-files.js';
 import type { TaskContext, TaskDefinition } from '../task-runner.js';
 
 interface AwBreakdownCache {
@@ -65,14 +65,12 @@ export const awBreakdownTask: TaskDefinition = {
       message: 'Fetching AW tracks...',
     });
 
-    const weeks = await getPlaylistTracksGroupedByWeek(
-      tc.ctx,
-      awId,
-      (fetched, total) => {
+    const weeks = await getPlaylistTracksGroupedByWeek(tc.ctx, awId, {
+      onProgress: (fetched, total) => {
         tc.checkAbort();
         tc.broadcast('awBreakdown:progress', { fetched, total });
       },
-    );
+    });
 
     const totalTracks = weeks.reduce((s, w) => s + w.trackCount, 0);
     const totalDurationMs = weeks.reduce((s, w) => s + w.durationMs, 0);

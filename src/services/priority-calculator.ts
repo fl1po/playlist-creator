@@ -66,8 +66,10 @@ export class PriorityCalculatorService {
   }
 
   async run(): Promise<TrustedArtistsFile> {
-    const progressFor = (name: string) => (fetched: number, total: number) =>
-      this.emitter.emit('scanProgress', name, fetched, total);
+    const progressFor = (name: string) => ({
+      onProgress: (fetched: number, total: number) =>
+        this.emitter.emit('scanProgress', name, fetched, total),
+    });
 
     this.emitter.emit('scanStart', 'All Weekly');
     const { artistData: awData, totalTracks: awTotal } =

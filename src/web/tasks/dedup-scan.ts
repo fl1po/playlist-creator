@@ -1,7 +1,5 @@
-import {
-  getNonListenedPlaylists,
-  getPlaylistTracksDetailed,
-} from '../../lib/pagination.js';
+import { getPlaylistTracksDetailed } from '../../lib/pagination.js';
+import { getNonListenedPlaylists } from '../../services/non-listened-playlists.js';
 import type { TaskContext, TaskDefinition } from '../task-runner.js';
 
 export const dedupScanTask: TaskDefinition = {

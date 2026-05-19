@@ -1,4 +1,4 @@
-import { invalidateNonListenedCache } from '../../lib/pagination.js';
+import { invalidateNonListenedCache } from '../../services/non-listened-playlists.js';
 import type { TaskContext, TaskDefinition } from '../task-runner.js';
 
 export const dedupRemoveTask: TaskDefinition = {

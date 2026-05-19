@@ -11,17 +11,15 @@ import { getValidDates, parseDate } from '../domain/tracks.js';
 import { fetchDeezerPopularities } from '../lib/deezer-popularity.js';
 import {
   getAllPlaylistTracks,
-  getNonListenedPlaylists,
   getPlaylistTracksWithArtists,
-  invalidateNonListenedCache,
 } from '../lib/pagination.js';
+import {
+  getNonListenedPlaylists,
+  invalidateNonListenedCache,
+} from './non-listened-playlists.js';
 import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
-import type {
-  FoundRelease,
-  SimplePlaylist,
-  TrustedArtistsFile,
-} from '../lib/types.js';
+import type { FoundRelease, TrustedArtistsFile } from '../lib/types.js';
 import { ReleaseCollector, type TrackDedup } from './release-collector.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────

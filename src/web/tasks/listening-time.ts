@@ -3,11 +3,11 @@ import path from 'node:path';
 import { formatHm } from '../../domain/tracks.js';
 import {
   DURATION_SNAPSHOT_CACHE,
+  type DurationSnapshots,
   LISTENING_TIME_CACHE,
-  getNonListenedPlaylists,
-  getPlaylistTotalDuration,
-} from '../../lib/pagination.js';
-import type { DurationSnapshots } from '../../lib/pagination.js';
+} from '../../lib/cache-files.js';
+import { getPlaylistTotalDuration } from '../../lib/pagination.js';
+import { getNonListenedPlaylists } from '../../services/non-listened-playlists.js';
 import type { TaskContext, TaskDefinition } from '../task-runner.js';
 
 export const listeningTimeTask: TaskDefinition = {
