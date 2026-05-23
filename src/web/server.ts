@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import compression from 'compression';
 import express from 'express';
+import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import { UserTokenStore, createAppConfigStore } from '../lib/config.js';
 import { RequestPacer } from '../lib/request-pacer.js';
 import { createSpotifyContext } from '../lib/spotify-context.js';
@@ -257,6 +258,164 @@ app.post('/api/clear-logs', (_req, res) => {
 
 app.get('/api/status', (_req, res) => {
   res.json({ busy: !!taskMutex.currentTask, task: taskMutex.currentTask });
+});
+
+// ── Playback tracking ──────────────────────────────────────────────────────
+
+interface PlaylistCache {
+  name: string;
+  tracks: Array<{ id: string; duration_ms: number }>;
+  totalMs: number;
+}
+
+const PLAYLIST_CACHE_MAX = 50;
+const playlistDurationCache = new Map<string, PlaylistCache>();
+
+function cachePlaylist(id: string, entry: PlaylistCache) {
+  if (playlistDurationCache.size >= PLAYLIST_CACHE_MAX) {
+    const oldest = playlistDurationCache.keys().next().value;
+    if (oldest) playlistDurationCache.delete(oldest);
+  }
+  playlistDurationCache.set(id, entry);
+}
+
+async function loadPlaylistCache(
+  spotifyApi: SpotifyApi,
+  playlistId: string,
+): Promise<PlaylistCache | null> {
+  try {
+    const meta = await spotifyApi.playlists.getPlaylist(playlistId);
+    const tracks: Array<{ id: string; duration_ms: number }> = [];
+    let totalMs = 0;
+    let offset = 0;
+    const limit = 50;
+    while (true) {
+      const page = await spotifyApi.playlists.getPlaylistItems(
+        playlistId,
+        undefined,
+        undefined,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        limit as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        offset as any,
+      );
+      for (const item of page.items) {
+        const t = item.track;
+        if (t && 'duration_ms' in t) {
+          tracks.push({ id: t.id, duration_ms: t.duration_ms });
+          totalMs += t.duration_ms;
+        }
+      }
+      if (offset + page.items.length >= page.total) break;
+      offset += page.items.length;
+    }
+    return { name: meta.name, tracks, totalMs };
+  } catch {
+    return null;
+  }
+}
+
+function computeRemaining(
+  cached: PlaylistCache,
+  trackId: string,
+  progressMs: number,
+  durationMs: number,
+): { ms: number; tracks: number } | null {
+  const idx = cached.tracks.findIndex((t) => t.id === trackId);
+  if (idx < 0) return null;
+  let afterMs = 0;
+  for (let i = idx + 1; i < cached.tracks.length; i++) {
+    afterMs += cached.tracks[i].duration_ms;
+  }
+  return {
+    ms: durationMs - progressMs + afterMs,
+    tracks: cached.tracks.length - idx - 1,
+  };
+}
+
+app.get('/api/playback', async (req, res) => {
+  const session = ctx.requireSession(req, res);
+  if (!session) return;
+
+  try {
+    const spotifyApi = session.client.api;
+    const playback = await spotifyApi.player.getPlaybackState();
+
+    if (!playback?.item || !('album' in playback.item)) {
+      res.json({ playing: false });
+      return;
+    }
+
+    const item = playback.item;
+    const progressMs = playback.progress_ms ?? 0;
+
+    let contextInfo: {
+      type: 'playlist' | 'album';
+      id: string;
+      name?: string;
+      totalTracks?: number;
+    } | null = null;
+    let remaining: { ms: number; tracks: number } | null = null;
+
+    const ctxUri = playback.context?.uri;
+    if (ctxUri) {
+      const [, ctxType, ctxId] = ctxUri.split(':');
+      if (ctxType === 'playlist' && ctxId) {
+        contextInfo = { type: 'playlist', id: ctxId };
+        let cached = playlistDurationCache.get(ctxId);
+        if (!cached) {
+          const loaded = await loadPlaylistCache(spotifyApi, ctxId);
+          if (loaded) {
+            cached = loaded;
+            cachePlaylist(ctxId, loaded);
+          }
+        }
+        if (cached) {
+          contextInfo.name = cached.name;
+          contextInfo.totalTracks = cached.tracks.length;
+          remaining = computeRemaining(
+            cached,
+            item.id,
+            progressMs,
+            item.duration_ms,
+          );
+        }
+      } else if (ctxType === 'album' && ctxId) {
+        contextInfo = { type: 'album', id: ctxId };
+      }
+    }
+
+    const images = item.album.images ?? [];
+    // Spotify returns images largest-first; pick smallest that's still ≥64px wide.
+    const albumArt =
+      [...images]
+        .reverse()
+        .find((img) => (img.width ?? 0) >= 64)?.url ??
+      images[0]?.url ??
+      null;
+
+    res.json({
+      playing: true,
+      isPlaying: playback.is_playing,
+      track: {
+        name: item.name,
+        artists: item.artists.map((a) => a.name).join(', '),
+        album: item.album.name,
+        albumArt,
+        duration_ms: item.duration_ms,
+      },
+      progress_ms: progressMs,
+      device: playback.device?.name ?? null,
+      shuffle: playback.shuffle_state ?? false,
+      repeat: playback.repeat_state ?? 'off',
+      context: contextInfo,
+      remaining,
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 // ── Migration ───────────────────────────────────────────────────────────────

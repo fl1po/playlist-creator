@@ -392,6 +392,66 @@
   .bar-row .bar-count { min-width: 36px; text-align: right; color: #999; font-size: 12px; flex-shrink: 0; }
   .stats-empty { text-align: center; padding: 40px 20px; color: #666; }
   .stats-empty p { margin-top: 8px; font-size: 13px; }
+
+  /* Now Playing widget */
+  .now-playing { display: none; margin-bottom: 20px; }
+  .now-playing.visible { display: block; }
+  .now-playing .np-inner {
+    display: flex; align-items: center; gap: 16px;
+    background: #181818; border: 1px solid #282828; border-radius: 8px;
+    padding: 14px 20px;
+  }
+  .now-playing .np-art {
+    width: 56px; height: 56px; border-radius: 4px; flex-shrink: 0;
+    background: #282828; object-fit: cover;
+  }
+  .now-playing .np-info { flex: 1; min-width: 0; }
+  .now-playing .np-track {
+    font-size: 14px; font-weight: 600; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .now-playing .np-artist {
+    font-size: 12px; color: #999; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; margin-top: 2px;
+  }
+  .now-playing .np-progress-row {
+    display: flex; align-items: center; gap: 8px; margin-top: 8px;
+  }
+  .now-playing .np-bar {
+    flex: 1; height: 3px; background: #383838; border-radius: 2px;
+    overflow: hidden; cursor: default;
+  }
+  .now-playing .np-bar-fill {
+    height: 100%; background: #1DB954; border-radius: 2px;
+    transition: width 0.3s linear;
+  }
+  .now-playing .np-time {
+    font-size: 11px; color: #666; white-space: nowrap; min-width: 80px;
+    text-align: right;
+  }
+  .now-playing .np-remaining {
+    display: flex; align-items: center; gap: 12px;
+    flex-shrink: 0; text-align: right;
+  }
+  .now-playing .np-remaining-time {
+    font-size: 13px; font-weight: 600; color: #1DB954;
+  }
+  .now-playing .np-remaining-tracks {
+    font-size: 11px; color: #666;
+  }
+  .now-playing .np-meta {
+    display: flex; gap: 8px; align-items: center;
+    font-size: 11px; color: #555; flex-shrink: 0;
+  }
+  .now-playing .np-dot {
+    width: 6px; height: 6px; border-radius: 50%; background: #1DB954;
+    animation: np-pulse 2s ease-in-out infinite;
+  }
+  .now-playing .np-dot.paused { background: #666; animation: none; }
+  @keyframes np-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
 </style>
 </head>
 <body>
@@ -434,6 +494,25 @@
 </header>
 
 <main>
+  <div class="now-playing" id="nowPlaying">
+    <div class="np-inner">
+      <div class="np-dot" id="npDot"></div>
+      <img class="np-art" id="npArt" src="" alt="">
+      <div class="np-info">
+        <div class="np-track" id="npTrack"></div>
+        <div class="np-artist" id="npArtist"></div>
+        <div class="np-progress-row">
+          <div class="np-bar"><div class="np-bar-fill" id="npBarFill"></div></div>
+          <div class="np-time" id="npTime"></div>
+        </div>
+      </div>
+      <div class="np-remaining" id="npRemaining" style="display:none;">
+        <div class="np-remaining-time" id="npRemainingTime"></div>
+        <div class="np-remaining-tracks" id="npRemainingTracks"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="cards">
 
     <!-- Fill Playlists -->
@@ -1266,6 +1345,7 @@ async function logout() {
   await api('POST', '/api/logout');
   Store.remove('tokens');
   Store.remove('userId');
+  stopNpPolling();
   setAuthenticated(false, null, 'no_session');
 }
 
@@ -2177,6 +2257,109 @@ function metric(label, value) {
   return `<div class="stats-metric"><span class="label">${label}</span><span class="value">${value}</span></div>`;
 }
 
+// ── Now Playing ─────────────────────────────────────────────────
+const np = { state: null, lastFetch: 0, pollTimer: null, tickTimer: null };
+
+function fmtClock(ms) {
+  if (ms < 0) ms = 0;
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el.textContent !== value) el.textContent = value;
+}
+
+function hideNowPlaying() {
+  document.getElementById('nowPlaying').classList.remove('visible');
+  if (np.tickTimer) { clearInterval(np.tickTimer); np.tickTimer = null; }
+  np.state = null;
+}
+
+async function fetchPlayback() {
+  const data = await api('GET', '/api/playback');
+  if (!data || data.error || !data.playing) {
+    hideNowPlaying();
+    return;
+  }
+  np.state = data;
+  np.lastFetch = Date.now();
+  renderNowPlaying();
+}
+
+function renderNowPlaying() {
+  const s = np.state;
+  if (!s) return;
+  document.getElementById('nowPlaying').classList.add('visible');
+
+  const dotClass = s.isPlaying ? 'np-dot' : 'np-dot paused';
+  const dot = document.getElementById('npDot');
+  if (dot.className !== dotClass) dot.className = dotClass;
+
+  const art = document.getElementById('npArt');
+  if (s.track.albumArt) {
+    if (art.getAttribute('src') !== s.track.albumArt) art.src = s.track.albumArt;
+    art.style.display = '';
+  } else {
+    art.style.display = 'none';
+  }
+
+  setText('npTrack', s.track.name);
+  const contextLabel = s.context?.name ? ` \u00b7 ${s.context.name}` : '';
+  setText('npArtist', s.track.artists + contextLabel);
+
+  updateNpProgress();
+
+  const remEl = document.getElementById('npRemaining');
+  if (s.remaining) {
+    remEl.style.display = '';
+    setText('npRemainingTime', formatDuration(s.remaining.ms));
+    setText('npRemainingTracks', `${s.remaining.tracks} tracks left`);
+  } else {
+    remEl.style.display = 'none';
+  }
+
+  if (np.tickTimer) { clearInterval(np.tickTimer); np.tickTimer = null; }
+  if (s.isPlaying) np.tickTimer = setInterval(updateNpProgress, 1000);
+}
+
+function updateNpProgress() {
+  const s = np.state;
+  if (!s) return;
+  const elapsed = s.isPlaying ? Date.now() - np.lastFetch : 0;
+  const progress = Math.min(s.progress_ms + elapsed, s.track.duration_ms);
+  const pct = (progress / s.track.duration_ms) * 100;
+
+  document.getElementById('npBarFill').style.width = pct + '%';
+  setText('npTime', fmtClock(progress) + ' / ' + fmtClock(s.track.duration_ms));
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (np.pollTimer) { clearInterval(np.pollTimer); np.pollTimer = null; }
+    if (np.tickTimer) { clearInterval(np.tickTimer); np.tickTimer = null; }
+  } else if (np.state !== null) {
+    fetchPlayback();
+    if (!np.pollTimer) np.pollTimer = setInterval(fetchPlayback, 5000);
+  }
+});
+
+function startNpPolling() {
+  if (np.pollTimer) return;
+  fetchPlayback();
+  np.pollTimer = setInterval(fetchPlayback, 5000);
+}
+
+function stopNpPolling() {
+  if (np.pollTimer) { clearInterval(np.pollTimer); np.pollTimer = null; }
+  hideNowPlaying();
+}
+
 // ── Init ─────────────────────────────────────────────────────────
 connect();
 checkAuth().then(() => {
@@ -2186,6 +2369,7 @@ checkAuth().then(() => {
     loadListeningTime();
     loadAwBreakdown();
     configPromise = loadConfig();
+    startNpPolling();
   }
 });
 </script>
