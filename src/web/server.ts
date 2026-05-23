@@ -386,13 +386,15 @@ app.get('/api/playback', async (req, res) => {
     }
 
     const images = item.album.images ?? [];
-    // Spotify returns images largest-first; pick smallest that's still ≥64px wide.
+    // Spotify returns images largest-first; pick smallest ≥64px for the bar thumbnail.
     const albumArt =
       [...images]
         .reverse()
         .find((img) => (img.width ?? 0) >= 64)?.url ??
       images[0]?.url ??
       null;
+    // Largest image for the album detail modal.
+    const albumArtLarge = images[0]?.url ?? null;
 
     res.json({
       playing: true,
@@ -401,8 +403,12 @@ app.get('/api/playback', async (req, res) => {
         name: item.name,
         artists: item.artists.map((a) => a.name).join(', '),
         album: item.album.name,
+        album_id: item.album.id,
         albumArt,
+        albumArtLarge,
         duration_ms: item.duration_ms,
+        track_number: item.track_number ?? null,
+        album_total_tracks: item.album.total_tracks ?? null,
       },
       progress_ms: progressMs,
       device: playback.device?.name ?? null,
@@ -410,6 +416,68 @@ app.get('/api/playback', async (req, res) => {
       repeat: playback.repeat_state ?? 'off',
       context: contextInfo,
       remaining,
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+app.get('/api/album/:id', async (req, res) => {
+  const session = ctx.requireSession(req, res);
+  if (!session) return;
+
+  try {
+    const album = await session.client.api.albums.get(req.params.id);
+    const mapTrack = (t: (typeof album.tracks.items)[number]) => ({
+      id: t.id,
+      name: t.name,
+      track_number: t.track_number,
+      duration_ms: t.duration_ms,
+      artists: t.artists.map((a) => a.name).join(', '),
+    });
+    const tracks = album.tracks.items.map(mapTrack);
+
+    let offset = album.tracks.items.length;
+    while (offset < album.tracks.total) {
+      const page = await session.client.api.albums.tracks(
+        req.params.id,
+        undefined,
+        50,
+        offset,
+      );
+      if (page.items.length === 0) break;
+      tracks.push(...page.items.map(mapTrack));
+      offset += page.items.length;
+    }
+
+    const trackIds = tracks.map((t) => t.id).filter(Boolean);
+    const batches: Promise<any>[] = [];
+    for (let i = 0; i < trackIds.length; i += 50) {
+      batches.push(session.client.api.tracks.get(trackIds.slice(i, i + 50)));
+    }
+    const popularityMap = new Map<string, number>();
+    for (const ft of (await Promise.all(batches)).flat()) {
+      if (ft) popularityMap.set(ft.id, ft.popularity);
+    }
+
+    const tracksWithPop = tracks.map((t) => ({
+      ...t,
+      popularity: popularityMap.get(t.id) ?? 0,
+    }));
+
+    const images = album.images ?? [];
+    const coverArt = images[0]?.url ?? null;
+
+    res.json({
+      id: album.id,
+      name: album.name,
+      artists: album.artists.map((a) => a.name).join(', '),
+      release_date: album.release_date,
+      total_tracks: album.total_tracks,
+      coverArt,
+      tracks: tracksWithPop,
     });
   } catch (err) {
     res.status(500).json({

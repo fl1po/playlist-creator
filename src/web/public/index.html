@@ -414,6 +414,10 @@
     font-size: 12px; color: #999; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; margin-top: 2px;
   }
+  .now-playing .np-album {
+    font-size: 11px; color: #666; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; margin-top: 1px;
+  }
   .now-playing .np-progress-row {
     display: flex; align-items: center; gap: 8px; margin-top: 8px;
   }
@@ -452,6 +456,74 @@
     0%, 100% { opacity: 1; }
     50% { opacity: 0.3; }
   }
+  .now-playing .np-art, .now-playing .np-album { cursor: pointer; }
+  .now-playing .np-album:hover { color: #999; }
+
+  /* Album detail modal */
+  .album-overlay {
+    position: fixed; inset: 0; z-index: 250;
+    background: rgba(0,0,0,0.75); display: flex;
+    align-items: center; justify-content: center;
+    padding: 40px 16px;
+  }
+  .album-overlay.hidden { display: none; }
+  .album-panel {
+    position: relative;
+    background: #181818; border: 1px solid #282828; border-radius: 12px;
+    width: 100%; max-width: 480px; max-height: 80vh;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .album-header {
+    display: flex; gap: 16px; padding: 20px; align-items: flex-end;
+    background: linear-gradient(180deg, #282828 0%, #181818 100%);
+  }
+  .album-cover {
+    width: 180px; height: 180px; border-radius: 6px; flex-shrink: 0;
+    object-fit: cover; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  }
+  .album-meta { min-width: 0; }
+  .album-meta .album-title {
+    font-size: 18px; font-weight: 700; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .album-meta .album-artist {
+    font-size: 13px; color: #999; margin-top: 4px;
+  }
+  .album-meta .album-info {
+    font-size: 11px; color: #666; margin-top: 4px;
+  }
+  .album-close {
+    position: absolute; top: 12px; right: 12px;
+    background: rgba(0,0,0,0.5); border: none; color: #999;
+    font-size: 18px; cursor: pointer; padding: 4px 10px;
+    border-radius: 50%; line-height: 1;
+  }
+  .album-close:hover { color: #e0e0e0; background: rgba(0,0,0,0.7); }
+  .album-tracks {
+    flex: 1; overflow-y: auto; padding: 0 8px 12px;
+  }
+  .album-track {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 4px; font-size: 13px;
+  }
+  .album-track:hover { background: #282828; }
+  .album-track.active { background: #1a3a25; }
+  .album-track .at-num {
+    width: 20px; text-align: right; color: #666; font-size: 12px;
+    flex-shrink: 0;
+  }
+  .album-track.active .at-num { color: #1DB954; }
+  .album-track .at-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .album-track.active .at-name { color: #1DB954; font-weight: 600; }
+  .album-track .at-pop {
+    width: 40px; flex-shrink: 0; height: 3px; background: #282828;
+    border-radius: 2px; overflow: hidden;
+  }
+  .album-track .at-pop-fill {
+    height: 100%; background: #555; border-radius: 2px;
+  }
+  .album-track.active .at-pop-fill { background: #1DB954; }
+  .album-track .at-dur { color: #666; font-size: 12px; flex-shrink: 0; font-variant-numeric: tabular-nums; min-width: 32px; text-align: right; }
 </style>
 </head>
 <body>
@@ -497,10 +569,11 @@
   <div class="now-playing" id="nowPlaying">
     <div class="np-inner">
       <div class="np-dot" id="npDot"></div>
-      <img class="np-art" id="npArt" src="" alt="">
+      <img class="np-art" id="npArt" src="" alt="" onclick="openAlbum()">
       <div class="np-info">
         <div class="np-track" id="npTrack"></div>
         <div class="np-artist" id="npArtist"></div>
+        <div class="np-album" id="npAlbum" onclick="openAlbum()"></div>
         <div class="np-progress-row">
           <div class="np-bar"><div class="np-bar-fill" id="npBarFill"></div></div>
           <div class="np-time" id="npTime"></div>
@@ -821,6 +894,23 @@
     </div>
     <div class="picker-list" id="pickerList">
       <div style="padding:20px;text-align:center;color:#666;">Loading playlists...</div>
+    </div>
+  </div>
+</div>
+
+<div class="album-overlay hidden" id="albumOverlay" onclick="if(event.target===this)closeAlbum()">
+  <div class="album-panel">
+    <button class="album-close" onclick="closeAlbum()">&times;</button>
+    <div class="album-header">
+      <img class="album-cover" id="albumCover" src="" alt="">
+      <div class="album-meta">
+        <div class="album-title" id="albumTitle"></div>
+        <div class="album-artist" id="albumArtist"></div>
+        <div class="album-info" id="albumInfo"></div>
+      </div>
+    </div>
+    <div class="album-tracks" id="albumTracks">
+      <div style="padding:20px;text-align:center;color:#666;">Loading...</div>
     </div>
   </div>
 </div>
@@ -2290,6 +2380,7 @@ async function fetchPlayback() {
   np.state = data;
   np.lastFetch = Date.now();
   renderNowPlaying();
+  updateAlbumIfOpen();
 }
 
 function renderNowPlaying() {
@@ -2310,8 +2401,14 @@ function renderNowPlaying() {
   }
 
   setText('npTrack', s.track.name);
-  const contextLabel = s.context?.name ? ` \u00b7 ${s.context.name}` : '';
-  setText('npArtist', s.track.artists + contextLabel);
+  setText('npArtist', s.track.artists);
+  const albumParts = [];
+  if (s.track.track_number && s.track.album_total_tracks) {
+    albumParts.push(`Track ${s.track.track_number} of ${s.track.album_total_tracks}`);
+  }
+  albumParts.push(s.track.album);
+  if (s.context?.name) albumParts.push(s.context.name);
+  setText('npAlbum', albumParts.join(' \u00b7 '));
 
   updateNpProgress();
 
@@ -2358,6 +2455,113 @@ function startNpPolling() {
 function stopNpPolling() {
   if (np.pollTimer) { clearInterval(np.pollTimer); np.pollTimer = null; }
   hideNowPlaying();
+}
+
+// ── Album Detail ────────────────────────────────────────────────
+let albumCache = null;
+let albumFetchingId = null;
+let albumRendered = { id: null, activeTrack: null };
+
+function isAlbumOpen() {
+  return !document.getElementById('albumOverlay').classList.contains('hidden');
+}
+
+async function openAlbum() {
+  const s = np.state;
+  if (!s?.track?.album_id) return;
+  const albumId = s.track.album_id;
+
+  document.getElementById('albumOverlay').classList.remove('hidden');
+
+  setText('albumTitle', s.track.album);
+  setText('albumArtist', s.track.artists);
+  setText('albumInfo', '');
+  document.getElementById('albumCover').src = s.track.albumArtLarge || s.track.albumArt || '';
+
+  if (albumCache?.id === albumId) {
+    renderAlbumTracks();
+    return;
+  }
+
+  if (albumFetchingId === albumId) return;
+  albumFetchingId = albumId;
+  document.getElementById('albumTracks').innerHTML =
+    '<div style="padding:20px;text-align:center;color:#666;">Loading...</div>';
+
+  const data = await api('GET', `/api/album/${albumId}`);
+  if (albumFetchingId !== albumId) return;
+  albumFetchingId = null;
+
+  if (data.error) {
+    document.getElementById('albumTracks').innerHTML =
+      `<div style="padding:20px;text-align:center;color:#e74c3c;">${esc(data.error)}</div>`;
+    return;
+  }
+
+  albumCache = { id: albumId, data };
+  albumRendered = { id: null, activeTrack: null };
+  renderAlbumMeta();
+  renderAlbumTracks();
+}
+
+function renderAlbumMeta() {
+  if (!albumCache) return;
+  const data = albumCache.data;
+  setText('albumTitle', data.name);
+  setText('albumArtist', data.artists);
+  if (data.coverArt) document.getElementById('albumCover').src = data.coverArt;
+
+  const parts = [];
+  if (data.release_date) parts.push(data.release_date);
+  parts.push(`${data.total_tracks} tracks`);
+  const totalMs = data.tracks.reduce((sum, t) => sum + t.duration_ms, 0);
+  parts.push(formatDuration(totalMs));
+  setText('albumInfo', parts.join(' \u00b7 '));
+}
+
+function renderAlbumTracks() {
+  if (!albumCache) return;
+  const data = albumCache.data;
+  const isCurrentAlbum = np.state?.track?.album_id === albumCache.id;
+  const newActive = isCurrentAlbum ? (np.state?.track?.track_number ?? null) : null;
+
+  if (albumRendered.id === albumCache.id && albumRendered.activeTrack === newActive) return;
+  const prevActive = albumRendered.activeTrack;
+  const wasSameAlbum = albumRendered.id === albumCache.id;
+  albumRendered = { id: albumCache.id, activeTrack: newActive };
+
+  const container = document.getElementById('albumTracks');
+  container.innerHTML = data.tracks.map(t => {
+    const active = newActive === t.track_number ? ' active' : '';
+    return `<div class="album-track${active}">` +
+      `<span class="at-num">${t.track_number}</span>` +
+      `<span class="at-name" title="${esc(t.artists)}">${esc(t.name)}</span>` +
+      `<span class="at-pop"><span class="at-pop-fill" style="width:${t.popularity ?? 0}%"></span></span>` +
+      `<span class="at-dur">${fmtClock(t.duration_ms)}</span>` +
+      `</div>`;
+  }).join('');
+
+  if (newActive == null) return;
+  const activeEl = container.querySelector('.album-track.active');
+  if (!activeEl) return;
+  // Jump on first render or non-adjacent skips; smooth-scroll for normal advances.
+  const jump = !wasSameAlbum || prevActive == null || Math.abs(newActive - prevActive) > 1;
+  activeEl.scrollIntoView({ block: 'center', behavior: jump ? 'auto' : 'smooth' });
+}
+
+function updateAlbumIfOpen() {
+  if (!isAlbumOpen() || !albumCache) return;
+  const s = np.state;
+  if (!s) { closeAlbum(); return; }
+  if (s.track.album_id !== albumCache.id) {
+    openAlbum();
+    return;
+  }
+  renderAlbumTracks();
+}
+
+function closeAlbum() {
+  document.getElementById('albumOverlay').classList.add('hidden');
 }
 
 // ── Init ─────────────────────────────────────────────────────────
