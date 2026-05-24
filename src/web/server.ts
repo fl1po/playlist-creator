@@ -400,6 +400,7 @@ app.get('/api/playback', async (req, res) => {
       playing: true,
       isPlaying: playback.is_playing,
       track: {
+        id: item.id,
         name: item.name,
         artists: item.artists.map((a) => a.name).join(', '),
         album: item.album.name,
@@ -453,18 +454,33 @@ app.get('/api/album/:id', async (req, res) => {
     }
 
     const trackIds = tracks.map((t) => t.id).filter(Boolean);
-    const batches: Promise<any>[] = [];
+    const batches: Promise<{ ids: string[]; pop: any[]; liked: boolean[] }>[] = [];
     for (let i = 0; i < trackIds.length; i += 50) {
-      batches.push(session.client.api.tracks.get(trackIds.slice(i, i + 50)));
+      const ids = trackIds.slice(i, i + 50);
+      batches.push(
+        Promise.all([
+          session.client.api.tracks.get(ids),
+          session.client.api.currentUser.tracks.hasSavedTracks(ids),
+        ]).then(([pop, liked]) => ({ ids, pop, liked })),
+      );
     }
+    const results = await Promise.all(batches);
+
     const popularityMap = new Map<string, number>();
-    for (const ft of (await Promise.all(batches)).flat()) {
-      if (ft) popularityMap.set(ft.id, ft.popularity);
+    const likedSet = new Set<string>();
+    for (const { ids, pop, liked } of results) {
+      for (const ft of pop) {
+        if (ft) popularityMap.set(ft.id, ft.popularity);
+      }
+      ids.forEach((id, i) => {
+        if (liked[i]) likedSet.add(id);
+      });
     }
 
     const tracksWithPop = tracks.map((t) => ({
       ...t,
       popularity: popularityMap.get(t.id) ?? 0,
+      liked: likedSet.has(t.id),
     }));
 
     const images = album.images ?? [];

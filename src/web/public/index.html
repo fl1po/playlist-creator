@@ -515,6 +515,7 @@
   .album-track.active .at-num { color: #1DB954; }
   .album-track .at-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .album-track.active .at-name { color: #1DB954; font-weight: 600; }
+  .album-track .at-liked { color: #1DB954; font-size: 11px; flex-shrink: 0; }
   .album-track .at-pop {
     width: 40px; flex-shrink: 0; height: 3px; background: #282828;
     border-radius: 2px; overflow: hidden;
@@ -2523,7 +2524,7 @@ function renderAlbumTracks() {
   if (!albumCache) return;
   const data = albumCache.data;
   const isCurrentAlbum = np.state?.track?.album_id === albumCache.id;
-  const newActive = isCurrentAlbum ? (np.state?.track?.track_number ?? null) : null;
+  const newActive = isCurrentAlbum ? (np.state?.track?.id ?? null) : null;
 
   if (albumRendered.id === albumCache.id && albumRendered.activeTrack === newActive) return;
   const prevActive = albumRendered.activeTrack;
@@ -2532,10 +2533,11 @@ function renderAlbumTracks() {
 
   const container = document.getElementById('albumTracks');
   container.innerHTML = data.tracks.map(t => {
-    const active = newActive === t.track_number ? ' active' : '';
+    const active = newActive === t.id ? ' active' : '';
     return `<div class="album-track${active}">` +
       `<span class="at-num">${t.track_number}</span>` +
       `<span class="at-name" title="${esc(t.artists)}">${esc(t.name)}</span>` +
+      (t.liked ? `<span class="at-liked">\u2665</span>` : '') +
       `<span class="at-pop"><span class="at-pop-fill" style="width:${t.popularity ?? 0}%"></span></span>` +
       `<span class="at-dur">${fmtClock(t.duration_ms)}</span>` +
       `</div>`;
@@ -2544,8 +2546,9 @@ function renderAlbumTracks() {
   if (newActive == null) return;
   const activeEl = container.querySelector('.album-track.active');
   if (!activeEl) return;
-  // Jump on first render or non-adjacent skips; smooth-scroll for normal advances.
-  const jump = !wasSameAlbum || prevActive == null || Math.abs(newActive - prevActive) > 1;
+  const newIdx = data.tracks.findIndex(t => t.id === newActive);
+  const prevIdx = prevActive == null ? -1 : data.tracks.findIndex(t => t.id === prevActive);
+  const jump = !wasSameAlbum || prevIdx < 0 || Math.abs(newIdx - prevIdx) > 1;
   activeEl.scrollIntoView({ block: 'center', behavior: jump ? 'auto' : 'smooth' });
 }
 
