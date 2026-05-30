@@ -97,6 +97,70 @@ export function authRoutes(ctx: RouteContext): Router {
     }
   });
 
+  router.post('/api/auth/refresh', async (req, res) => {
+    let appConfig;
+    try {
+      appConfig = ctx.loadAppConfig();
+    } catch {
+      res.status(400).json({ ok: false, error: 'No app config' });
+      return;
+    }
+
+    const refreshToken = req.body?.refreshToken as string | undefined;
+    if (!refreshToken) {
+      res.status(400).json({ ok: false, error: 'Missing refreshToken' });
+      return;
+    }
+
+    try {
+      const authHeader = `Basic ${Buffer.from(`${appConfig.clientId}:${appConfig.clientSecret}`).toString('base64')}`;
+      const params = new URLSearchParams();
+      params.append('grant_type', 'refresh_token');
+      params.append('refresh_token', refreshToken);
+
+      const tokenRes = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: {
+          Authorization: authHeader,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: params,
+      });
+
+      if (!tokenRes.ok) {
+        const body = await tokenRes.text().catch(() => '');
+        console.error(
+          `Spotify token refresh failed: ${tokenRes.status} ${body}`,
+        );
+        // 4xx other than 429 = refresh token rejected (revoked/expired). Permanent.
+        const permanent =
+          tokenRes.status >= 400 &&
+          tokenRes.status < 500 &&
+          tokenRes.status !== 429;
+        res.json({
+          ok: false,
+          error: 'Refresh failed',
+          status: tokenRes.status,
+          permanent,
+        });
+        return;
+      }
+
+      const data = (await tokenRes.json()) as {
+        access_token: string;
+        refresh_token?: string;
+      };
+      res.json({
+        ok: true,
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token ?? refreshToken,
+      });
+    } catch (err) {
+      console.error('Spotify token refresh threw:', err);
+      res.json({ ok: false, error: 'Refresh failed' });
+    }
+  });
+
   router.post('/api/logout', (_req, res) => {
     clearSessionCookie(res);
     res.json({ ok: true });

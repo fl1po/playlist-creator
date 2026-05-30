@@ -212,6 +212,22 @@
     width: 8px; height: 8px; border-radius: 50%; background: #1DB954;
   }
   .auth-card button { font-size: 15px; padding: 12px 32px; }
+  #authRefreshBtn {
+    background: transparent; border: 1px solid #333; color: #ccc;
+    margin-bottom: 12px; cursor: pointer; border-radius: 20px;
+  }
+  #authRefreshBtn:hover { border-color: #1DB954; color: #1DB954; }
+  #authRefreshBtn:disabled { opacity: 0.5; cursor: default; }
+  .token-banner {
+    display: none; background: #2a1a00; border-bottom: 1px solid #4a3000;
+    padding: 8px 16px; text-align: center; font-size: 13px; color: #e0a000;
+  }
+  .token-banner.visible { display: flex; align-items: center; justify-content: center; gap: 12px; }
+  .token-banner button {
+    font-size: 12px; padding: 4px 14px; border-radius: 12px;
+    background: transparent; border: 1px solid #e0a000; color: #e0a000; cursor: pointer;
+  }
+  .token-banner button:hover { background: #e0a000; color: #121212; }
   .auth-card .auth-status { margin-top: 16px; font-size: 13px; color: #666; min-height: 20px; }
   .auth-card .auth-status.error { color: #e74c3c; }
   .auth-card .auth-footer {
@@ -545,6 +561,7 @@
     </div>
     <div id="authExpired" style="display:none;">
       <p>Your session has expired. Please reconnect to continue.</p>
+      <button id="authRefreshBtn" onclick="refreshSession()">Refresh Session</button>
     </div>
     <button id="authConnectBtn" onclick="authenticate()" style="display:none;">Connect with Spotify</button>
     <div class="auth-status" id="authStatus">Checking authentication...</div>
@@ -565,6 +582,11 @@
     <span id="statusText">Connecting...</span>
   </div>
 </header>
+
+<div class="token-banner" id="tokenBanner">
+  <span>Session expired</span>
+  <button onclick="refreshSession()">Refresh</button>
+</div>
 
 <main>
   <div class="now-playing" id="nowPlaying">
@@ -1008,8 +1030,11 @@ function connect() {
   const url = userId ? `/api/events?userId=${encodeURIComponent(userId)}` : '/api/events';
   const es = new EventSource(url);
 
+  let authProbedThisDisconnect = false;
+
   es.onopen = () => {
     wsConnected = true;
+    authProbedThisDisconnect = false;
     document.getElementById('statusDot').className = 'status-dot connected';
     document.getElementById('statusText').textContent = 'Connected';
     updateButtons();
@@ -1021,6 +1046,16 @@ function connect() {
     document.getElementById('statusDot').className = 'status-dot error';
     document.getElementById('statusText').textContent = 'Disconnected';
     updateButtons();
+    // Probe auth at most once per disconnect; reset on next successful onopen.
+    if (!tokenExpired && !authProbedThisDisconnect) {
+      authProbedThisDisconnect = true;
+      api('GET', '/api/auth/status').then(res => {
+        if (!res.authenticated && res.reason === 'expired') {
+          tokenExpired = true;
+          document.getElementById('tokenBanner').classList.add('visible');
+        }
+      });
+    }
   };
 
   es.onmessage = (e) => {
@@ -1276,13 +1311,9 @@ function handleMessage({ type, data }) {
         authPopup = null;
         location.reload();
       } else {
-        setAuthenticated(false, null, 'expired');
-        if (data.url) {
-          const w = 460, h = 700;
-          const left = Math.round(screen.width / 2 - w / 2);
-          const top = Math.round(screen.height / 2 - h / 2);
-          authPopup = window.open(data.url, 'spotify_auth', `width=${w},height=${h},left=${left},top=${top}`);
-        }
+        // Show inline banner instead of full overlay — auto-refresh on focus
+        tokenExpired = true;
+        document.getElementById('tokenBanner').classList.add('visible');
       }
       break;
 
@@ -1326,6 +1357,68 @@ async function stopTask() {
   const res = await api('POST', '/api/stop');
   if (!res.ok) log('error', res.error || 'Failed to stop');
 }
+
+let tokenExpired = false;
+let refreshInFlight = false;
+
+function setRefreshButtonsDisabled(disabled) {
+  document.querySelectorAll('#authRefreshBtn, #tokenBanner button').forEach(b => { b.disabled = disabled; });
+}
+
+function showAuthFailedStatus(msg) {
+  const status = document.getElementById('authStatus');
+  if (status) { status.textContent = msg; status.className = 'auth-status error'; }
+  const bannerLabel = document.querySelector('#tokenBanner span');
+  if (bannerLabel) bannerLabel.textContent = msg;
+}
+
+async function refreshSession() {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  setRefreshButtonsDisabled(true);
+
+  try {
+    const banner = document.getElementById('tokenBanner');
+    const tokens = Store.getTokens();
+
+    if (tokens?.refreshToken) {
+      const res = await api('POST', '/api/auth/refresh', { refreshToken: tokens.refreshToken });
+      if (res.ok) {
+        Store.setTokens({ accessToken: res.accessToken, refreshToken: res.refreshToken });
+        tokenExpired = false;
+        banner.classList.remove('visible');
+        location.reload();
+        return;
+      }
+      if (res.permanent) {
+        // Refresh token revoked/expired — clear and require full re-auth
+        Store.remove('tokens');
+        banner.classList.remove('visible');
+        setAuthenticated(false, null, 'expired');
+        showAuthFailedStatus('Session expired. Please reconnect.');
+        return;
+      }
+      showAuthFailedStatus('Refresh failed — please try again.');
+      return;
+    }
+
+    // Cookie mode: ask server to re-check (status endpoint runs server-side refresh)
+    const status = await api('GET', '/api/auth/status');
+    if (status.authenticated) {
+      tokenExpired = false;
+      banner.classList.remove('visible');
+      location.reload();
+      return;
+    }
+    banner.classList.remove('visible');
+    setAuthenticated(false, null, 'expired');
+    showAuthFailedStatus('Session expired. Please reconnect.');
+  } finally {
+    refreshInFlight = false;
+    setRefreshButtonsDisabled(false);
+  }
+}
+
 
 let authPopup = null;
 async function authenticate() {
@@ -1371,6 +1464,8 @@ function setAuthenticated(ok, displayName, reason) {
     overlay.classList.add('hidden');
     authBtn.style.display = 'none';
     logoutBtn.style.display = '';
+    tokenExpired = false;
+    document.getElementById('tokenBanner').classList.remove('visible');
     if (displayName) {
       userDisplay.textContent = displayName;
       userDisplay.style.display = '';
@@ -1844,6 +1939,8 @@ async function api(method, url, body) {
     }
     const res = await fetch(url, opts);
     if (res.status === 401) {
+      tokenExpired = true;
+      document.getElementById('tokenBanner').classList.add('visible');
       setAuthenticated(false, null, 'expired');
       return { ok: false, error: 'Not authenticated' };
     }
