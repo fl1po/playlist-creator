@@ -139,7 +139,6 @@ export const recalculateTask: TaskDefinition = {
     const oldPriorities = snapshotPriorities(trustedPath);
 
     const { scanResults, ...output } = await service.run();
-    fs.writeFileSync(trustedPath, JSON.stringify(output, null, 2));
 
     const changes = diffPriorities(oldPriorities, output);
     changes.sort(
@@ -147,7 +146,19 @@ export const recalculateTask: TaskDefinition = {
     );
     tc.broadcast('recalc:changes', { changes });
 
-    // Emit updated trusted artists and snapshots to client + persist to Redis
+    // Sync unprocessed playlists if P1/P2 boundary crossings occurred
+    // Must complete before persisting, so a failure allows re-running from scratch
+    await syncIfNeeded(
+      changes,
+      tc.rawClient,
+      tc.dataDir,
+      userConfig.sourcePlaylists.allWeeklyId,
+      tc.pacer,
+      tc.broadcast,
+    );
+
+    // Persist only after the entire process (including sync) succeeds
+    fs.writeFileSync(trustedPath, JSON.stringify(output, null, 2));
     tc.emitData('trustedArtists', output);
     const updatedCache: BatchCache = {
       ...cache,
@@ -164,22 +175,5 @@ export const recalculateTask: TaskDefinition = {
       level: 'success',
       message: 'Priorities recalculated and saved',
     });
-
-    // Sync unprocessed playlists if P1/P2 boundary crossings occurred
-    try {
-      await syncIfNeeded(
-        changes,
-        tc.rawClient,
-        tc.dataDir,
-        userConfig.sourcePlaylists.allWeeklyId,
-        tc.pacer,
-        tc.broadcast,
-      );
-    } catch (syncErr) {
-      tc.broadcast('log', {
-        level: 'warn',
-        message: `Post-recalc sync failed: ${syncErr}`,
-      });
-    }
   },
 };
