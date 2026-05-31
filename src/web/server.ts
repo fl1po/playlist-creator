@@ -338,6 +338,7 @@ app.get('/api/playback', async (req, res) => {
   if (!session) return;
 
   try {
+    await session.client.refreshToken();
     const spotifyApi = session.client.api;
     const playback = await spotifyApi.player.getPlaybackState();
 
@@ -430,6 +431,7 @@ app.get('/api/album/:id', async (req, res) => {
   if (!session) return;
 
   try {
+    await session.client.refreshToken();
     const album = await session.client.api.albums.get(req.params.id);
     const mapTrack = (t: (typeof album.tracks.items)[number]) => ({
       id: t.id,
