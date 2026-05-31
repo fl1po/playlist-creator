@@ -2,6 +2,9 @@ import type { DateResult } from '../../lib/types.js';
 import type { PriorityChange } from '../playlist-syncer.js';
 
 export type PlaylistFillerEventMap = {
+  /** Emitted at the start of a run when batch cache has prior progress.
+   *  `resumedArtistNames` are the artists already searched in the previous run. */
+  resumed: [resumeDate: string | undefined, resumedArtistNames: string[]];
   start: [datesToProcess: string[]];
   dateStart: [date: string, index: number, total: number];
   dateSkipped: [date: string, reason: string, trackCount: number];

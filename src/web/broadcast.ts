@@ -1,5 +1,4 @@
 import type { Response } from 'express';
-import type { EventHandlers, EventMap } from '../lib/service-events.js';
 
 export interface Broadcaster {
   broadcast(type: string, data: unknown): void;
@@ -111,46 +110,4 @@ export function createBroadcaster(): Broadcaster {
   }
 
   return { broadcast, broadcastTo, addClient, removeClient, clearHistory };
-}
-
-// ── Declarative event → broadcast wiring ─────────────────────────────────────
-
-type BroadcastSpec<Args extends unknown[]> =
-  | { type: string; pack: (...args: Args) => unknown }
-  | { log: (...args: Args) => string; level?: string };
-
-export type BroadcastMapping<T extends EventMap> = {
-  [K in keyof T & string]?: BroadcastSpec<T[K]>;
-};
-
-/**
- * Build an EventHandlers object that broadcasts each event.
- * Each mapping entry either sends a typed WS message (`type` + `pack`)
- * or sends a `log` message (`log` + optional `level`).
- */
-export function broadcastEvents<T extends EventMap>(
-  broadcast: (type: string, data: unknown) => void,
-  mapping: BroadcastMapping<T>,
-): EventHandlers<T> {
-  const handlers: Record<string, (...args: unknown[]) => void> = {};
-
-  for (const [event, spec] of Object.entries(mapping)) {
-    if (!spec) continue;
-    const handlerName = `on${event[0].toUpperCase()}${event.slice(1)}`;
-    handlers[handlerName] = (...args: unknown[]) => {
-      if ('type' in spec) {
-        broadcast(
-          (spec as { type: string; pack: (...a: unknown[]) => unknown }).type,
-          (spec as { type: string; pack: (...a: unknown[]) => unknown }).pack(
-            ...args,
-          ),
-        );
-      } else {
-        const s = spec as { log: (...a: unknown[]) => string; level?: string };
-        broadcast('log', { level: s.level ?? 'info', message: s.log(...args) });
-      }
-    };
-  }
-
-  return handlers as unknown as EventHandlers<T>;
 }

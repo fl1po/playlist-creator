@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { broadcastEvents } from '../../lib/service-events.js';
 import { type BatchCache, toCachedScanResult } from '../../lib/types.js';
 import type { PriorityCalculatorEventMap } from '../../services/priority-calculator.js';
 import {
@@ -9,7 +10,6 @@ import {
   recalculate,
   snapshotPriorities,
 } from '../../services/recalculate.js';
-import { broadcastEvents } from '../broadcast.js';
 import { syncIfNeeded } from '../priority-diff.js';
 import {
   redisLoadBatchCache,

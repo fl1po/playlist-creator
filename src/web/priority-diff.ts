@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { RequestPacer } from '../lib/request-pacer.js';
+import { broadcastEvents } from '../lib/service-events.js';
 import { createSpotifyContext } from '../lib/spotify-context.js';
 import type { SpotifyClient } from '../lib/types.js';
 import {
@@ -7,7 +8,6 @@ import {
   PlaylistSyncerService,
   type PriorityChange,
 } from '../services/playlist-syncer.js';
-import { broadcastEvents } from './broadcast.js';
 
 /** Run playlist sync if any P1/P2 boundary crossings occurred. */
 export async function syncIfNeeded(

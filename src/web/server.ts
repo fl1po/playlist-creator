@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import compression from 'compression';
 import express from 'express';
-import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import { UserTokenStore, createAppConfigStore } from '../lib/config.js';
 import { RequestPacer } from '../lib/request-pacer.js';
+import { broadcastEvents } from '../lib/service-events.js';
 import { createSpotifyContext } from '../lib/spotify-context.js';
 import type { AppConfig } from '../lib/types.js';
 import {
@@ -13,12 +14,12 @@ import {
   PlaylistClearerService,
 } from '../services/playlist-clearer.js';
 import { createAuthManager, fetchSpotifyUserId } from './auth.js';
-import { broadcastEvents, createBroadcaster } from './broadcast.js';
+import { createBroadcaster } from './broadcast.js';
 import { createRouteContext } from './route-context.js';
-import { getSessionUserId } from './session.js';
 import { authRoutes } from './routes/auth.js';
 import { configRoutes } from './routes/config.js';
 import { queryRoutes } from './routes/queries.js';
+import { getSessionUserId } from './session.js';
 import { createTaskMutex } from './task-mutex.js';
 import { createTaskRunner } from './task-runner.js';
 import { awBreakdownTask } from './tasks/aw-breakdown.js';
@@ -95,9 +96,16 @@ app.get('/api/events', (req, res) => {
     try {
       const appConfig = appConfigStore.load();
       userId = getSessionUserId(req, appConfig.clientSecret);
-    } catch { /* no config */ }
+    } catch {
+      /* no config */
+    }
   }
-  broadcaster.addClient(res, userId, taskMutex.currentTask, getSearchedArtists());
+  broadcaster.addClient(
+    res,
+    userId,
+    taskMutex.currentTask,
+    getSearchedArtists(),
+  );
   req.on('close', () => broadcaster.removeClient(res));
 });
 
@@ -135,7 +143,8 @@ app.get('/api/export-data', async (req, res) => {
   };
 
   // Read config from file directly (store may return defaults if file missing)
-  const config = read('user-config.json') ?? await session.userConfigStore.load();
+  const config =
+    read('user-config.json') ?? (await session.userConfigStore.load());
 
   res.json({
     ok: true,
@@ -154,7 +163,15 @@ app.post('/api/import-data', async (req, res) => {
   const session = ctx.requireSession(req, res);
   if (!session) return;
 
-  const { config, trustedArtists, batchCache, fillHistory, durationSnapshots, listeningTime, awBreakdown } = req.body;
+  const {
+    config,
+    trustedArtists,
+    batchCache,
+    fillHistory,
+    durationSnapshots,
+    listeningTime,
+    awBreakdown,
+  } = req.body;
 
   // Save config to the config store (Redis in production)
   let configSaved = false;
@@ -170,8 +187,11 @@ app.post('/api/import-data', async (req, res) => {
   // Save trustedArtists + fillHistory to Redis for cross-device access
   if (trustedArtists || fillHistory) {
     try {
-      const { redisSaveTrustedArtists, redisSaveFillHistory } = await import('./redis-config-store.js');
-      if (trustedArtists) await redisSaveTrustedArtists(session.userId, trustedArtists);
+      const { redisSaveTrustedArtists, redisSaveFillHistory } = await import(
+        './redis-config-store.js'
+      );
+      if (trustedArtists)
+        await redisSaveTrustedArtists(session.userId, trustedArtists);
       if (fillHistory) await redisSaveFillHistory(session.userId, fillHistory);
     } catch (err) {
       console.error('Failed to save to Redis:', err);
@@ -187,7 +207,13 @@ app.post('/api/import-data', async (req, res) => {
   if (listeningTime) caches.listeningTime = listeningTime;
   if (awBreakdown) caches.awBreakdown = awBreakdown;
 
-  res.json({ ok: true, configSaved, configReceived: !!config, caches, config: config || null });
+  res.json({
+    ok: true,
+    configSaved,
+    configReceived: !!config,
+    caches,
+    config: config || null,
+  });
 });
 
 // Clear playlist (synchronous — no mutex)
@@ -388,9 +414,7 @@ app.get('/api/playback', async (req, res) => {
     const images = item.album.images ?? [];
     // Spotify returns images largest-first; pick smallest ≥64px for the bar thumbnail.
     const albumArt =
-      [...images]
-        .reverse()
-        .find((img) => (img.width ?? 0) >= 64)?.url ??
+      [...images].reverse().find((img) => (img.width ?? 0) >= 64)?.url ??
       images[0]?.url ??
       null;
     // Largest image for the album detail modal.
@@ -454,7 +478,8 @@ app.get('/api/album/:id', async (req, res) => {
     }
 
     const trackIds = tracks.map((t) => t.id).filter(Boolean);
-    const batches: Promise<{ ids: string[]; pop: any[]; liked: boolean[] }>[] = [];
+    const batches: Promise<{ ids: string[]; pop: any[]; liked: boolean[] }>[] =
+      [];
     for (let i = 0; i < trackIds.length; i += 50) {
       const ids = trackIds.slice(i, i + 50);
       batches.push(

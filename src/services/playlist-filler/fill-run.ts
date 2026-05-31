@@ -6,13 +6,25 @@ import {
   getAllPlaylistTracks,
   getAllUserPlaylists,
 } from '../../lib/pagination.js';
-import { ServiceEmitter } from '../../lib/service-events.js';
+import {
+  type EventHandlers,
+  ServiceEmitter,
+} from '../../lib/service-events.js';
 import type { SpotifyContext } from '../../lib/spotify-context.js';
-import type {
-  BatchCache,
-  DateResult,
-  TrustedArtistsFile,
+import {
+  type BatchCache,
+  type DateResult,
+  type TrustedArtistsFile,
+  toCachedScanResult,
 } from '../../lib/types.js';
+import {
+  type SourcePlaylists,
+  diffSnapshots,
+  fetchSourceSnapshots,
+  pickReusableScans,
+  recalculate,
+  snapshotPrioritiesFrom,
+} from '../recalculate.js';
 import { ReleaseCollector } from '../release-collector.js';
 import {
   type DatePipelineConfig,
@@ -24,9 +36,25 @@ import type {
   PlaylistFillerEventMap,
   PlaylistFillerOptions,
 } from './events.js';
-import type { FillPresenter } from './presenter.js';
-import { maybeRecalculate } from './recalculate.js';
 import type { FillStorage } from './storage.js';
+
+export type PrioritySnapshot = Map<string, number | null>;
+
+export interface FillRunOptions {
+  ctx: SpotifyContext;
+  config: PlaylistFillerOptions;
+  storage: FillStorage;
+  /** Event handlers — caller composes from `consoleHandlers()` or `broadcastHandlers()`. */
+  handlers: EventHandlers<PlaylistFillerEventMap>;
+  fresh?: boolean;
+}
+
+export interface FillResult {
+  results: DateResult[];
+  durationMinutes: number;
+  prioritiesBefore: PrioritySnapshot;
+  prioritiesAfter: PrioritySnapshot;
+}
 
 const DEFAULTS = {
   allWeeklyId: '',
@@ -36,43 +64,124 @@ const DEFAULTS = {
   editorialFilter: { minPopularity: 60, minFollowers: 100000 },
 };
 
-export interface OrchestratorOptions {
-  ctx: SpotifyContext;
-  storage: FillStorage;
-  presenter: FillPresenter;
-  config: PlaylistFillerOptions;
-  fresh?: boolean;
+function snapshotFromTrusted(t: TrustedArtistsFile): PrioritySnapshot {
+  const m: PrioritySnapshot = new Map();
+  for (const [name, data] of Object.entries(t.artistCounts))
+    m.set(name, data.priority);
+  return m;
 }
 
-export async function orchestrateFill(
-  opts: OrchestratorOptions,
-): Promise<{ results: DateResult[]; durationMinutes: number }> {
-  const { ctx, storage, presenter } = opts;
-  const emitter = new ServiceEmitter<PlaylistFillerEventMap>(
-    presenter.events(),
-  );
+async function loadPrioritiesSnapshot(
+  storage: FillStorage,
+): Promise<PrioritySnapshot> {
+  try {
+    return snapshotFromTrusted(await storage.loadTrustedArtists());
+  } catch {
+    return new Map();
+  }
+}
 
-  const cfg: Required<
-    Pick<
-      PlaylistFillerOptions,
-      | 'allWeeklyId'
-      | 'bestOfAllWeeklyId'
-      | 'useLikedSongs'
-      | 'editorialPlaylists'
-      | 'externalPlaylistSources'
-      | 'editorialFilter'
-    >
-  > & { genreFilters?: PlaylistFillerOptions['genreFilters'] } = {
-    allWeeklyId: opts.config.allWeeklyId ?? DEFAULTS.allWeeklyId,
-    bestOfAllWeeklyId:
-      opts.config.bestOfAllWeeklyId ?? DEFAULTS.bestOfAllWeeklyId,
-    useLikedSongs: opts.config.useLikedSongs ?? false,
+/** Emit 'resumed' (if applicable) so subscribers can restore UI/log state. */
+async function emitResumedIfAny(
+  opts: FillRunOptions,
+  emitter: ServiceEmitter<PlaylistFillerEventMap>,
+): Promise<void> {
+  if (opts.fresh) return;
+  try {
+    const cache = await opts.storage.loadBatchCache();
+    const progress = cache.artistSearchProgress;
+    if (!progress || progress.artistsSearched <= 0) return;
+    const trusted = await opts.storage.loadTrustedArtists();
+    const p1p2 = filterByPriority(trusted.artistCounts, [1, 2]);
+    const count = Math.min(progress.artistsSearched, p1p2.length);
+    const names: string[] = [];
+    for (let i = 0; i < count; i++) names.push(p1p2[i][0]);
+    emitter.emit('resumed', progress.date, names);
+  } catch {
+    /* no cache / trusted file yet */
+  }
+}
+
+interface RecalcDeps {
+  ctx: SpotifyContext;
+  storage: FillStorage;
+  emitter: ServiceEmitter<PlaylistFillerEventMap>;
+  sources: SourcePlaylists;
+}
+
+/**
+ * Mid-Fill recalc: if either source playlist's snapshot has changed since the
+ * cached one, re-run the priority calculator. Skipped when the current date is
+ * mid-search so an in-flight artist scan isn't invalidated.
+ *
+ * Returns true when a recalc happened (caller should reload trusted artists).
+ * Always updates `cache.{aw,boaw}Snapshot` and persists the cache.
+ */
+async function maybeRecalculate(
+  deps: RecalcDeps,
+  cache: BatchCache,
+  targetDate: string,
+): Promise<boolean> {
+  const { ctx, storage, emitter, sources } = deps;
+
+  const live = await fetchSourceSnapshots(ctx, sources);
+  const delta = diffSnapshots(cache, live);
+
+  const persistSnapshots = async () => {
+    cache.allWeeklySnapshot = live.aw;
+    cache.bestOfAllWeeklySnapshot = live.boaw;
+    await storage.saveBatchCache(cache);
+  };
+
+  if (!delta.anyChanged) {
+    emitter.emit('log', 'Snapshots unchanged — skipping recalculation');
+    await persistSnapshots();
+    return false;
+  }
+
+  const progress = cache.artistSearchProgress;
+  const midSearch =
+    progress && progress.date === targetDate && progress.artistsSearched > 0;
+  if (midSearch) {
+    await persistSnapshots();
+    return false;
+  }
+
+  emitter.emit('recalculating');
+  const prior = snapshotPrioritiesFrom(await storage.loadTrustedArtists());
+  const result = await recalculate({
+    ctx,
+    sources,
+    preloaded: pickReusableScans(cache, delta),
+    prior,
+  });
+
+  await storage.saveTrustedArtists(result.trustedArtists);
+  cache.awScanCache = toCachedScanResult(result.scanResults.aw);
+  cache.boawScanCache = toCachedScanResult(result.scanResults.boaw);
+  await persistSnapshots();
+
+  emitter.emit('recalculated', result.tierChanges ?? []);
+  return true;
+}
+
+export async function runFill(opts: FillRunOptions): Promise<FillResult> {
+  const { ctx, storage, config } = opts;
+  const emitter = new ServiceEmitter<PlaylistFillerEventMap>(opts.handlers);
+
+  await emitResumedIfAny(opts, emitter);
+  const prioritiesBefore = await loadPrioritiesSnapshot(storage);
+
+  const cfg = {
+    allWeeklyId: config.allWeeklyId ?? DEFAULTS.allWeeklyId,
+    bestOfAllWeeklyId: config.bestOfAllWeeklyId ?? DEFAULTS.bestOfAllWeeklyId,
+    useLikedSongs: config.useLikedSongs ?? false,
     editorialPlaylists:
-      opts.config.editorialPlaylists ?? DEFAULTS.editorialPlaylists,
+      config.editorialPlaylists ?? DEFAULTS.editorialPlaylists,
     externalPlaylistSources:
-      opts.config.externalPlaylistSources ?? DEFAULTS.externalPlaylistSources,
-    editorialFilter: opts.config.editorialFilter ?? DEFAULTS.editorialFilter,
-    genreFilters: opts.config.genreFilters,
+      config.externalPlaylistSources ?? DEFAULTS.externalPlaylistSources,
+    editorialFilter: config.editorialFilter ?? DEFAULTS.editorialFilter,
+    genreFilters: config.genreFilters,
   };
 
   const collector = new ReleaseCollector(ctx, {
@@ -121,7 +230,7 @@ export async function orchestrateFill(
   }
   const userId = meResult.data.id;
 
-  // ── Existing playlists / date discovery ───────────────────────────────────
+  // ── Existing playlists / date discovery ──────────────────────────────────
   emitter.emit('log', 'Loading playlists to determine date range...');
   const existingPlaylists = await getAllUserPlaylists(ctx, userId);
   emitter.emit('log', `Found ${existingPlaylists.length} user playlists`);
@@ -154,12 +263,17 @@ export async function orchestrateFill(
 
   if (datesToProcess.length === 0) {
     emitter.emit('log', 'All weekly playlists are already filled.');
-    return { results: [], durationMinutes: 0 };
+    return {
+      results: [],
+      durationMinutes: 0,
+      prioritiesBefore,
+      prioritiesAfter: await loadPrioritiesSnapshot(storage),
+    };
   }
 
   emitter.emit('start', datesToProcess);
 
-  // ── Load cache ────────────────────────────────────────────────────────────
+  // ── Load cache ───────────────────────────────────────────────────────────
   let cache: BatchCache = {};
   if (!opts.fresh) cache = await storage.loadBatchCache();
 
@@ -248,5 +362,7 @@ export async function orchestrateFill(
 
   const durationMinutes = Math.round((Date.now() - startTime) / 1000 / 60);
   emitter.emit('batchComplete', results, durationMinutes);
-  return { results, durationMinutes };
+
+  const prioritiesAfter = await loadPrioritiesSnapshot(storage);
+  return { results, durationMinutes, prioritiesBefore, prioritiesAfter };
 }
