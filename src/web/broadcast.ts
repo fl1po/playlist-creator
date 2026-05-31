@@ -43,15 +43,21 @@ export function createBroadcaster(): Broadcaster {
     return h;
   }
 
+  function stampLog(type: string, data: unknown): unknown {
+    if (type !== 'log' || !data || typeof data !== 'object') return data;
+    const d = data as { ts?: number };
+    return { ...(data as object), ts: d.ts ?? Date.now() };
+  }
+
   /** Broadcast to ALL connected clients (used for global events like reload) */
   function broadcast(type: string, data: unknown) {
-    const msg = JSON.stringify({ type, data });
+    const msg = JSON.stringify({ type, data: stampLog(type, data) });
     for (const [res] of clients) send(res, msg);
   }
 
   /** Broadcast to a specific user's clients only */
   function broadcastTo(userId: string, type: string, data: unknown) {
-    const msg = JSON.stringify({ type, data });
+    const msg = JSON.stringify({ type, data: stampLog(type, data) });
     if (!SKIP_HISTORY.has(type)) {
       const history = getUserHistory(userId);
       history.push(msg);

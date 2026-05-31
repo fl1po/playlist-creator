@@ -1074,7 +1074,7 @@ function handleMessage({ type, data }) {
       break;
 
     case 'log':
-      log(data.level, data.message);
+      log(data.level, data.message, data.ts);
       break;
 
     // Fill events
@@ -1892,12 +1892,12 @@ function updateButtons() {
 }
 
 let shouldScrollToLog = false;
-function log(level, message) {
+function log(level, message, ts) {
   const panel = document.getElementById('logPanel');
   const entry = document.createElement('div');
   entry.className = `log-entry ${level}`;
-  const ts = new Date().toLocaleTimeString();
-  entry.innerHTML = `<span class="ts">${ts}</span> ${esc(message)}`;
+  const tsStr = (ts ? new Date(ts) : new Date()).toLocaleTimeString();
+  entry.innerHTML = `<span class="ts">${tsStr}</span> ${esc(message)}`;
   panel.appendChild(entry);
   if (document.getElementById('logAutoScroll').checked) {
     panel.scrollTop = panel.scrollHeight;
