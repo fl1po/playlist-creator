@@ -1,4 +1,5 @@
 import type { DateResult } from '../../lib/types.js';
+import type { PriorityChange } from '../playlist-syncer.js';
 
 export type PlaylistFillerEventMap = {
   start: [datesToProcess: string[]];
@@ -35,7 +36,7 @@ export type PlaylistFillerEventMap = {
   rateLimitWait: [seconds: number, wakeTime: Date];
   batchComplete: [results: DateResult[], durationMinutes: number];
   recalculating: [];
-  recalculated: [];
+  recalculated: [tierChanges: PriorityChange[]];
   pacerWait: [intervalMs: number];
   log: [message: string];
 };

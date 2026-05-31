@@ -189,39 +189,20 @@ export async function orchestrateFill(
           ctx,
           storage,
           emitter,
-          allWeeklyId: cfg.allWeeklyId,
-          bestOfAllWeeklyId: cfg.bestOfAllWeeklyId,
-          useLikedSongs: cfg.useLikedSongs,
+          sources: {
+            allWeeklyId: cfg.allWeeklyId,
+            bestOfAllWeeklyId: cfg.bestOfAllWeeklyId,
+            useLikedSongs: cfg.useLikedSongs,
+          },
         },
         cache,
         targetDate,
       );
 
       if (recalculated) {
-        const oldArtists = new Map(
-          p1p2Artists.map(([name, data]) => [name, data]),
-        );
         trustedArtists = await storage.loadTrustedArtists();
         p1p2Artists = filterByPriority(trustedArtists.artistCounts, [1, 2]);
-        const newNames = new Set(p1p2Artists.map(([name]) => name));
-        const added = p1p2Artists.filter(([name]) => !oldArtists.has(name));
-        const removed = [...oldArtists.keys()].filter(
-          (name) => !newNames.has(name),
-        );
         emitter.emit('log', `Reloaded P1+P2 artists: ${p1p2Artists.length}`);
-        for (const [name, data] of added) {
-          const oldData = trustedArtists.artistCounts[name];
-          const oldP = oldData?.priority;
-          const label = oldP ? `P${oldP}` : 'new';
-          emitter.emit('log', `  + ${name}: ${label} → P${data.priority}`);
-        }
-        for (const name of removed) {
-          const oldP = oldArtists.get(name)?.priority;
-          const newData = trustedArtists.artistCounts[name];
-          const newP = newData?.priority ?? null;
-          const newLabel = newP ? `P${newP}` : 'none';
-          emitter.emit('log', `  − ${name}: P${oldP} → ${newLabel}`);
-        }
       }
 
       if (i > 0 && (i + 1) % 10 === 0) {

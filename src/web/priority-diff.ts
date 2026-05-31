@@ -1,49 +1,13 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import type { RequestPacer } from '../lib/request-pacer.js';
 import { createSpotifyContext } from '../lib/spotify-context.js';
-import type { SpotifyClient, TrustedArtistsFile } from '../lib/types.js';
+import type { SpotifyClient } from '../lib/types.js';
 import {
-  PlaylistSyncerService,
   type PlaylistSyncEventMap,
+  PlaylistSyncerService,
   type PriorityChange,
 } from '../services/playlist-syncer.js';
 import { broadcastEvents } from './broadcast.js';
-
-/** Take a snapshot of artist priorities from trusted-artists.json. */
-export function snapshotPriorities(
-  trustedPath: string,
-): Map<string, number | null> {
-  const priorities = new Map<string, number | null>();
-  try {
-    const prev = JSON.parse(
-      fs.readFileSync(trustedPath, 'utf-8'),
-    ) as TrustedArtistsFile;
-    for (const [name, data] of Object.entries(prev.artistCounts))
-      priorities.set(name, data.priority);
-  } catch {
-    /* first run or missing file */
-  }
-  return priorities;
-}
-
-/** Compare old priority snapshot with current trusted-artists file. */
-export function diffPriorities(
-  old: Map<string, number | null>,
-  current: TrustedArtistsFile,
-): PriorityChange[] {
-  const changes: PriorityChange[] = [];
-  for (const [name, data] of Object.entries(current.artistCounts)) {
-    const prev = old.get(name) ?? null;
-    if (prev !== data.priority)
-      changes.push({ artist: name, from: prev, to: data.priority });
-  }
-  for (const [name, prev] of old) {
-    if (!(name in current.artistCounts))
-      changes.push({ artist: name, from: prev, to: null });
-  }
-  return changes;
-}
 
 /** Run playlist sync if any P1/P2 boundary crossings occurred. */
 export async function syncIfNeeded(

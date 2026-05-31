@@ -2,22 +2,22 @@ import fs from 'node:fs';
 import { FileConfigStore } from '../lib/config.js';
 import { spotifyContext } from '../lib/spotify-context.js';
 import { UserConfigStore, secondaryLabel } from '../lib/user-config.js';
-import { PriorityCalculatorService } from '../services/priority-calculator.js';
+import { recalculate } from '../services/recalculate.js';
 
 const ctx = spotifyContext({ configStore: new FileConfigStore() });
 const userConfig = new UserConfigStore().load();
 const sl = secondaryLabel(userConfig);
 
-const service = new PriorityCalculatorService(
+console.log('=== Recalculating Artist Priorities ===\n');
+
+const result = await recalculate({
   ctx,
-  {
-    allWeeklyId: userConfig.sourcePlaylists.allWeeklyId,
-    bestOfAllWeeklyId: userConfig.sourcePlaylists.bestOfAllWeeklyId,
-    useLikedSongs: userConfig.sourcePlaylists.useLikedSongs,
-    scoringWeights: userConfig.scoring,
-    priorityThresholds: userConfig.scoring.priorityThresholds,
+  sources: userConfig.sourcePlaylists,
+  scoring: {
+    weights: userConfig.scoring,
+    thresholds: userConfig.scoring.priorityThresholds,
   },
-  {
+  events: {
     onScanStart: (name) => console.log(`\nScanning ${name}...`),
     onScanProgress: (_name, offset, total) =>
       process.stdout.write(`\r  Fetched ${offset}/${total} tracks`),
@@ -42,13 +42,9 @@ const service = new PriorityCalculatorService(
     },
     onSaved: (path) => console.log(`\n=== Saved to ${path} ===`),
   },
-);
-
-console.log('=== Recalculating Artist Priorities ===\n');
-
-const { scanResults: _, ...output } = await service.run();
+});
 
 const outputPath = './trusted-artists.json';
-fs.writeFileSync(outputPath, JSON.stringify(output, null, 2));
+fs.writeFileSync(outputPath, JSON.stringify(result.trustedArtists, null, 2));
 console.log(`\n=== Saved to ${outputPath} ===`);
 console.log('\n=== Done! ===\n');

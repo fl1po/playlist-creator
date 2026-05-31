@@ -1,16 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { type BatchCache, type PlaylistScanResult, toCachedScanResult, toScanResult } from '../../lib/types.js';
+import { type BatchCache, toCachedScanResult } from '../../lib/types.js';
+import type { PriorityCalculatorEventMap } from '../../services/priority-calculator.js';
 import {
-  type PriorityCalculatorEventMap,
-  PriorityCalculatorService,
-} from '../../services/priority-calculator.js';
-import { broadcastEvents } from '../broadcast.js';
-import {
-  diffPriorities,
+  diffSnapshots,
+  fetchSourceSnapshots,
+  pickReusableScans,
+  recalculate,
   snapshotPriorities,
-  syncIfNeeded,
-} from '../priority-diff.js';
+} from '../../services/recalculate.js';
+import { broadcastEvents } from '../broadcast.js';
+import { syncIfNeeded } from '../priority-diff.js';
 import {
   redisLoadBatchCache,
   redisSaveBatchCache,
@@ -40,65 +40,39 @@ export const recalculateTask: TaskDefinition = {
 
     const userConfig = await tc.userConfigStore.load();
     const force = !!tc.body.force;
-    const cache = (tc.caches.batchCache ?? await redisLoadBatchCache(tc.userId) ?? {}) as BatchCache;
+    const cache = (tc.caches.batchCache ??
+      (await redisLoadBatchCache(tc.userId)) ??
+      {}) as BatchCache;
 
-    // Fetch live snapshots (2 cheap API calls)
-    const awResult = await tc.ctx.call(
-      () => tc.ctx.api.playlists.getPlaylist(userConfig.sourcePlaylists.allWeeklyId, undefined, 'snapshot_id'),
-      'All Weekly snapshot',
-    );
-    const awSnapshot = awResult.success ? awResult.data.snapshot_id : undefined;
+    const live = await fetchSourceSnapshots(tc.ctx, userConfig.sourcePlaylists);
+    const delta = diffSnapshots(cache, live);
 
-    let boawSnapshot: string | undefined;
-    if (userConfig.sourcePlaylists.useLikedSongs) {
-      const likedResult = await tc.ctx.call(
-        () => tc.ctx.api.currentUser.tracks.savedTracks(1, 0),
-        'Liked Songs snapshot',
-      );
-      if (likedResult.success) {
-        const data = likedResult.data as any;
-        boawSnapshot = `${data.total ?? 0}:${data.items?.[0]?.added_at ?? ''}`;
-      }
-    } else {
-      const boawResult = await tc.ctx.call(
-        () => tc.ctx.api.playlists.getPlaylist(userConfig.sourcePlaylists.bestOfAllWeeklyId, undefined, 'snapshot_id'),
-        'BoAW snapshot',
-      );
-      boawSnapshot = boawResult.success ? boawResult.data.snapshot_id : undefined;
+    if (
+      !force &&
+      cache.allWeeklySnapshot &&
+      cache.bestOfAllWeeklySnapshot &&
+      !delta.anyChanged
+    ) {
+      tc.broadcast('log', {
+        level: 'info',
+        message: 'Snapshots unchanged — skipping recalculation',
+      });
+      return;
     }
 
-    // Skip if snapshots unchanged
-    if (!force && cache.allWeeklySnapshot && cache.bestOfAllWeeklySnapshot) {
-      const awUnchanged = awSnapshot && cache.allWeeklySnapshot === awSnapshot;
-      const boawUnchanged = boawSnapshot && cache.bestOfAllWeeklySnapshot === boawSnapshot;
-      if (awUnchanged && boawUnchanged) {
-        tc.broadcast('log', { level: 'info', message: 'Snapshots unchanged — skipping recalculation' });
-        return;
-      }
-    }
+    const trustedPath = path.join(tc.dataDir, 'trusted-artists.json');
+    const prior = snapshotPriorities(trustedPath);
 
-    // Reuse cached scan data for unchanged sources
-    const awUnchanged = awSnapshot && cache.allWeeklySnapshot === awSnapshot;
-    const boawUnchanged = boawSnapshot && cache.bestOfAllWeeklySnapshot === boawSnapshot;
-    const preloaded: { aw?: PlaylistScanResult; boaw?: PlaylistScanResult } = {};
-    if (awUnchanged && cache.awScanCache) {
-      preloaded.aw = toScanResult(cache.awScanCache);
-    }
-    if (boawUnchanged && cache.boawScanCache) {
-      preloaded.boaw = toScanResult(cache.boawScanCache);
-    }
-
-    const service = new PriorityCalculatorService(
-      tc.ctx,
-      {
-        allWeeklyId: userConfig.sourcePlaylists.allWeeklyId,
-        bestOfAllWeeklyId: userConfig.sourcePlaylists.bestOfAllWeeklyId,
-        useLikedSongs: userConfig.sourcePlaylists.useLikedSongs,
-        scoringWeights: userConfig.scoring,
-        priorityThresholds: userConfig.scoring.priorityThresholds,
-        preloaded,
+    const result = await recalculate({
+      ctx: tc.ctx,
+      sources: userConfig.sourcePlaylists,
+      scoring: {
+        weights: userConfig.scoring,
+        thresholds: userConfig.scoring.priorityThresholds,
       },
-      broadcastEvents<PriorityCalculatorEventMap>(tc.broadcast, {
+      preloaded: pickReusableScans(cache, delta),
+      prior,
+      events: broadcastEvents<PriorityCalculatorEventMap>(tc.broadcast, {
         scanStart: {
           type: 'recalc:scanStart',
           pack: (name) => {
@@ -133,21 +107,16 @@ export const recalculateTask: TaskDefinition = {
         },
         saved: { log: (p) => `Saved to ${p}`, level: 'success' },
       }),
-    );
+    });
 
-    const trustedPath = path.join(tc.dataDir, 'trusted-artists.json');
-    const oldPriorities = snapshotPriorities(trustedPath);
-
-    const { scanResults, ...output } = await service.run();
-
-    const changes = diffPriorities(oldPriorities, output);
+    const changes = result.tierChanges ?? [];
     changes.sort(
       (a, b) => (a.to ?? 99) - (b.to ?? 99) || (a.from ?? 99) - (b.from ?? 99),
     );
     tc.broadcast('recalc:changes', { changes });
 
-    // Sync unprocessed playlists if P1/P2 boundary crossings occurred
-    // Must complete before persisting, so a failure allows re-running from scratch
+    // Sync unprocessed playlists if P1/P2 boundary crossings occurred.
+    // Must complete before persisting, so a failure allows re-running from scratch.
     await syncIfNeeded(
       changes,
       tc.rawClient,
@@ -158,18 +127,21 @@ export const recalculateTask: TaskDefinition = {
     );
 
     // Persist only after the entire process (including sync) succeeds
-    fs.writeFileSync(trustedPath, JSON.stringify(output, null, 2));
-    tc.emitData('trustedArtists', output);
+    fs.writeFileSync(
+      trustedPath,
+      JSON.stringify(result.trustedArtists, null, 2),
+    );
+    tc.emitData('trustedArtists', result.trustedArtists);
     const updatedCache: BatchCache = {
       ...cache,
-      ...(awSnapshot && { allWeeklySnapshot: awSnapshot }),
-      ...(boawSnapshot && { bestOfAllWeeklySnapshot: boawSnapshot }),
-      awScanCache: toCachedScanResult(scanResults.aw),
-      boawScanCache: toCachedScanResult(scanResults.boaw),
+      ...(live.aw && { allWeeklySnapshot: live.aw }),
+      ...(live.boaw && { bestOfAllWeeklySnapshot: live.boaw }),
+      awScanCache: toCachedScanResult(result.scanResults.aw),
+      boawScanCache: toCachedScanResult(result.scanResults.boaw),
     };
     tc.emitData('batchCache', updatedCache);
     await redisSaveBatchCache(tc.userId, updatedCache);
-    await redisSaveTrustedArtists(tc.userId, output);
+    await redisSaveTrustedArtists(tc.userId, result.trustedArtists);
 
     tc.broadcast('log', {
       level: 'success',
