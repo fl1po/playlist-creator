@@ -21,7 +21,7 @@ import {
   RedisUserConfigStore,
   isRedisConfigured,
 } from './redis-config-store.js';
-import { getBearerToken, getSessionUserId } from './session.js';
+import { getBearerToken, getRefreshToken, getSessionUserId } from './session.js';
 import type { TaskMutex } from './task-mutex.js';
 
 export interface UserSession {
@@ -81,6 +81,7 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
   const sessions = new Map<string, UserSession>();
   const searchedArtists = new Set<string>();
   const bearerTokenCache = new Map<string, string>();
+  const bearerRefreshCache = new Map<string, string>();
 
   function buildSpotifyClient(configStore: BridgedConfigStore): SpotifyClient {
     return createSpotifyClient({
@@ -159,7 +160,22 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
           .json({ error: 'X-User-Id header required with Bearer auth' });
         return null;
       }
-      return getOrCreateBearerSession(userId, appConfig, bearerToken, req);
+      const refreshToken = getRefreshToken(req);
+      if (!refreshToken) {
+        // Without a refresh token we can't rebuild server-side state after a
+        // restart. Refuse rather than create a broken session that would
+        // trigger an infinite re-auth loop on the first token refresh.
+        res
+          .status(401)
+          .json({ error: 'X-Refresh-Token header required with Bearer auth' });
+        return null;
+      }
+      return getOrCreateBearerSession(
+        userId,
+        appConfig,
+        bearerToken,
+        refreshToken,
+      );
     }
 
     // Fall back to cookie auth
@@ -175,12 +191,16 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
     userId: string,
     appConfig: AppConfig,
     accessToken: string,
-    req: express.Request,
+    refreshToken: string,
   ): UserSession {
     const existing = sessions.get(userId);
     if (existing) {
-      const refreshToken = req.body?.refreshToken as string | undefined;
-      if (refreshToken && bearerTokenCache.get(userId) !== accessToken) {
+      const cachedRefresh = bearerRefreshCache.get(userId);
+      const cachedAccess = bearerTokenCache.get(userId);
+      // Rebuild the Spotify client whenever EITHER token differs from what
+      // we last installed — covers token rotation AND sessions that were
+      // created with a stale or empty refresh token before this fix.
+      if (cachedAccess !== accessToken || cachedRefresh !== refreshToken) {
         const tokenStore = new InMemoryTokenStore(
           { accessToken, refreshToken },
           (tokens) => broadcast('data:save', { key: 'tokens', value: tokens }),
@@ -188,11 +208,11 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
         const configStore = new BridgedConfigStore(appConfig, tokenStore);
         existing.client = buildSpotifyClient(configStore);
         bearerTokenCache.set(userId, accessToken);
+        bearerRefreshCache.set(userId, refreshToken);
       }
       return existing;
     }
 
-    const refreshToken = (req.body?.refreshToken as string) ?? '';
     const tokenStore = new InMemoryTokenStore(
       { accessToken, refreshToken },
       (tokens) => broadcast('data:save', { key: 'tokens', value: tokens }),
@@ -204,6 +224,7 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
 
     const client = buildSpotifyClient(configStore);
     bearerTokenCache.set(userId, accessToken);
+    bearerRefreshCache.set(userId, refreshToken);
 
     const session: UserSession = {
       userId,

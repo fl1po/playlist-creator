@@ -131,14 +131,18 @@ importBtn.addEventListener('click', async () => {
   }
 
   try {
-    if (tokens.refreshToken) body.refreshToken = tokens.refreshToken;
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${tokens.accessToken}`,
+      'X-User-Id': userId,
+    };
+    if (tokens.refreshToken) {
+      body.refreshToken = tokens.refreshToken;
+      headers['X-Refresh-Token'] = tokens.refreshToken;
+    }
     const res = await fetch('/api/import-data', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${tokens.accessToken}`,
-        'X-User-Id': userId,
-      },
+      headers,
       body: JSON.stringify(body),
     });
     const result = await res.json();

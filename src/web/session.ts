@@ -64,3 +64,14 @@ export function getBearerToken(req: IncomingMessage): string | null {
   if (!auth?.startsWith('Bearer ')) return null;
   return auth.slice(7);
 }
+
+/**
+ * Extract refresh token from X-Refresh-Token header.
+ * Sent by the client on every Bearer-auth request so the server can rebuild
+ * its in-memory session after a restart, regardless of HTTP method.
+ */
+export function getRefreshToken(req: IncomingMessage): string | null {
+  const value = req.headers['x-refresh-token'];
+  if (typeof value !== 'string' || value.length === 0) return null;
+  return value;
+}

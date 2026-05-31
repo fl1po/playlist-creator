@@ -1509,7 +1509,18 @@ async function checkAuth() {
     }
   }
 
-  const res = await api('GET', '/api/auth/status');
+  let res = await api('GET', '/api/auth/status');
+  // Transient Spotify error (5xx/429/network) — retry once before deciding.
+  if (!res.authenticated && res.reason === 'transient') {
+    await new Promise(r => setTimeout(r, 1500));
+    res = await api('GET', '/api/auth/status');
+    if (!res.authenticated && res.reason === 'transient') {
+      // Still transient — assume tokens are fine, let the user proceed.
+      document.getElementById('authStatus').textContent = '';
+      document.getElementById('authOverlay').classList.add('hidden');
+      return;
+    }
+  }
   setAuthenticated(res.authenticated, res.displayName, res.reason);
   if (res.authenticated) await migrateDataToLocalStorage();
 }
@@ -1928,9 +1939,8 @@ async function api(method, url, body) {
       opts.headers['Authorization'] = `Bearer ${tokens.accessToken}`;
       const userId = Store.getUserId();
       if (userId) opts.headers['X-User-Id'] = userId;
-      // Include refreshToken in POST bodies
-      if (method === 'POST' && body) {
-        body = { ...body, refreshToken: tokens.refreshToken };
+      if (tokens.refreshToken) {
+        opts.headers['X-Refresh-Token'] = tokens.refreshToken;
       }
     }
     if (body) {

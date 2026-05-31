@@ -62,7 +62,13 @@ export function authRoutes(ctx: RouteContext): Router {
           headers: { Authorization: `Bearer ${bearerToken}` },
         });
         if (!profileRes.ok) {
-          res.json({ authenticated: false, reason: 'expired' });
+          // Only 401/403 mean the token is actually rejected. 429/5xx are
+          // Spotify-side transient errors — don't trigger the re-auth banner.
+          const reason =
+            profileRes.status === 401 || profileRes.status === 403
+              ? 'expired'
+              : 'transient';
+          res.json({ authenticated: false, reason });
           return;
         }
         const profile = (await profileRes.json()) as {
@@ -75,7 +81,8 @@ export function authRoutes(ctx: RouteContext): Router {
           displayName: profile.display_name ?? profile.id,
         });
       } catch {
-        res.json({ authenticated: false, reason: 'expired' });
+        // Network-level failure — can't tell whether the token is bad.
+        res.json({ authenticated: false, reason: 'transient' });
       }
       return;
     }
@@ -106,7 +113,11 @@ export function authRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const refreshToken = req.body?.refreshToken as string | undefined;
+    const { getRefreshToken } = await import('../session.js');
+    const refreshToken =
+      (req.body?.refreshToken as string | undefined) ??
+      getRefreshToken(req) ??
+      undefined;
     if (!refreshToken) {
       res.status(400).json({ ok: false, error: 'Missing refreshToken' });
       return;
