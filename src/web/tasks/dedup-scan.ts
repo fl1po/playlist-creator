@@ -1,22 +1,42 @@
 import { getPlaylistTracksDetailed } from '../../lib/pagination.js';
 import { getNonListenedPlaylists } from '../../services/non-listened-playlists.js';
-import type { TaskContext, TaskDefinition } from '../task-runner.js';
+import type {
+  BaseEvents,
+  TaskContext,
+  TaskDefinition,
+} from '../task-runner.js';
 
-export const dedupScanTask: TaskDefinition = {
+interface DedupScanEvents extends BaseEvents {
+  'dedup:playlist': {
+    name: string;
+    duplicates: Array<{ artist: string; track: string; count: number }>;
+  };
+  'dedup:scanComplete': {
+    playlists: Array<{
+      name: string;
+      id: string;
+      duplicateCount: number;
+      trackUris: string[];
+    }>;
+    totalDuplicates: number;
+  };
+}
+
+export const dedupScanTask: TaskDefinition<DedupScanEvents> = {
   name: 'dedup-scan',
   path: '/dedup-scan',
   startMessage: 'Dedup scan started',
 
-  async run(tc: TaskContext) {
-    const userConfig = await tc.userConfigStore.load();
-    const me = await tc.client.api.currentUser.profile();
+  async run(tc: TaskContext<DedupScanEvents>) {
+    const userConfig = await tc.userConfig();
+    const me = await tc.me();
 
     const { playlists: candidates } = await getNonListenedPlaylists(
       tc.ctx,
       me.id,
       userConfig.sourcePlaylists.allWeeklyId,
       tc.dataDir,
-      (msg) => tc.broadcast('log', { level: 'info', message: msg }),
+      (msg) => tc.log('info', msg),
     );
 
     const scanResults: Array<{
@@ -27,8 +47,7 @@ export const dedupScanTask: TaskDefinition = {
     }> = [];
     let totalDuplicates = 0;
 
-    for (const pl of candidates) {
-      tc.checkAbort();
+    await tc.iter(candidates, async (pl) => {
       const tracks = await getPlaylistTracksDetailed(tc.ctx, pl.id);
 
       const groups = new Map<
@@ -69,24 +88,24 @@ export const dedupScanTask: TaskDefinition = {
           duplicateCount: dupCount,
           trackUris: urisToRemove,
         });
-        tc.broadcast('dedup:playlist', { name: pl.name, duplicates });
+        tc.emit('dedup:playlist', { name: pl.name, duplicates });
       }
-    }
+    });
 
-    tc.broadcast('dedup:scanComplete', {
+    tc.emit('dedup:scanComplete', {
       playlists: scanResults,
       totalDuplicates,
     });
     if (totalDuplicates === 0) {
-      tc.broadcast('log', {
-        level: 'success',
-        message: `No duplicates found (scanned ${candidates.length} playlists)`,
-      });
+      tc.log(
+        'success',
+        `No duplicates found (scanned ${candidates.length} playlists)`,
+      );
     } else {
-      tc.broadcast('log', {
-        level: 'info',
-        message: `Found ${totalDuplicates} duplicate tracks across ${scanResults.length} playlists (scanned ${candidates.length})`,
-      });
+      tc.log(
+        'info',
+        `Found ${totalDuplicates} duplicate tracks across ${scanResults.length} playlists (scanned ${candidates.length})`,
+      );
     }
   },
 };

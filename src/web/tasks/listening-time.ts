@@ -8,32 +8,55 @@ import {
 } from '../../lib/cache-files.js';
 import { getPlaylistTotalDuration } from '../../lib/pagination.js';
 import { getNonListenedPlaylists } from '../../services/non-listened-playlists.js';
-import type { TaskContext, TaskDefinition } from '../task-runner.js';
+import type {
+  BaseEvents,
+  TaskContext,
+  TaskDefinition,
+} from '../task-runner.js';
 
-export const listeningTimeTask: TaskDefinition = {
+interface ListeningTimeResult {
+  totalMs: number;
+  totalTracks: number;
+  playlistCount: number;
+  perPlaylist: Array<{
+    name: string;
+    durationMs: number;
+    trackCount: number;
+    ready: boolean;
+  }>;
+}
+
+interface ListeningTimeEvents extends BaseEvents {
+  'listeningTime:progress': {
+    current: number;
+    total: number;
+    playlistName: string;
+    totalMs: number;
+  };
+  'listeningTime:complete': ListeningTimeResult;
+}
+
+type ListeningTimeCacheKey = 'durationSnapshots';
+
+export const listeningTimeTask: TaskDefinition<
+  ListeningTimeEvents,
+  ListeningTimeCacheKey
+> = {
   name: 'listening-time',
   path: '/listening-time',
   startMessage: 'Listening time calculation started',
+  caches: [{ key: 'durationSnapshots', file: DURATION_SNAPSHOT_CACHE }],
 
-  async run(tc: TaskContext) {
-    // Hydrate caches from client
-    if (tc.caches.durationSnapshots) {
-      fs.mkdirSync(tc.dataDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(tc.dataDir, DURATION_SNAPSHOT_CACHE),
-        JSON.stringify(tc.caches.durationSnapshots, null, 2),
-      );
-    }
-
-    const userConfig = await tc.userConfigStore.load();
-    const me = await tc.client.api.currentUser.profile();
+  async run(tc: TaskContext<ListeningTimeEvents, ListeningTimeCacheKey>) {
+    const userConfig = await tc.userConfig();
+    const me = await tc.me();
 
     const { playlists: candidates } = await getNonListenedPlaylists(
       tc.ctx,
       me.id,
       userConfig.sourcePlaylists.allWeeklyId,
       tc.dataDir,
-      (msg) => tc.broadcast('log', { level: 'info', message: msg }),
+      (msg) => tc.log('info', msg),
     );
 
     const force = !!tc.body.force;
@@ -51,17 +74,9 @@ export const listeningTimeTask: TaskDefinition = {
     let totalMs = 0;
     let totalTracks = 0;
     let cached = 0;
-    const perPlaylist: Array<{
-      name: string;
-      durationMs: number;
-      trackCount: number;
-      ready: boolean;
-    }> = [];
+    const perPlaylist: ListeningTimeResult['perPlaylist'] = [];
 
-    for (let i = 0; i < candidates.length; i++) {
-      tc.checkAbort();
-      const pl = candidates[i];
-
+    await tc.iter(candidates, async (pl, i) => {
       let plMs: number;
       let plTracks: number;
 
@@ -106,13 +121,13 @@ export const listeningTimeTask: TaskDefinition = {
         ready,
       });
 
-      tc.broadcast('listeningTime:progress', {
+      tc.emit('listeningTime:progress', {
         current: i + 1,
         total: candidates.length,
         playlistName: pl.name,
         totalMs,
       });
-    }
+    });
 
     // Prune stale entries and persist
     const candidateIds = new Set(candidates.map((c) => c.id));
@@ -121,7 +136,7 @@ export const listeningTimeTask: TaskDefinition = {
     }
     fs.writeFileSync(snapshotPath, JSON.stringify(snapshots, null, 2));
 
-    const result = {
+    const result: ListeningTimeResult = {
       totalMs,
       totalTracks,
       playlistCount: candidates.length,
@@ -133,16 +148,15 @@ export const listeningTimeTask: TaskDefinition = {
       JSON.stringify(result, null, 2),
     );
 
-    tc.broadcast('listeningTime:complete', result);
+    tc.emit('listeningTime:complete', result);
 
-    // Emit data to client
     tc.emitData('durationSnapshots', snapshots);
     tc.emitData('listeningTime', result);
 
     const avg = candidates.length > 0 ? totalMs / candidates.length : 0;
-    tc.broadcast('log', {
-      level: 'success',
-      message: `Listening time: ${formatHm(totalMs)} across ${candidates.length} non-listened playlists (${totalTracks} tracks) · avg ${formatHm(avg)}/playlist${cached ? ` — ${cached} cached` : ''}`,
-    });
+    tc.log(
+      'success',
+      `Listening time: ${formatHm(totalMs)} across ${candidates.length} non-listened playlists (${totalTracks} tracks) · avg ${formatHm(avg)}/playlist${cached ? ` — ${cached} cached` : ''}`,
+    );
   },
 };

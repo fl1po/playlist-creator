@@ -1,12 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { formatHm } from '../../domain/tracks.js';
 import {
   getPlaylistTracksGroupedByWeek,
   type WeekBreakdownEntry,
 } from '../../domain/aw-breakdown.js';
+import { formatHm } from '../../domain/tracks.js';
 import { AW_BREAKDOWN_CACHE } from '../../lib/cache-files.js';
-import type { TaskContext, TaskDefinition } from '../task-runner.js';
+import type {
+  BaseEvents,
+  TaskContext,
+  TaskDefinition,
+} from '../task-runner.js';
 
 interface AwBreakdownCache {
   snapshotId: string;
@@ -16,25 +20,32 @@ interface AwBreakdownCache {
   weeks: WeekBreakdownEntry[];
 }
 
-export const awBreakdownTask: TaskDefinition = {
+interface AwBreakdownEvents extends BaseEvents {
+  'awBreakdown:complete': AwBreakdownCache;
+  'awBreakdown:progress': { fetched: number; total: number };
+}
+
+type AwBreakdownCacheKey = 'awBreakdown';
+
+export const awBreakdownTask: TaskDefinition<
+  AwBreakdownEvents,
+  AwBreakdownCacheKey
+> = {
   name: 'aw-breakdown',
   path: '/aw-breakdown',
   startMessage: 'AW breakdown calculation started',
+  caches: [{ key: 'awBreakdown', file: AW_BREAKDOWN_CACHE }],
 
-  async run(tc: TaskContext) {
-    const userConfig = await tc.userConfigStore.load();
+  async run(tc: TaskContext<AwBreakdownEvents, AwBreakdownCacheKey>) {
+    const userConfig = await tc.userConfig();
     const awId = userConfig.sourcePlaylists.allWeeklyId;
 
-    // Check if AW snapshot changed
     const cachePath = path.join(tc.dataDir, AW_BREAKDOWN_CACHE);
-    let cached: AwBreakdownCache | null =
-      (tc.caches.awBreakdown as AwBreakdownCache) ?? null;
-    if (!cached) {
-      try {
-        cached = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
-      } catch {
-        /* no cache yet */
-      }
+    let cached: AwBreakdownCache | null = null;
+    try {
+      cached = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+    } catch {
+      /* no cache yet */
     }
 
     const awInfo = await tc.ctx.call(
@@ -51,24 +62,20 @@ export const awBreakdownTask: TaskDefinition = {
       liveSnapshot &&
       cached.snapshotId === liveSnapshot
     ) {
-      tc.broadcast('awBreakdown:complete', cached);
-      tc.broadcast('log', {
-        level: 'success',
-        message: `AW breakdown: ${cached.weekCount} weeks, ${cached.totalTracks} tracks (cached)`,
-      });
+      tc.emit('awBreakdown:complete', cached);
+      tc.log(
+        'success',
+        `AW breakdown: ${cached.weekCount} weeks, ${cached.totalTracks} tracks (cached)`,
+      );
       return;
     }
 
-    // Compute fresh breakdown
-    tc.broadcast('log', {
-      level: 'info',
-      message: 'Fetching AW tracks...',
-    });
+    tc.log('info', 'Fetching AW tracks...');
 
     const weeks = await getPlaylistTracksGroupedByWeek(tc.ctx, awId, {
       onProgress: (fetched, total) => {
         tc.checkAbort();
-        tc.broadcast('awBreakdown:progress', { fetched, total });
+        tc.emit('awBreakdown:progress', { fetched, total });
       },
     });
 
@@ -86,15 +93,15 @@ export const awBreakdownTask: TaskDefinition = {
     fs.mkdirSync(tc.dataDir, { recursive: true });
     fs.writeFileSync(cachePath, JSON.stringify(result, null, 2));
     tc.emitData('awBreakdown', result);
-    tc.broadcast('awBreakdown:complete', result);
+    tc.emit('awBreakdown:complete', result);
 
     const avgTracks =
       weeks.length > 0 ? Math.round(totalTracks / weeks.length) : 0;
     const avgDuration =
       weeks.length > 0 ? formatHm(totalDurationMs / weeks.length) : '0m';
-    tc.broadcast('log', {
-      level: 'success',
-      message: `AW breakdown: ${weeks.length} weeks, ${totalTracks} tracks, ${formatHm(totalDurationMs)} · avg ${avgTracks} tracks/${avgDuration} per week`,
-    });
+    tc.log(
+      'success',
+      `AW breakdown: ${weeks.length} weeks, ${totalTracks} tracks, ${formatHm(totalDurationMs)} · avg ${avgTracks} tracks/${avgDuration} per week`,
+    );
   },
 };

@@ -1,12 +1,37 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type express from 'express';
 import type { RequestPacer } from '../lib/request-pacer.js';
 import { createSpotifyContext } from '../lib/spotify-context.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
 import type { ApiCallOptions, SpotifyClient } from '../lib/types.js';
-import type { IUserConfigStore } from '../lib/user-config.js';
+import type { IUserConfigStore, UserConfig } from '../lib/user-config.js';
 import type { RouteContext } from './route-context.js';
 
-export interface TaskContext {
+/** Map from broadcast event name to payload type. */
+export type BroadcastEventMap = Record<string, unknown>;
+
+/** Events every task gets without declaring them. */
+export interface BaseEvents extends BroadcastEventMap {
+  log: { level: 'info' | 'warn' | 'error' | 'success'; message: string };
+  'data:save': { key: string; value: unknown };
+}
+
+/** Typed broadcast emitter. */
+export type TypedEmit<E extends BroadcastEventMap> = <K extends keyof E & string>(
+  type: K,
+  data: E[K],
+) => void;
+
+/** Spotify user profile, derived from the SDK without importing it directly. */
+type UserProfile = Awaited<
+  ReturnType<SpotifyClient['api']['currentUser']['profile']>
+>;
+
+export interface TaskContext<
+  E extends BaseEvents = BaseEvents,
+  C extends string = string,
+> {
   /** Abort-wrapped Spotify client. */
   client: SpotifyClient;
   /** SpotifyContext with pacer and optional API callbacks. */
@@ -19,7 +44,12 @@ export interface TaskContext {
   dataDir: string;
   /** User ID. */
   userId: string;
-  /** Send a typed message to all clients. */
+  /**
+   * Untyped broadcast — interop escape hatch for helpers that take a generic
+   * `(type, data) => void` (e.g. `broadcastEvents`, `broadcastHandlers`,
+   * `broadcastApiCallbacks`, `syncIfNeeded`). For direct task emissions use
+   * `emit`, `log`, or `emitData`.
+   */
   broadcast: (type: string, data: unknown) => void;
   /** Throws if the user requested abort. */
   checkAbort: () => void;
@@ -27,13 +57,51 @@ export interface TaskContext {
   pacer: RequestPacer;
   /** Un-wrapped client for post-task work (e.g. sync). */
   rawClient: SpotifyClient;
-  /** Client-provided caches (from request body). */
-  caches: Record<string, unknown>;
-  /** Emit data back to client for localStorage persistence. */
+  /** Client-provided caches (from request body), keyed by declared cache names. */
+  caches: { [K in C]: unknown };
+  /**
+   * Emit data back to client for localStorage persistence.
+   * Sugar for `emit('data:save', { key, value })`.
+   */
   emitData: (key: string, value: unknown) => void;
+  /** Typed broadcast — only declared event names + payloads compile. */
+  emit: TypedEmit<E>;
+  /** Sugar for `emit('log', { level, message })`. */
+  log: (
+    level: 'info' | 'warn' | 'error' | 'success',
+    message: string,
+  ) => void;
+  /**
+   * Iterate with `checkAbort()` injected before each item. Replaces the
+   * `for (...) { tc.checkAbort(); ... }` rhythm scattered through tasks.
+   */
+  iter: <T>(
+    items: Iterable<T>,
+    fn: (item: T, index: number) => Promise<void> | void,
+  ) => Promise<void>;
+  /** Memoised user config — first call awaits load(); subsequent calls reuse. */
+  userConfig: () => Promise<UserConfig>;
+  /** Memoised current-user profile — first call hits Spotify; subsequent calls reuse. */
+  me: () => Promise<UserProfile>;
 }
 
-export interface TaskDefinition {
+/**
+ * Declarative binding from a client-provided cache field on `body.caches` to
+ * a file inside the user's data directory. The runner hydrates each binding
+ * before `run()` so tasks don't write the same `fs.mkdirSync` + `writeFileSync`
+ * pair inline.
+ */
+export interface CacheBinding<K extends string = string> {
+  /** Field name on `body.caches`. */
+  key: K;
+  /** Filename inside `dataDir` to write the cache to (JSON-stringified). */
+  file: string;
+}
+
+export interface TaskDefinition<
+  E extends BaseEvents = BaseEvents,
+  C extends string = string,
+> {
   /** Task name shown in status broadcasts (e.g. "fill"). */
   name: string;
   /** API route path (e.g. "/fill"). Mounted under /api. */
@@ -46,12 +114,17 @@ export interface TaskDefinition {
   apiCallbacks?: (
     broadcast: (type: string, data: unknown) => void,
   ) => ApiCallOptions;
+  /**
+   * Cache fields on `body.caches` to hydrate to disk before `run()`.
+   * Each present cache is written to `dataDir/<file>` as JSON.
+   */
+  caches?: ReadonlyArray<CacheBinding<C>>;
   /** The task body. */
-  run: (tc: TaskContext) => Promise<void>;
+  run: (tc: TaskContext<E, C>) => Promise<void>;
   /** Always runs after task (success, failure, or abort). */
-  cleanup?: (tc: TaskContext) => void | Promise<void>;
+  cleanup?: (tc: TaskContext<E, C>) => void | Promise<void>;
   /** Custom error handler for task-specific error broadcasts. Called before the generic log. */
-  onError?: (tc: TaskContext, error: unknown, aborted: boolean) => void;
+  onError?: (tc: TaskContext<E, C>, error: unknown, aborted: boolean) => void;
   /** Message sent in the immediate HTTP response. */
   startMessage?: string;
 }
@@ -66,7 +139,9 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
   const { taskMutex, broadcaster, pacer } = routeCtx;
 
   return {
-    register(def: TaskDefinition) {
+    register<E extends BaseEvents = BaseEvents, C extends string = string>(
+      def: TaskDefinition<E, C>,
+    ) {
       const method = def.method ?? 'post';
       app[method](
         `/api${def.path}`,
@@ -105,7 +180,12 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
           );
 
           const body = (req.body as Record<string, unknown>) ?? {};
-          const tc: TaskContext = {
+
+          let userConfigPromise: Promise<UserConfig> | undefined;
+          let mePromise: Promise<UserProfile> | undefined;
+          const checkAbort = () => taskMutex.checkAbort();
+
+          const tc: TaskContext<E, C> = {
             client: abortableClient,
             ctx,
             body,
@@ -113,12 +193,34 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
             dataDir: session.dataDir,
             userId: session.userId,
             broadcast: userBroadcast,
-            checkAbort: () => taskMutex.checkAbort(),
+            checkAbort,
             pacer,
             rawClient: session.client,
-            caches: (body.caches as Record<string, unknown>) ?? {},
-            emitData: (key: string, value: unknown) => {
+            caches: ((body.caches as Record<string, unknown>) ??
+              {}) as TaskContext<E, C>['caches'],
+            emitData: (key, value) => {
               userBroadcast('data:save', { key, value });
+            },
+            emit: userBroadcast as TypedEmit<E>,
+            log: (level, message) => {
+              userBroadcast('log', { level, message });
+            },
+            iter: async (items, fn) => {
+              let i = 0;
+              for (const item of items) {
+                checkAbort();
+                await fn(item, i++);
+              }
+            },
+            userConfig: () => {
+              userConfigPromise ??= Promise.resolve(
+                session.userConfigStore.load(),
+              );
+              return userConfigPromise;
+            },
+            me: () => {
+              mePromise ??= abortableClient.api.currentUser.profile();
+              return mePromise;
             },
           };
 
@@ -127,8 +229,22 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
             message: def.startMessage ?? `${def.name} started`,
           });
 
-          def
-            .run(tc)
+          const hydrateAndRun = async () => {
+            if (def.caches) {
+              for (const binding of def.caches) {
+                const value = tc.caches[binding.key];
+                if (value === undefined) continue;
+                fs.mkdirSync(session.dataDir, { recursive: true });
+                fs.writeFileSync(
+                  path.join(session.dataDir, binding.file),
+                  JSON.stringify(value, null, 2),
+                );
+              }
+            }
+            await def.run(tc);
+          };
+
+          hydrateAndRun()
             .catch((err) => {
               def.onError?.(tc, err, abort.aborted);
               if (abort.aborted) {

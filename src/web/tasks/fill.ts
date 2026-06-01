@@ -11,26 +11,39 @@ import {
   broadcastHandlers,
 } from '../../services/playlist-filler/subscribers.js';
 import { syncIfNeeded } from '../priority-diff.js';
-import type { TaskContext, TaskDefinition } from '../task-runner.js';
+import type {
+  BaseEvents,
+  TaskContext,
+  TaskDefinition,
+} from '../task-runner.js';
+
+interface FillEvents extends BaseEvents {
+  'fill:stopped': Record<string, never>;
+  'fill:error': { date: string; message: string };
+  // fill:start / fill:progress / fill:searchProgress / fill:releaseFound /
+  // fill:dateComplete / fill:recalculated / fill:complete /
+  // fill:searchedArtists / fill:rateLimited are emitted through
+  // broadcastHandlers / broadcastApiCallbacks using the raw tc.broadcast
+  // interop surface.
+}
+
+type FillCacheKey = 'trustedArtists' | 'batchCache' | 'fillHistory';
 
 const searchedArtists = new Set<string>();
 export const getSearchedArtists = (): ReadonlySet<string> => searchedArtists;
 
-export const fillTask: TaskDefinition = {
+export const fillTask: TaskDefinition<FillEvents, FillCacheKey> = {
   name: 'fill',
   path: '/fill',
   startMessage: 'Fill started',
   apiCallbacks: (b) => broadcastApiCallbacks(b),
 
-  async run(tc: TaskContext) {
+  async run(tc: TaskContext<FillEvents, FillCacheKey>) {
     const freshMode = !!tc.body.fresh;
     searchedArtists.clear();
-    tc.broadcast('log', {
-      level: 'info',
-      message: `Starting playlist fill (fresh=${freshMode})...`,
-    });
+    tc.log('info', `Starting playlist fill (fresh=${freshMode})...`);
 
-    const userConfig = await tc.userConfigStore.load();
+    const userConfig = await tc.userConfig();
 
     const storage = new RedisAndClientStorage(
       tc.dataDir,
@@ -85,19 +98,16 @@ export const fillTask: TaskDefinition = {
         tc.broadcast,
       );
     } catch (syncErr) {
-      tc.broadcast('log', {
-        level: 'warn',
-        message: `Post-fill sync failed: ${syncErr}`,
-      });
+      tc.log('warn', `Post-fill sync failed: ${syncErr}`);
     }
   },
 
-  onError(tc: TaskContext, error: unknown, aborted: boolean) {
-    if (aborted) tc.broadcast('fill:stopped', {});
-    else tc.broadcast('fill:error', { date: 'batch', message: String(error) });
+  onError(tc, error, aborted) {
+    if (aborted) tc.emit('fill:stopped', {});
+    else tc.emit('fill:error', { date: 'batch', message: String(error) });
   },
 
-  cleanup(tc: TaskContext) {
+  cleanup(tc) {
     searchedArtists.clear();
     invalidateNonListenedCache(tc.dataDir);
   },
