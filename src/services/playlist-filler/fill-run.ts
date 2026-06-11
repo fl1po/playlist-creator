@@ -25,7 +25,11 @@ import {
   recalculate,
   snapshotPrioritiesFrom,
 } from '../recalculate.js';
-import { ReleaseCollector } from '../release-collector.js';
+import {
+  batchCacheCheckpoints,
+  deezerPopularitySource,
+} from '../week-collection/adapters.js';
+import { spotifyReleaseReads } from '../week-collection/spotify-reads.js';
 import {
   type DatePipelineConfig,
   type DatePipelineDeps,
@@ -184,36 +188,11 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
     genreFilters: config.genreFilters,
   };
 
-  const collector = new ReleaseCollector(ctx, {
-    onVariantPicked: (name, count, isExplicit) =>
-      emitter.emit('variantPicked', name, count, isExplicit),
-    onInstrumentalSkipped: (artist, release) =>
-      emitter.emit('filtered', 'all-instrumental', artist, release),
-    onDeluxeDetected: (name, baseName, origCount, bonus) =>
-      emitter.emit('deluxeDetected', name, baseName, origCount, bonus),
-    onTitleTrackOnly: (releaseName, trackName, oldTracks, totalOther) =>
-      emitter.emit(
-        'titleTrackOnly',
-        releaseName,
-        trackName,
-        oldTracks,
-        totalOther,
-      ),
-    onSingleSkipped: (name) => emitter.emit('singleSkipped', name),
-  });
-
   const dpConfig: DatePipelineConfig = {
     editorialPlaylists: cfg.editorialPlaylists,
     externalPlaylistSources: cfg.externalPlaylistSources,
     editorialFilter: cfg.editorialFilter,
     genreFilters: cfg.genreFilters,
-  };
-  const dpDeps: DatePipelineDeps = {
-    ctx,
-    storage,
-    emitter,
-    collector,
-    config: dpConfig,
   };
 
   // ── User profile ─────────────────────────────────────────────────────────
@@ -277,6 +256,17 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
   let cache: BatchCache = {};
   if (!opts.fresh) cache = await storage.loadBatchCache();
 
+  const dpDeps: DatePipelineDeps = {
+    ctx,
+    emitter,
+    ports: {
+      reads: spotifyReleaseReads(ctx),
+      popularity: deezerPopularitySource(),
+      checkpoints: batchCacheCheckpoints(storage, cache),
+    },
+    config: dpConfig,
+  };
+
   // ── Load All Weekly tracks for dedup ─────────────────────────────────────
   emitter.emit('log', 'Loading All Weekly tracks for duplicate checking...');
   const allWeeklyTracks = new Set(
@@ -325,7 +315,6 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
 
       const result = await processDate(
         dpDeps,
-        cache,
         targetDate,
         p1p2Artists,
         allWeeklyTracks,
