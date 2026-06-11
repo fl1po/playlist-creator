@@ -450,14 +450,18 @@
     text-align: right;
   }
   .now-playing .np-remaining {
-    display: flex; align-items: center; gap: 12px;
+    display: flex; align-items: center; gap: 8px;
     flex-shrink: 0; text-align: right;
   }
+  .now-playing .np-remaining-stack { text-align: right; }
   .now-playing .np-remaining-time {
     font-size: 13px; font-weight: 600; color: #1DB954;
   }
   .now-playing .np-remaining-tracks {
     font-size: 11px; color: #666;
+  }
+  .now-playing .np-shuffle-icon {
+    font-size: 14px; color: #1DB954; line-height: 1;
   }
   .now-playing .np-meta {
     display: flex; gap: 8px; align-items: center;
@@ -603,8 +607,11 @@
         </div>
       </div>
       <div class="np-remaining" id="npRemaining" style="display:none;">
-        <div class="np-remaining-time" id="npRemainingTime"></div>
-        <div class="np-remaining-tracks" id="npRemainingTracks"></div>
+        <span class="np-shuffle-icon" id="npShuffleIcon" style="display:none;">⇄</span>
+        <div class="np-remaining-stack">
+          <div class="np-remaining-time" id="npRemainingTime"></div>
+          <div class="np-remaining-tracks" id="npRemainingTracks"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -2521,12 +2528,20 @@ function renderNowPlaying() {
   updateNpProgress();
 
   const remEl = document.getElementById('npRemaining');
-  if (s.remaining) {
+  const shufEl = document.getElementById('npShuffleIcon');
+  if (s.context?.type === 'playlist' && s.shuffle && s.context.totalMs != null) {
     remEl.style.display = '';
+    shufEl.style.display = '';
+    setText('npRemainingTime', formatDuration(s.context.totalMs));
+    setText('npRemainingTracks', `${s.context.totalTracks} tracks`);
+  } else if (s.remaining) {
+    remEl.style.display = '';
+    shufEl.style.display = 'none';
     setText('npRemainingTime', formatDuration(s.remaining.ms));
     setText('npRemainingTracks', `${s.remaining.tracks} tracks left`);
   } else {
     remEl.style.display = 'none';
+    shufEl.style.display = 'none';
   }
 
   if (np.tickTimer) { clearInterval(np.tickTimer); np.tickTimer = null; }

@@ -380,6 +380,7 @@ app.get('/api/playback', async (req, res) => {
       id: string;
       name?: string;
       totalTracks?: number;
+      totalMs?: number;
     } | null = null;
     let remaining: { ms: number; tracks: number } | null = null;
 
@@ -399,6 +400,7 @@ app.get('/api/playback', async (req, res) => {
         if (cached) {
           contextInfo.name = cached.name;
           contextInfo.totalTracks = cached.tracks.length;
+          contextInfo.totalMs = cached.totalMs;
           remaining = computeRemaining(
             cached,
             item.id,
