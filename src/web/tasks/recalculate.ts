@@ -122,7 +122,7 @@ export const recalculateTask: TaskDefinition<
     // Must complete before persisting, so a failure allows re-running from scratch.
     await syncIfNeeded(
       changes,
-      tc.rawClient,
+      tc.client,
       tc.dataDir,
       userConfig.sourcePlaylists.allWeeklyId,
       tc.pacer,

@@ -91,13 +91,14 @@ export const fillTask: TaskDefinition<FillEvents, FillCacheKey> = {
     try {
       await syncIfNeeded(
         changes,
-        tc.rawClient,
+        tc.client,
         tc.dataDir,
         config.allWeeklyId ?? '',
         tc.pacer,
         tc.broadcast,
       );
     } catch (syncErr) {
+      tc.checkAbort();
       tc.log('warn', `Post-fill sync failed: ${syncErr}`);
     }
   },

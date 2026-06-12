@@ -10,6 +10,8 @@ import type { FoundRelease } from './types.js';
 export interface DeezerPopularityOptions {
   onProgress?: (done: number, total: number) => void;
   onNotFound?: (artistName: string, releaseName: string) => void;
+  /** Cooperative cancellation — throws to abort. Called before each release lookup. */
+  checkAbort?: () => void;
 }
 
 /**
@@ -52,6 +54,7 @@ export async function fetchDeezerPopularities(
   let done = 0;
 
   for (const [id, release] of entries) {
+    options?.checkAbort?.();
     const query = `${release.artistName} ${release.name}`;
     const results = await client.searchAlbum(query);
 

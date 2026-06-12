@@ -261,7 +261,9 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
     emitter,
     ports: {
       reads: spotifyReleaseReads(ctx),
-      popularity: deezerPopularitySource(),
+      popularity: deezerPopularitySource(() => {
+        void ctx.api; // throws if aborted
+      }),
       checkpoints: batchCacheCheckpoints(storage, cache),
     },
     config: dpConfig,

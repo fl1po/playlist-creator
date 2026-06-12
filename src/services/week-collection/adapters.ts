@@ -8,10 +8,12 @@ import type {
 } from './index.js';
 
 /** Production PopularitySource: Deezer track ranks normalized to 0–100. */
-export function deezerPopularitySource(): PopularitySource {
+export function deezerPopularitySource(
+  checkAbort?: () => void,
+): PopularitySource {
   return {
     lookup(releases, onProgress) {
-      return fetchDeezerPopularities(releases, { onProgress });
+      return fetchDeezerPopularities(releases, { onProgress, checkAbort });
     },
   };
 }

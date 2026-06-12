@@ -248,7 +248,11 @@ export class PlaylistSyncerService {
 
           if (foundReleases.size === 0) continue;
 
-          const popularities = await fetchDeezerPopularities(foundReleases);
+          const popularities = await fetchDeezerPopularities(foundReleases, {
+            checkAbort: () => {
+              void this.ctx.api; // throws if aborted
+            },
+          });
           const lowPop = filterLowPopularity(foundReleases, popularities);
           for (const id of lowPop) foundReleases.delete(id);
 

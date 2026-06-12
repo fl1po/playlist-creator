@@ -55,8 +55,6 @@ export interface TaskContext<
   checkAbort: () => void;
   /** Shared request pacer. */
   pacer: RequestPacer;
-  /** Un-wrapped client for post-task work (e.g. sync). */
-  rawClient: SpotifyClient;
   /** Client-provided caches (from request body), keyed by declared cache names. */
   caches: { [K in C]: unknown };
   /**
@@ -195,7 +193,6 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
             broadcast: userBroadcast,
             checkAbort,
             pacer,
-            rawClient: session.client,
             caches: ((body.caches as Record<string, unknown>) ??
               {}) as TaskContext<E, C>['caches'],
             emitData: (key, value) => {
