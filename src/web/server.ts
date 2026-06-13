@@ -290,6 +290,7 @@ app.get('/api/status', (_req, res) => {
 
 interface PlaylistCache {
   name: string;
+  snapshotId: string;
   tracks: Array<{ id: string; duration_ms: number }>;
   totalMs: number;
 }
@@ -335,7 +336,7 @@ async function loadPlaylistCache(
       if (offset + page.items.length >= page.total) break;
       offset += page.items.length;
     }
-    return { name: meta.name, tracks, totalMs };
+    return { name: meta.name, snapshotId: meta.snapshot_id, tracks, totalMs };
   } catch {
     return null;
   }
@@ -390,7 +391,24 @@ app.get('/api/playback', async (req, res) => {
       if (ctxType === 'playlist' && ctxId) {
         contextInfo = { type: 'playlist', id: ctxId };
         let cached = playlistDurationCache.get(ctxId);
-        if (!cached) {
+        // Reload when the playlist has changed since we cached it. Spotify's
+        // snapshot_id changes on any edit, so a cheap fetch of just that field
+        // tells us whether the cached track list is stale.
+        let currentSnapshot: string | undefined;
+        try {
+          const head = await spotifyApi.playlists.getPlaylist(
+            ctxId,
+            undefined,
+            'snapshot_id',
+          );
+          currentSnapshot = head.snapshot_id;
+        } catch {
+          // Ignore — fall back to whatever is cached.
+        }
+        if (
+          !cached ||
+          (currentSnapshot && cached.snapshotId !== currentSnapshot)
+        ) {
           const loaded = await loadPlaylistCache(spotifyApi, ctxId);
           if (loaded) {
             cached = loaded;
