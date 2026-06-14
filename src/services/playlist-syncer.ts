@@ -43,6 +43,13 @@ export interface PlaylistSyncerOptions {
   dataDir: string;
   /** Minimum release popularity (Deezer 0–100) to keep when adding releases. */
   minPopularity: number;
+  /**
+   * Authoritative (post-recalc) trusted artists. When provided it's used
+   * instead of reading `trustedArtistsPath`, so demotion checks see the NEW
+   * P1/P2 set. The recalc flow persists the file only after sync, so reading
+   * the file here would yield the stale pre-recalc priorities.
+   */
+  trustedArtists?: TrustedArtistsFile;
 }
 
 // ── Service ──────────────────────────────────────────────────────────────────
@@ -123,10 +130,11 @@ export class PlaylistSyncerService {
       unprocessed.length,
     );
 
-    // Load current P1/P2 set for collab checks
-    const trustedArtists: TrustedArtistsFile = JSON.parse(
-      fs.readFileSync(this.opts.trustedArtistsPath, 'utf8'),
-    );
+    // Use the authoritative post-recalc priorities when given; otherwise read
+    // the file (fill flow persists before syncing, so its file is current).
+    const trustedArtists: TrustedArtistsFile =
+      this.opts.trustedArtists ??
+      JSON.parse(fs.readFileSync(this.opts.trustedArtistsPath, 'utf8'));
     const p1p2Set = new Set(
       filterByPriority(trustedArtists.artistCounts, [1, 2]).map(
         ([name]) => name,
@@ -308,9 +316,10 @@ export class PlaylistSyncerService {
             playlistsSynced++;
             this.emitter.emit('playlistSync', pl.name, 0, tracksToAdd.length);
             for (const c of collected) {
+              const pop = popularities.get(c.release.id);
               this.emitter.emit(
                 'log',
-                `  ${pl.name}: added "${c.release.artistName} — ${c.release.name}" (${c.trackIds.length} track(s))`,
+                `  ${pl.name}: added "${c.release.artistName} — ${c.release.name}" (${c.trackIds.length} track(s)) [pop: ${pop ?? 'n/a'}]`,
               );
             }
           }

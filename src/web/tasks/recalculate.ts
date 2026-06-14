@@ -129,6 +129,9 @@ export const recalculateTask: TaskDefinition<
       userConfig.editorialFilter.minPopularity,
       tc.pacer,
       tc.broadcast,
+      // Pass the fresh priorities: the file is persisted only after this sync,
+      // so reading it inside the syncer would yield the stale pre-recalc P1/P2.
+      result.trustedArtists,
     );
 
     // Persist only after the entire process (including sync) succeeds

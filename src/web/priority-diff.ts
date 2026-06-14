@@ -2,7 +2,7 @@ import path from 'node:path';
 import type { RequestPacer } from '../lib/request-pacer.js';
 import { broadcastEvents } from '../lib/service-events.js';
 import { createSpotifyContext } from '../lib/spotify-context.js';
-import type { SpotifyClient } from '../lib/types.js';
+import type { SpotifyClient, TrustedArtistsFile } from '../lib/types.js';
 import {
   type PlaylistSyncEventMap,
   PlaylistSyncerService,
@@ -18,6 +18,7 @@ export async function syncIfNeeded(
   minPopularity: number,
   pacer: RequestPacer,
   broadcast: (type: string, data: unknown) => void,
+  trustedArtists?: TrustedArtistsFile,
 ): Promise<void> {
   const isP1P2 = (p: number | null) => p === 1 || p === 2;
   const hasBoundaryCrossing = changes.some(
@@ -60,6 +61,7 @@ export async function syncIfNeeded(
       trustedArtistsPath: path.join(dataDir, 'trusted-artists.json'),
       dataDir,
       minPopularity,
+      trustedArtists,
     },
     broadcastEvents<PlaylistSyncEventMap>(broadcast, {
       start: {

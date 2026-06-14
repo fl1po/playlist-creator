@@ -15,6 +15,7 @@
     "clear": "tsc && node build/cli/clear.js",
     "list-artists": "tsc && node build/cli/list-artists.js",
     "simulate-featured": "tsc && node build/cli/simulate-featured.js",
+    "import-from-redis": "tsc && node build/cli/import-from-redis.js",
     "web": "tsc && cp -r src/web/public build/web/public && node build/web/server.js",
     "web:dev": "tsc --watch & node build/web/server.js"
   },
