@@ -212,10 +212,15 @@ export class PlaylistSyncerService {
       const artistReleaseCache = new Map<string, RawRelease[]>();
 
       for (const change of promoted) {
-        const artist = await this.collector.searchArtist(change.artist);
-        if (!artist) continue;
+        // Anchor to the stored Spotify id so a common name (e.g. "Ebenezer")
+        // doesn't resolve to an unrelated artist's catalogue. Fall back to a
+        // name search only when no id was stored for this artist.
+        const storedId = trustedArtists.artistCounts[change.artist]?.spotifyId;
+        const artistId =
+          storedId ?? (await this.collector.searchArtist(change.artist))?.id;
+        if (!artistId) continue;
 
-        const allReleases = await this.collector.getArtistReleases(artist.id, {
+        const allReleases = await this.collector.getArtistReleases(artistId, {
           kind: 'all',
         });
         if (allReleases.length > 0) {
@@ -260,10 +265,13 @@ export class PlaylistSyncerService {
               void this.ctx.api; // throws if aborted
             },
           });
+          // Newly-promoted artists get a more lenient bar — half the
+          // configured minimum — so their recent back-catalogue isn't
+          // excluded when backfilled on the recalculation sync pass.
           const lowPop = filterLowPopularity(
             foundReleases,
             popularities,
-            this.opts.minPopularity,
+            this.opts.minPopularity / 2,
           );
           for (const id of lowPop) foundReleases.delete(id);
 

@@ -291,6 +291,56 @@ test('release popularity gate uses the configured minPopularity threshold', asyn
   assert.deepEqual(kept.tracks, ['m1']);
 });
 
+test('anchors release search to stored spotifyId, ignoring same-name artists', async () => {
+  const reads = fixtureReads({
+    artists: [
+      // Wrong "Ebenezer" listed first — a name search would resolve here and
+      // pull this unrelated catalog.
+      {
+        id: 'eben-wrong',
+        name: 'Ebenezer',
+        albums: [
+          {
+            id: 'alb-tamil',
+            name: 'Yarumilla Yarumilla',
+            type: 'single',
+            release_date: IN_WINDOW,
+            tracks: [
+              { id: 'tamil1', name: 'Yarumilla', key: 'ebenezer::yarumilla' },
+            ],
+          },
+        ],
+      },
+      // Correct "Ebenezer" (the one in the library) that earned the priority.
+      {
+        id: 'eben-right',
+        name: 'Ebenezer',
+        albums: [
+          {
+            id: 'alb-real',
+            name: 'Real Drop',
+            type: 'single',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 'real1', name: 'Real', key: 'ebenezer::real' }],
+          },
+        ],
+      },
+    ],
+  });
+
+  const week = await collectWeek(
+    input({
+      roster: [
+        ['Ebenezer', { priority: 2, score: 40, spotifyId: 'eben-right' }],
+      ],
+    }),
+    ports(reads, { 'alb-real': 70 }),
+  );
+
+  assert.deepEqual(week.tracks, ['real1']); // correct artist's release only
+  assert.deepEqual(reads.searchCalls, []); // name search bypassed entirely
+});
+
 test('same-release duplicates: the explicit variant is picked', async () => {
   const reads = fixtureReads({
     artists: [

@@ -180,8 +180,13 @@ export interface EditorialConfig {
 export interface WeekCollectionInput {
   /** The Friday, `DD.MM.YY`. Drives the date window and the checkpoint key. */
   week: string;
-  /** P1/P2 roster to search: [artistName, { priority, score }]. */
-  roster: Array<[string, { priority: number | null; score: number }]>;
+  /** P1/P2 roster to search: [artistName, { priority, score, spotifyId }]. */
+  roster: Array<
+    [
+      string,
+      { priority: number | null; score: number; spotifyId?: string | null },
+    ]
+  >;
   /** Full roster, to resolve editorial finds to P1/P2 or 'editorial'. */
   trustedArtists: TrustedArtistsFile;
   /** Track ids already in the listening history — excluded outright. */
@@ -262,7 +267,13 @@ export async function collectWeek(
   try {
     for (let ai = artistsSearched; ai < roster.length; ai++) {
       const [name, data] = roster[ai];
-      const artist = await reads.searchArtist(name);
+      // Anchor to the artist that actually earned the priority. A fresh name
+      // search can resolve a common name (e.g. "Ebenezer") to an unrelated
+      // Spotify artist and pull in their whole catalog. Fall back to search
+      // only when no id was stored.
+      const artist = data.spotifyId
+        ? { id: data.spotifyId, name }
+        : await reads.searchArtist(name);
       if (!artist) {
         artistsSearched = ai + 1;
         continue;

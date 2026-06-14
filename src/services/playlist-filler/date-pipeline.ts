@@ -109,7 +109,12 @@ function emitDecision(emitter: Emitter, d: CollectionDecision): void {
 export async function processDate(
   deps: DatePipelineDeps,
   targetDate: string,
-  p1p2Artists: Array<[string, { priority: number | null; score: number }]>,
+  p1p2Artists: Array<
+    [
+      string,
+      { priority: number | null; score: number; spotifyId?: string | null },
+    ]
+  >,
   allWeeklyTracks: Set<string>,
   userId: string,
   existingPlaylists: SimplePlaylist[],

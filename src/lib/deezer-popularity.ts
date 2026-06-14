@@ -58,12 +58,21 @@ export async function fetchDeezerPopularities(
     const query = `${release.artistName} ${release.name}`;
     const results = await client.searchAlbum(query);
 
-    // Find best match by artist name + title
-    const match = results.find(
+    // Best match: artist + title. When that fails, fall back to an exact
+    // (normalized) title match — Deezer often credits a release to its primary
+    // artist while we look it up under a featured/secondary artist (e.g. a
+    // track collected via "Ebenezer" but credited to "Vijay Aaron" on Deezer).
+    // Without this, such releases slip through unmatched and dodge the gate.
+    let match = results.find(
       (r) =>
         fuzzyMatch(r.artist.name, release.artistName) &&
         fuzzyMatch(r.title, release.name),
     );
+    if (!match) {
+      match = results.find(
+        (r) => normalize(r.title) === normalize(release.name),
+      );
+    }
 
     if (!match) {
       options?.onNotFound?.(release.artistName, release.name);
