@@ -297,6 +297,10 @@ interface PlaylistCache {
 
 const PLAYLIST_CACHE_MAX = 50;
 const playlistDurationCache = new Map<string, PlaylistCache>();
+/** Per-playlist timestamp (ms) of the last snapshot_id staleness check. */
+const lastSnapshotCheck = new Map<string, number>();
+/** Re-verify a cached playlist's snapshot at most this often. */
+const SNAPSHOT_CHECK_INTERVAL_MS = 60_000;
 
 function cachePlaylist(id: string, entry: PlaylistCache) {
   if (playlistDurationCache.size >= PLAYLIST_CACHE_MAX) {
@@ -393,17 +397,25 @@ app.get('/api/playback', async (req, res) => {
         let cached = playlistDurationCache.get(ctxId);
         // Reload when the playlist has changed since we cached it. Spotify's
         // snapshot_id changes on any edit, so a cheap fetch of just that field
-        // tells us whether the cached track list is stale.
+        // tells us whether the cached track list is stale. This poll runs every
+        // few seconds, so throttle the staleness check to once per interval per
+        // playlist — otherwise the background polling saturates the rate limit.
         let currentSnapshot: string | undefined;
-        try {
-          const head = await spotifyApi.playlists.getPlaylist(
-            ctxId,
-            undefined,
-            'snapshot_id',
-          );
-          currentSnapshot = head.snapshot_id;
-        } catch {
-          // Ignore — fall back to whatever is cached.
+        const lastCheck = lastSnapshotCheck.get(ctxId) ?? 0;
+        const dueForCheck =
+          Date.now() - lastCheck >= SNAPSHOT_CHECK_INTERVAL_MS;
+        if (!cached || dueForCheck) {
+          try {
+            const head = await spotifyApi.playlists.getPlaylist(
+              ctxId,
+              undefined,
+              'snapshot_id',
+            );
+            currentSnapshot = head.snapshot_id;
+            lastSnapshotCheck.set(ctxId, Date.now());
+          } catch {
+            // Ignore — fall back to whatever is cached.
+          }
         }
         if (
           !cached ||
