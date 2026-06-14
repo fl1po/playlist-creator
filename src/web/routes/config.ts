@@ -47,6 +47,13 @@ export function configRoutes(ctx: RouteContext): Router {
     if (s && (s.awWeight <= 0 || s.boawWeight <= 0)) {
       errors.push('Scoring weights must be positive');
     }
+    if (
+      s &&
+      s.featuredMultiplier != null &&
+      (s.featuredMultiplier < 0 || s.featuredMultiplier > 1)
+    ) {
+      errors.push('Featured multiplier must be between 0 and 1');
+    }
 
     if (errors.length > 0) {
       res.status(400).json({ error: errors.join('; ') });

@@ -3,6 +3,7 @@ import { trackKey } from './track-utils.js';
 import type {
   AlbumTrack,
   PlaylistAlbumInfo,
+  PlaylistArtistData,
   SimplePlaylist,
 } from './types.js';
 
@@ -55,10 +56,7 @@ export interface PlaylistTrackWithArtists {
 }
 
 export interface TracksWithPositionsResult {
-  artistData: Map<
-    string,
-    { positions: number[]; trackCount: number; id: string | null }
-  >;
+  artistData: Map<string, PlaylistArtistData>;
   totalTracks: number;
 }
 
@@ -428,18 +426,27 @@ function paginateTracksWithPositions(
           const logicalPosition = source.invertPositions
             ? total - 1 - position
             : position;
-          for (const artist of track.artists as Array<{
-            id: string;
-            name: string;
-          }>) {
+          const artists = track.artists as Array<{ id: string; name: string }>;
+          artists.forEach((artist, index) => {
+            const isFeatured = index !== 0;
             let data = acc.artistData.get(artist.name);
             if (!data) {
-              data = { positions: [], trackCount: 0, id: artist.id };
+              data = {
+                primaryCount: 0,
+                featuredCount: 0,
+                latestPosition: -1,
+                featuredAtLatest: false,
+                id: artist.id,
+              };
               acc.artistData.set(artist.name, data);
             }
-            data.positions.push(logicalPosition);
-            data.trackCount++;
-          }
+            if (isFeatured) data.featuredCount++;
+            else data.primaryCount++;
+            if (logicalPosition > data.latestPosition) {
+              data.latestPosition = logicalPosition;
+              data.featuredAtLatest = isFeatured;
+            }
+          });
         }
         position++;
       }

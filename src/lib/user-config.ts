@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_FEATURED_MULTIPLIER } from '../domain/artists.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -28,6 +29,8 @@ export interface UserConfig {
   scoring: {
     awWeight: number;
     boawWeight: number;
+    /** Share of credit a featured appearance earns vs a primary one (0.5 = half). */
+    featuredMultiplier: number;
     priorityThresholds: { p1: number; p2: number; p3: number; p4: number };
   };
   editorialFilter: {
@@ -95,6 +98,7 @@ export const DEFAULT_USER_CONFIG: UserConfig = {
   scoring: {
     awWeight: 2,
     boawWeight: 3,
+    featuredMultiplier: DEFAULT_FEATURED_MULTIPLIER,
     priorityThresholds: { p1: 60, p2: 25, p3: 15, p4: 1 },
   },
   editorialFilter: {
@@ -151,6 +155,9 @@ export function mergeConfigWithDefaults(
     scoring: {
       awWeight: partial.scoring?.awWeight ?? defaults.scoring.awWeight,
       boawWeight: partial.scoring?.boawWeight ?? defaults.scoring.boawWeight,
+      featuredMultiplier:
+        partial.scoring?.featuredMultiplier ??
+        defaults.scoring.featuredMultiplier,
       priorityThresholds: {
         ...defaults.scoring.priorityThresholds,
         ...partial.scoring?.priorityThresholds,

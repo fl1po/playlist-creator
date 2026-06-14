@@ -1,4 +1,4 @@
-import type { SpotifyApi } from "@spotify/web-api-ts-sdk";
+import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -126,7 +126,7 @@ export interface FoundRelease {
   release_date: string;
   artistName: string;
   artistSpotifyId: string;
-  priority: number | "editorial";
+  priority: number | 'editorial';
   score: number;
   markets?: number;
 }
@@ -164,9 +164,17 @@ export interface BatchCache {
 
 // ── Recency scanning ────────────────────────────────────────────────────────
 
+/**
+ * Per-artist scan data. Keeps each appearance's role — primary (artists[0]) vs
+ * featured (artists[1..n]) — so a featured-gain multiplier can be applied at
+ * scoring time. `latestPosition` is the highest (most recent) position seen and
+ * `featuredAtLatest` records the role there (drives recency scaling).
+ */
 export interface PlaylistArtistData {
-  positions: number[];
-  trackCount: number;
+  primaryCount: number;
+  featuredCount: number;
+  latestPosition: number;
+  featuredAtLatest: boolean;
   id: string | null;
 }
 
@@ -175,10 +183,31 @@ export interface PlaylistScanResult {
   totalTracks: number;
 }
 
+/**
+ * Whether a cached scan uses the current role-aware shape. Caches written
+ * before the featured-multiplier change carry the legacy {positions,trackCount}
+ * shape; reusing them would read `undefined` role fields and produce NaN scores,
+ * so callers must treat a stale-shaped cache as a miss and re-scan.
+ */
+export function isRoleTaggedCache(cached: CachedScanResult): boolean {
+  const first = Object.values(cached.artistData)[0];
+  if (!first) return true; // empty cache is trivially compatible
+  return (
+    typeof first.primaryCount === 'number' &&
+    typeof first.latestPosition === 'number'
+  );
+}
+
 export function toScanResult(cached: CachedScanResult): PlaylistScanResult {
-  return { artistData: new Map(Object.entries(cached.artistData)), totalTracks: cached.totalTracks };
+  return {
+    artistData: new Map(Object.entries(cached.artistData)),
+    totalTracks: cached.totalTracks,
+  };
 }
 
 export function toCachedScanResult(scan: PlaylistScanResult): CachedScanResult {
-  return { artistData: Object.fromEntries(scan.artistData), totalTracks: scan.totalTracks };
+  return {
+    artistData: Object.fromEntries(scan.artistData),
+    totalTracks: scan.totalTracks,
+  };
 }

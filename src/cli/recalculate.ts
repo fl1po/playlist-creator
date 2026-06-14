@@ -16,6 +16,7 @@ const result = await recalculate({
   scoring: {
     weights: userConfig.scoring,
     thresholds: userConfig.scoring.priorityThresholds,
+    featuredMultiplier: userConfig.scoring.featuredMultiplier,
   },
   events: {
     onScanStart: (name) => console.log(`\nScanning ${name}...`),

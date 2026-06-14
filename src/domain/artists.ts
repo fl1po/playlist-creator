@@ -1,4 +1,12 @@
-import type { ArtistData } from "../lib/types.js";
+import type { ArtistData } from '../lib/types.js';
+
+/**
+ * Default share of credit a featured appearance (artists[1..n]) earns relative
+ * to a primary appearance (artists[0]). 0.5 = featured artists gain half. Used
+ * whenever a caller doesn't pass an explicit multiplier; overridable per user
+ * via `scoring.featuredMultiplier` in user-config.
+ */
+export const DEFAULT_FEATURED_MULTIPLIER = 0.5;
 
 // ── Recency bonuses ─────────────────────────────────────────────────────────
 
@@ -84,36 +92,81 @@ export function filterByPriority(
 
 // ── Full artist score calculation ───────────────────────────────────────────
 
+/** Per-source scan data with the primary/featured role split preserved. */
+export interface ArtistSourceScan {
+  primaryCount: number;
+  featuredCount: number;
+  latestPosition: number;
+  featuredAtLatest: boolean;
+}
+
 export interface ArtistScanInput {
-  allWeekly: { trackCount: number; latestPosition: number } | null;
-  bestOfAllWeekly: { trackCount: number; latestPosition: number } | null;
+  allWeekly: ArtistSourceScan | null;
+  bestOfAllWeekly: ArtistSourceScan | null;
   awTotal: number;
   boawTotal: number;
   spotifyId: string | null;
+}
+
+/**
+ * Apply the featured-gain multiplier to one source: featured appearances count
+ * for `m` instead of 1, and the recency bonus is scaled by `m` when the most
+ * recent appearance was a feature.
+ */
+function effectiveSource(
+  src: ArtistSourceScan,
+  total: number,
+  recencyFn: (latestPosition: number, totalTracks: number) => number,
+  m: number,
+): { effectiveCount: number; recencyBonus: number } {
+  return {
+    effectiveCount: src.primaryCount + m * src.featuredCount,
+    recencyBonus:
+      recencyFn(src.latestPosition, total) * (src.featuredAtLatest ? m : 1),
+  };
 }
 
 export function computeArtistData(
   input: ArtistScanInput,
   weights?: ScoringWeights,
   thresholds?: PriorityThresholds,
+  featuredMultiplier?: number,
 ): ArtistData {
-  const allWeeklyCount = input.allWeekly?.trackCount ?? 0;
-  const bestOfAllWeeklyCount = input.bestOfAllWeekly?.trackCount ?? 0;
+  const m = featuredMultiplier ?? DEFAULT_FEATURED_MULTIPLIER;
+
+  // Raw appearance counts (integers) are kept for display; the score uses the
+  // multiplier-adjusted effective counts and recency.
+  const allWeeklyCount = input.allWeekly
+    ? input.allWeekly.primaryCount + input.allWeekly.featuredCount
+    : 0;
+  const bestOfAllWeeklyCount = input.bestOfAllWeekly
+    ? input.bestOfAllWeekly.primaryCount + input.bestOfAllWeekly.featuredCount
+    : 0;
   const latestPositionAW = input.allWeekly?.latestPosition ?? 0;
   const latestPositionBoAW = input.bestOfAllWeekly?.latestPosition ?? 0;
 
-  const recencyBonusAW = input.allWeekly
-    ? calculateRecencyBonusAW(latestPositionAW, input.awTotal)
-    : 0;
-  const recencyBonusBoAW = input.bestOfAllWeekly
-    ? calculateRecencyBonusBoAW(latestPositionBoAW, input.boawTotal)
-    : 0;
+  const aw = input.allWeekly
+    ? effectiveSource(
+        input.allWeekly,
+        input.awTotal,
+        calculateRecencyBonusAW,
+        m,
+      )
+    : { effectiveCount: 0, recencyBonus: 0 };
+  const boaw = input.bestOfAllWeekly
+    ? effectiveSource(
+        input.bestOfAllWeekly,
+        input.boawTotal,
+        calculateRecencyBonusBoAW,
+        m,
+      )
+    : { effectiveCount: 0, recencyBonus: 0 };
 
   const score = calculateScore(
-    allWeeklyCount,
-    bestOfAllWeeklyCount,
-    recencyBonusAW,
-    recencyBonusBoAW,
+    aw.effectiveCount,
+    boaw.effectiveCount,
+    aw.recencyBonus,
+    boaw.recencyBonus,
     weights,
   );
 
@@ -122,8 +175,8 @@ export function computeArtistData(
     bestOfAllWeekly: bestOfAllWeeklyCount,
     latestPositionAW,
     latestPositionBoAW,
-    recencyBonusAW,
-    recencyBonusBoAW,
+    recencyBonusAW: aw.recencyBonus,
+    recencyBonusBoAW: boaw.recencyBonus,
     score,
     priority: determinePriority(score, thresholds),
     spotifyId: input.spotifyId,

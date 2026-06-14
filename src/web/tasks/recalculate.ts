@@ -72,6 +72,7 @@ export const recalculateTask: TaskDefinition<
       scoring: {
         weights: userConfig.scoring,
         thresholds: userConfig.scoring.priorityThresholds,
+        featuredMultiplier: userConfig.scoring.featuredMultiplier,
       },
       preloaded: pickReusableScans(cache, delta),
       prior,

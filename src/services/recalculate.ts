@@ -6,6 +6,7 @@ import {
   type BatchCache,
   type PlaylistScanResult,
   type TrustedArtistsFile,
+  isRoleTaggedCache,
   toScanResult,
 } from '../lib/types.js';
 import type { PriorityChange } from './playlist-syncer.js';
@@ -38,7 +39,11 @@ export interface SnapshotDelta {
 export interface RecalcOptions {
   ctx: SpotifyContext;
   sources: SourcePlaylists;
-  scoring?: { weights?: ScoringWeights; thresholds?: PriorityThresholds };
+  scoring?: {
+    weights?: ScoringWeights;
+    thresholds?: PriorityThresholds;
+    featuredMultiplier?: number;
+  };
   preloaded?: { aw?: PlaylistScanResult; boaw?: PlaylistScanResult };
   events?: EventHandlers<PriorityCalculatorEventMap>;
   /** When given, compute a tier diff against this prior snapshot. */
@@ -129,10 +134,20 @@ export function pickReusableScans(
   delta: SnapshotDelta,
 ): { aw?: PlaylistScanResult; boaw?: PlaylistScanResult } {
   const preloaded: { aw?: PlaylistScanResult; boaw?: PlaylistScanResult } = {};
-  if (!delta.awChanged && cache.awScanCache) {
+  // Skip caches written with the legacy (pre-featured-multiplier) shape — they
+  // lack role fields and would produce NaN scores. A miss forces a fresh scan.
+  if (
+    !delta.awChanged &&
+    cache.awScanCache &&
+    isRoleTaggedCache(cache.awScanCache)
+  ) {
     preloaded.aw = toScanResult(cache.awScanCache);
   }
-  if (!delta.boawChanged && cache.boawScanCache) {
+  if (
+    !delta.boawChanged &&
+    cache.boawScanCache &&
+    isRoleTaggedCache(cache.boawScanCache)
+  ) {
     preloaded.boaw = toScanResult(cache.boawScanCache);
   }
   return preloaded;
@@ -204,6 +219,7 @@ export async function recalculate(opts: RecalcOptions): Promise<RecalcResult> {
       useLikedSongs: opts.sources.useLikedSongs,
       scoringWeights: opts.scoring?.weights,
       priorityThresholds: opts.scoring?.thresholds,
+      featuredMultiplier: opts.scoring?.featuredMultiplier,
       preloaded: opts.preloaded,
     },
     opts.events,

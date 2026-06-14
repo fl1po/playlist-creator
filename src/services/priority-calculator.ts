@@ -1,12 +1,20 @@
 import {
+  DEFAULT_FEATURED_MULTIPLIER,
   type PriorityThresholds,
   type ScoringWeights,
   computeArtistData,
 } from '../domain/artists.js';
-import { getLikedTracksWithPositions, getPlaylistTracksWithPositions } from '../lib/pagination.js';
+import {
+  getLikedTracksWithPositions,
+  getPlaylistTracksWithPositions,
+} from '../lib/pagination.js';
 import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
-import type { ArtistData, PlaylistScanResult, TrustedArtistsFile } from '../lib/types.js';
+import type {
+  ArtistData,
+  PlaylistScanResult,
+  TrustedArtistsFile,
+} from '../lib/types.js';
 import { secondarySourceName } from '../lib/user-config.js';
 
 // ── Events ──────────────────────────────────────────────────────────────────
@@ -34,6 +42,8 @@ export interface PriorityCalculatorOptions {
   useLikedSongs?: boolean;
   scoringWeights?: ScoringWeights;
   priorityThresholds?: PriorityThresholds;
+  /** Share of credit a featured appearance earns (default 0.5). */
+  featuredMultiplier?: number;
   /** Pre-loaded scan data — skips scanning for provided sources. */
   preloaded?: {
     aw?: PlaylistScanResult;
@@ -67,11 +77,16 @@ export class PriorityCalculatorService {
       useLikedSongs: options?.useLikedSongs ?? false,
       scoringWeights: options?.scoringWeights,
       priorityThresholds: options?.priorityThresholds,
+      featuredMultiplier: options?.featuredMultiplier,
       preloaded: options?.preloaded,
     } as Required<PriorityCalculatorOptions>;
   }
 
-  async run(): Promise<TrustedArtistsFile & { scanResults: { aw: PlaylistScanResult; boaw: PlaylistScanResult } }> {
+  async run(): Promise<
+    TrustedArtistsFile & {
+      scanResults: { aw: PlaylistScanResult; boaw: PlaylistScanResult };
+    }
+  > {
     const progressFor = (name: string) => ({
       onProgress: (fetched: number, total: number) =>
         this.emitter.emit('scanProgress', name, fetched, total),
@@ -81,26 +96,56 @@ export class PriorityCalculatorService {
     let awTotal: number;
     if (this.opts.preloaded?.aw) {
       ({ artistData: awData, totalTracks: awTotal } = this.opts.preloaded.aw);
-      this.emitter.emit('scanComplete', 'All Weekly (cached)', awData.size, awTotal);
+      this.emitter.emit(
+        'scanComplete',
+        'All Weekly (cached)',
+        awData.size,
+        awTotal,
+      );
     } else {
       this.emitter.emit('scanStart', 'All Weekly');
       ({ artistData: awData, totalTracks: awTotal } =
-        await getPlaylistTracksWithPositions(this.ctx, this.opts.allWeeklyId, progressFor('All Weekly')));
+        await getPlaylistTracksWithPositions(
+          this.ctx,
+          this.opts.allWeeklyId,
+          progressFor('All Weekly'),
+        ));
       this.emitter.emit('scanComplete', 'All Weekly', awData.size, awTotal);
     }
 
-    const boawSourceName = secondarySourceName({ sourcePlaylists: { useLikedSongs: this.opts.useLikedSongs } });
+    const boawSourceName = secondarySourceName({
+      sourcePlaylists: { useLikedSongs: this.opts.useLikedSongs },
+    });
     let boawData: Map<string, import('../lib/types.js').PlaylistArtistData>;
     let boawTotal: number;
     if (this.opts.preloaded?.boaw) {
-      ({ artistData: boawData, totalTracks: boawTotal } = this.opts.preloaded.boaw);
-      this.emitter.emit('scanComplete', `${boawSourceName} (cached)`, boawData.size, boawTotal);
+      ({ artistData: boawData, totalTracks: boawTotal } =
+        this.opts.preloaded.boaw);
+      this.emitter.emit(
+        'scanComplete',
+        `${boawSourceName} (cached)`,
+        boawData.size,
+        boawTotal,
+      );
     } else {
       this.emitter.emit('scanStart', boawSourceName);
-      ({ artistData: boawData, totalTracks: boawTotal } = this.opts.useLikedSongs
-        ? await getLikedTracksWithPositions(this.ctx, progressFor(boawSourceName))
-        : await getPlaylistTracksWithPositions(this.ctx, this.opts.bestOfAllWeeklyId, progressFor(boawSourceName)));
-      this.emitter.emit('scanComplete', boawSourceName, boawData.size, boawTotal);
+      ({ artistData: boawData, totalTracks: boawTotal } = this.opts
+        .useLikedSongs
+        ? await getLikedTracksWithPositions(
+            this.ctx,
+            progressFor(boawSourceName),
+          )
+        : await getPlaylistTracksWithPositions(
+            this.ctx,
+            this.opts.bestOfAllWeeklyId,
+            progressFor(boawSourceName),
+          ));
+      this.emitter.emit(
+        'scanComplete',
+        boawSourceName,
+        boawData.size,
+        boawTotal,
+      );
     }
 
     // Combine all unique artists
@@ -118,14 +163,18 @@ export class PriorityCalculatorService {
         {
           allWeekly: aw
             ? {
-                trackCount: aw.trackCount,
-                latestPosition: Math.max(...aw.positions),
+                primaryCount: aw.primaryCount,
+                featuredCount: aw.featuredCount,
+                latestPosition: aw.latestPosition,
+                featuredAtLatest: aw.featuredAtLatest,
               }
             : null,
           bestOfAllWeekly: boaw
             ? {
-                trackCount: boaw.trackCount,
-                latestPosition: Math.max(...boaw.positions),
+                primaryCount: boaw.primaryCount,
+                featuredCount: boaw.featuredCount,
+                latestPosition: boaw.latestPosition,
+                featuredAtLatest: boaw.featuredAtLatest,
               }
             : null,
           awTotal,
@@ -134,6 +183,7 @@ export class PriorityCalculatorService {
         },
         this.opts.scoringWeights,
         this.opts.priorityThresholds,
+        this.opts.featuredMultiplier,
       );
 
       artistCounts[artistName] = data;
@@ -176,7 +226,7 @@ export class PriorityCalculatorService {
             lastFetched: today,
           },
         },
-        scoringFormula: `Score = (allWeekly * ${this.opts.scoringWeights?.awWeight ?? 2}) + (bestOfAllWeekly * ${this.opts.scoringWeights?.boawWeight ?? 3}) + recencyBonusAW + recencyBonusBoAW`,
+        scoringFormula: `Score = (allWeekly * ${this.opts.scoringWeights?.awWeight ?? 2}) + (bestOfAllWeekly * ${this.opts.scoringWeights?.boawWeight ?? 3}) + recencyBonusAW + recencyBonusBoAW; featured appearances count as ${this.opts.featuredMultiplier ?? DEFAULT_FEATURED_MULTIPLIER}x`,
         priorityThresholds: {
           '1': `>= ${this.opts.priorityThresholds?.p1 ?? 60}`,
           '2': `${this.opts.priorityThresholds?.p2 ?? 25}-${(this.opts.priorityThresholds?.p1 ?? 60) - 1}`,
