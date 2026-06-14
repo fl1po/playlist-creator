@@ -15,6 +15,7 @@ export async function syncIfNeeded(
   client: SpotifyClient,
   dataDir: string,
   allWeeklyId: string,
+  minPopularity: number,
   pacer: RequestPacer,
   broadcast: (type: string, data: unknown) => void,
 ): Promise<void> {
@@ -58,6 +59,7 @@ export async function syncIfNeeded(
       allWeeklyId,
       trustedArtistsPath: path.join(dataDir, 'trusted-artists.json'),
       dataDir,
+      minPopularity,
     },
     broadcastEvents<PlaylistSyncEventMap>(broadcast, {
       start: {

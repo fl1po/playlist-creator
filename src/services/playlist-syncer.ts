@@ -13,13 +13,13 @@ import {
   getAllPlaylistTracks,
   getPlaylistTracksWithArtists,
 } from '../lib/pagination.js';
+import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
+import type { SpotifyContext } from '../lib/spotify-context.js';
+import type { FoundRelease, TrustedArtistsFile } from '../lib/types.js';
 import {
   getNonListenedPlaylists,
   invalidateNonListenedCache,
 } from './non-listened-playlists.js';
-import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
-import type { SpotifyContext } from '../lib/spotify-context.js';
-import type { FoundRelease, TrustedArtistsFile } from '../lib/types.js';
 import { ReleaseCollector, type TrackDedup } from './release-collector.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -41,6 +41,8 @@ export interface PlaylistSyncerOptions {
   allWeeklyId: string;
   trustedArtistsPath: string;
   dataDir: string;
+  /** Minimum release popularity (Deezer 0–100) to keep when adding releases. */
+  minPopularity: number;
 }
 
 // ── Service ──────────────────────────────────────────────────────────────────
@@ -114,7 +116,12 @@ export class PlaylistSyncerService {
       'log',
       `Found ${unprocessed.length} unprocessed playlist(s)`,
     );
-    this.emitter.emit('start', demoted.length, promoted.length, unprocessed.length);
+    this.emitter.emit(
+      'start',
+      demoted.length,
+      promoted.length,
+      unprocessed.length,
+    );
 
     // Load current P1/P2 set for collab checks
     const trustedArtists: TrustedArtistsFile = JSON.parse(
@@ -253,7 +260,11 @@ export class PlaylistSyncerService {
               void this.ctx.api; // throws if aborted
             },
           });
-          const lowPop = filterLowPopularity(foundReleases, popularities);
+          const lowPop = filterLowPopularity(
+            foundReleases,
+            popularities,
+            this.opts.minPopularity,
+          );
           for (const id of lowPop) foundReleases.delete(id);
 
           const { filtered: variantIds } = filterVariants(foundReleases);

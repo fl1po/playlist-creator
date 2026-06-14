@@ -200,7 +200,7 @@ test('collects in-window releases, excludes history, ranks by popularity', async
       ],
       listeningHistory: new Set(['t2']),
     }),
-    ports(reads, { 'alb-x': 20, 'alb-y': 80 }),
+    ports(reads, { 'alb-x': 70, 'alb-y': 80 }),
   );
 
   // Out-of-window album excluded; t2 excluded as listening history.
@@ -251,6 +251,46 @@ test('low-popularity releases are gated out with a decision', async () => {
   });
 });
 
+test('release popularity gate uses the configured minPopularity threshold', async () => {
+  const makeReads = () =>
+    fixtureReads({
+      artists: [
+        {
+          id: 'art-d',
+          name: 'Delta',
+          albums: [
+            {
+              id: 'alb-mid',
+              name: 'Midpop',
+              type: 'album',
+              release_date: IN_WINDOW,
+              tracks: [{ id: 'm1', name: 'Mid', key: 'delta::mid' }],
+            },
+          ],
+        },
+      ],
+    });
+  const editorial = (minPopularity: number) => ({
+    playlists: [],
+    externalSources: [],
+    gate: { minPopularity, minFollowers: 100_000 },
+  });
+
+  // Popularity 40 sits in the old hardcoded-10 gap: gated at 60, kept at 30.
+  const gated = await collectWeek(
+    input({ roster: [['Delta', P1]], editorial: editorial(60) }),
+    ports(makeReads(), { 'alb-mid': 40 }),
+  );
+  assert.deepEqual(gated.tracks, []);
+  assert.ok(gated.decisions.some((d) => d.kind === 'low-popularity'));
+
+  const kept = await collectWeek(
+    input({ roster: [['Delta', P1]], editorial: editorial(30) }),
+    ports(makeReads(), { 'alb-mid': 40 }),
+  );
+  assert.deepEqual(kept.tracks, ['m1']);
+});
+
 test('same-release duplicates: the explicit variant is picked', async () => {
   const reads = fixtureReads({
     artists: [
@@ -283,7 +323,7 @@ test('same-release duplicates: the explicit variant is picked', async () => {
 
   const week = await collectWeek(
     input({ roster: [['Delta', P1]] }),
-    ports(reads, { v2: 50 }),
+    ports(reads, { v2: 70 }),
   );
 
   assert.deepEqual(week.tracks, ['v2t']);
@@ -324,7 +364,7 @@ test('alternate versions: instrumental stripped when the original exists', async
 
   const week = await collectWeek(
     input({ roster: [['Echo', P1]] }),
-    ports(reads, { 'alb-z': 50, 'alb-zi': 50 }),
+    ports(reads, { 'alb-z': 70, 'alb-zi': 70 }),
   );
 
   assert.deepEqual(week.tracks, ['z1']);
@@ -372,7 +412,7 @@ test('deluxe release: only tracks absent from the base album qualify', async () 
 
   const week = await collectWeek(
     input({ roster: [['Foxtrot', P1]] }),
-    ports(reads, { 'alb-dlx': 50 }),
+    ports(reads, { 'alb-dlx': 70 }),
   );
 
   assert.deepEqual(week.tracks, ['d3']);
@@ -423,7 +463,7 @@ test('title-track-only: single promotion contributes only the title track', asyn
 
   const week = await collectWeek(
     input({ roster: [['Golf', P1]] }),
-    ports(reads, { 'alb-hit': 50 }),
+    ports(reads, { 'alb-hit': 70 }),
   );
 
   assert.deepEqual(week.tracks, ['h1']);
@@ -466,7 +506,7 @@ test('single duplicating an album track is skipped with a decision', async () =>
 
   const week = await collectWeek(
     input({ roster: [['Hotel', P1]] }),
-    ports(reads, { 'alb-h': 50, 'sgl-h': 50 }),
+    ports(reads, { 'alb-h': 70, 'sgl-h': 70 }),
   );
 
   assert.deepEqual(week.tracks, ['ha1']);
@@ -510,7 +550,7 @@ test('editorial: unknown artist admitted through the popularity/genre gate', asy
         gate: { minPopularity: 60, minFollowers: 100_000 },
       },
     }),
-    ports(reads, { 'alb-e': 50 }),
+    ports(reads, { 'alb-e': 70 }),
   );
 
   assert.deepEqual(week.tracks, ['e1']);
@@ -556,7 +596,7 @@ test('resumes from a checkpoint: already-searched artists are not re-searched', 
     }),
     {
       reads,
-      popularity: fixedPopularitySource({ 'alb-y': 50 }),
+      popularity: fixedPopularitySource({ 'alb-y': 70 }),
       checkpoints,
     },
   );

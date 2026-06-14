@@ -126,6 +126,7 @@ export const recalculateTask: TaskDefinition<
       tc.client,
       tc.dataDir,
       userConfig.sourcePlaylists.allWeeklyId,
+      userConfig.editorialFilter.minPopularity,
       tc.pacer,
       tc.broadcast,
     );

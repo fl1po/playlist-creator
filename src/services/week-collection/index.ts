@@ -339,7 +339,11 @@ export async function collectWeek(
     foundReleases,
     (done, total) => onProgress?.({ phase: 'popularity', done, total }),
   );
-  const lowPop = filterLowPopularity(foundReleases, releasePopularity);
+  const lowPop = filterLowPopularity(
+    foundReleases,
+    releasePopularity,
+    editorial.gate.minPopularity,
+  );
   for (const id of lowPop) {
     const r = foundReleases.get(id);
     if (!r) continue;

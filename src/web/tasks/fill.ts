@@ -94,6 +94,7 @@ export const fillTask: TaskDefinition<FillEvents, FillCacheKey> = {
         tc.client,
         tc.dataDir,
         config.allWeeklyId ?? '',
+        config.editorialFilter.minPopularity,
         tc.pacer,
         tc.broadcast,
       );
