@@ -44,6 +44,18 @@ _Avoid_: artist search progress
 **Collection decision**:
 A record of one choice made during week collection — variant picked, deluxe tracks stripped, title-track-only, single skipped as duplicate, low-popularity filtered. The audit trail the UI and logs render.
 
+### Syncing
+
+**Promotion sync**:
+Reconciling already-published weekly playlists with a recalculation's priority changes — removing the tracks of artists demoted out of P1/P2, and backfilling in-window releases from artists promoted into P1/P2. Runs after recalculation, over unprocessed (non-listened) weekly playlists only. Shares the release-discovery and track-collection engine with week collection, but has no editorial merge, no checkpoints, and no Friday window of its own (it matches each playlist's own date). Returns its own collection decisions, removal included.
+_Avoid_: playlist sync, priority diff, backfill
+
+**Priority change**:
+One artist crossing the P1/P2 boundary during recalculation — a *promotion* (into P1/P2) or a *demotion* (out of P1/P2). Only boundary crossings drive promotion sync; movement within or below the boundary does not.
+
+**Album-unit removal**:
+The rule that promotion sync removes a demoted artist's tracks an album at a time: a whole album stays if any of its tracks belongs to a P1/P2 artist (it was added for that feature), otherwise the demoted artist's album group is removed entirely.
+
 ### Releases
 
 **Release**:

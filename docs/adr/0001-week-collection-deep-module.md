@@ -9,5 +9,5 @@ The week collection (one Friday's release gathering: P1/P2 artist search, editor
 
 ## Consequences
 
-- `playlist-syncer.ts` still uses the old `ReleaseCollector` for promotion-sync; it should migrate to `ReleaseReads` + the domain deciders (a thinner slice — no editorial, no checkpoints, no Friday window) rather than forcing mode flags into `collectWeek`. Until then `release-collector.ts` stays for the syncer only.
+- Promotion-sync has since migrated off `ReleaseCollector`. `services/promotion-sync/` now owns `syncPriorityChanges(changes, input, ports) → SyncResult`, a stateless module over the same `ReleaseReads` + `PopularitySource` ports plus a new `PlaylistWrites` port, sharing the release-discovery and track-collection engine (now `week-collection/engine.ts`) as an internal seam. The thinner slice — no editorial, no checkpoints, no Friday window — was achieved without mode flags on `collectWeek`. `ReleaseCollector` and `PlaylistSyncerService` were deleted; the whole sync (removal included) is now tested through fixture adapters.
 - Liveness reaches the UI through one narrow `onProgress` callback (phase + counts); collection decisions are not duplicated there, so decision detail renders when the week completes.

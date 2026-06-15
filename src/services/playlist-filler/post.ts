@@ -1,4 +1,4 @@
-import type { PriorityChange } from '../playlist-syncer.js';
+import type { PriorityChange } from '../promotion-sync/index.js';
 import type { FillResult, PrioritySnapshot } from './fill-run.js';
 import type { FillHistoryEntry, FillStorage, ProgressFile } from './storage.js';
 

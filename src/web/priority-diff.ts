@@ -1,15 +1,38 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import type { RequestPacer } from '../lib/request-pacer.js';
-import { broadcastEvents } from '../lib/service-events.js';
 import { createSpotifyContext } from '../lib/spotify-context.js';
 import type { SpotifyClient, TrustedArtistsFile } from '../lib/types.js';
 import {
-  type PlaylistSyncEventMap,
-  PlaylistSyncerService,
+  getNonListenedPlaylists,
+  invalidateNonListenedCache,
+} from '../services/non-listened-playlists.js';
+import {
+  deezerPopularitySource,
+  promotionReads,
+  spotifyPlaylistWrites,
+} from '../services/promotion-sync/adapters.js';
+import {
   type PriorityChange,
-} from '../services/playlist-syncer.js';
+  type SyncDecision,
+  syncPriorityChanges,
+} from '../services/promotion-sync/index.js';
 
-/** Run playlist sync if any P1/P2 boundary crossings occurred. */
+/** Render the loggable decisions; counts go through the sync events instead. */
+function describeDecision(d: SyncDecision): string | null {
+  switch (d.kind) {
+    case 'demotion-removed':
+      return `  ${d.playlist}: removed ${d.trackCount} track(s) from ${d.artists.join(', ')}`;
+    case 'low-popularity':
+      return `  low-popularity: ${d.artist} — ${d.release} (${d.popularity})`;
+    case 'variant-stripped':
+      return `  stripped ${d.reason}: ${d.artist} — ${d.release}`;
+    default:
+      return null;
+  }
+}
+
+/** Run promotion sync if any P1/P2 boundary crossings occurred. */
 export async function syncIfNeeded(
   changes: PriorityChange[],
   client: SpotifyClient,
@@ -54,39 +77,83 @@ export async function syncIfNeeded(
     pacer,
   );
 
-  const syncer = new PlaylistSyncerService(
+  // Caller-side discovery: which weekly playlists are unprocessed + the AW
+  // track set. Kept out of the module so its dataDir cache stays out of the seam.
+  const meResult = await ctx.call(
+    () => ctx.api.currentUser.profile(),
+    'get user profile',
+  );
+  if (!meResult.success) throw new Error('Failed to get user profile');
+
+  const { playlists, awTrackIds } = await getNonListenedPlaylists(
     ctx,
+    meResult.data.id,
+    allWeeklyId,
+    dataDir,
+    (msg) => broadcast('log', msg),
+  );
+  if (playlists.length === 0) {
+    broadcast('log', 'No unprocessed weekly playlists found');
+    return;
+  }
+
+  // Authoritative (post-recalc) roster when given; otherwise the persisted file.
+  const trusted: TrustedArtistsFile =
+    trustedArtists ??
+    JSON.parse(
+      fs.readFileSync(path.join(dataDir, 'trusted-artists.json'), 'utf8'),
+    );
+
+  const result = await syncPriorityChanges(
+    changes,
     {
-      allWeeklyId,
-      trustedArtistsPath: path.join(dataDir, 'trusted-artists.json'),
-      dataDir,
-      minPopularity,
-      trustedArtists,
+      unprocessedPlaylists: playlists,
+      awTrackIds,
+      trustedArtists: trusted,
+      // Newly-promoted artists backfill their whole recent back-catalogue, so
+      // hold them to a higher bar than the weekly gate — twice the configured
+      // minimum — to keep stale low-popularity releases out.
+      minPopularity: minPopularity * 2,
     },
-    broadcastEvents<PlaylistSyncEventMap>(broadcast, {
-      start: {
-        type: 'sync:start',
-        pack: (demoted, promoted, playlists) => ({
-          demoted,
-          promoted,
-          playlists,
-        }),
-      },
-      playlistSync: {
-        type: 'sync:playlistSync',
-        pack: (name, removed, added) => ({ name, removed, added }),
-      },
-      complete: {
-        type: 'sync:complete',
-        pack: (totalRemoved, totalAdded, playlistsSynced) => ({
-          totalRemoved,
-          totalAdded,
-          playlistsSynced,
-        }),
-      },
-      log: { log: (msg) => msg },
-    }),
+    {
+      reads: promotionReads(ctx),
+      popularity: deezerPopularitySource(() => {
+        void ctx.api; // throws if aborted
+      }),
+      writes: spotifyPlaylistWrites(ctx),
+    },
+    (e) => {
+      if (e.phase === 'start') {
+        broadcast('sync:start', {
+          demoted: e.demoted,
+          promoted: e.promoted,
+          playlists: e.playlists,
+        });
+      } else {
+        broadcast('sync:playlistSync', {
+          name: e.playlist,
+          removed: e.removed,
+          added: e.added,
+        });
+      }
+    },
   );
 
-  await syncer.run(changes);
+  for (const d of result.decisions) {
+    const line = describeDecision(d);
+    if (line) broadcast('log', line);
+  }
+
+  if (result.removed > 0 || result.added > 0) {
+    invalidateNonListenedCache(dataDir);
+  }
+  broadcast('sync:complete', {
+    totalRemoved: result.removed,
+    totalAdded: result.added,
+    playlistsSynced: result.playlistsSynced,
+  });
+  broadcast(
+    'log',
+    `Sync complete: ${result.removed} removed, ${result.added} added across ${result.playlistsSynced} playlist(s)`,
+  );
 }

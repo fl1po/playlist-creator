@@ -9,13 +9,13 @@ import {
   isRoleTaggedCache,
   toScanResult,
 } from '../lib/types.js';
-import type { PriorityChange } from './playlist-syncer.js';
+import type { PriorityChange } from './promotion-sync/index.js';
 import {
   type PriorityCalculatorEventMap,
   PriorityCalculatorService,
 } from './priority-calculator.js';
 
-export type { PriorityChange } from './playlist-syncer.js';
+export type { PriorityChange } from './promotion-sync/index.js';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 

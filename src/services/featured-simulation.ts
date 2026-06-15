@@ -58,7 +58,7 @@ export interface TierChange {
   baseTier: number | null;
   newTier: number | null;
   direction: 'demotion' | 'promotion';
-  /** Change touches tier P1 or P2 — the boundary the playlist-syncer acts on. */
+  /** Change touches tier P1 or P2 — the boundary promotion sync acts on. */
   p1p2Crossing: boolean;
 }
 
@@ -245,7 +245,7 @@ export function renderReport(
     `- Artists changing tier: **${s.affected}** (${s.demotions} demotions, ${s.promotions} promotions)`,
   );
   lines.push(
-    `- Changes touching P1/P2 (playlist-syncer would act): **${s.p1p2Crossings}**`,
+    `- Changes touching P1/P2 (promotion sync would act): **${s.p1p2Crossings}**`,
   );
   lines.push('');
   lines.push('## Tier changes');

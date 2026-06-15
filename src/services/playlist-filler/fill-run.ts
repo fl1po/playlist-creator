@@ -65,7 +65,7 @@ const DEFAULTS = {
   bestOfAllWeeklyId: '',
   editorialPlaylists: [] as Array<{ id: string; name: string }>,
   externalPlaylistSources: [] as ExternalPlaylistSource[],
-  editorialFilter: { minPopularity: 60, minFollowers: 100000 },
+  editorialFilter: { minPopularity: 10, minFollowers: 100000 },
 };
 
 function snapshotFromTrusted(t: TrustedArtistsFile): PrioritySnapshot {

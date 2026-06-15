@@ -102,7 +102,7 @@ export const DEFAULT_USER_CONFIG: UserConfig = {
     priorityThresholds: { p1: 60, p2: 25, p3: 15, p4: 1 },
   },
   editorialFilter: {
-    minPopularity: 60,
+    minPopularity: 10,
     minFollowers: 100000,
   },
   weeklyListeningBudget: 15,

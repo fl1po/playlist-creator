@@ -1,5 +1,5 @@
 import type { DateResult } from '../../lib/types.js';
-import type { PriorityChange } from '../playlist-syncer.js';
+import type { PriorityChange } from '../promotion-sync/index.js';
 
 export type PlaylistFillerEventMap = {
   /** Emitted at the start of a run when batch cache has prior progress.
