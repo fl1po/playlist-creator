@@ -430,6 +430,7 @@
     font-size: 12px; color: #999; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; margin-top: 2px;
   }
+  .now-playing .np-feat { color: #6a6a6a; }
   .now-playing .np-album {
     font-size: 11px; color: #666; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; margin-top: 1px;
@@ -2507,6 +2508,23 @@ async function fetchPlayback() {
   updateAlbumIfOpen();
 }
 
+function renderNpArtist(track) {
+  const el = document.getElementById('npArtist');
+  const primary = (track.primaryArtists && track.primaryArtists.length)
+    ? track.primaryArtists.join(', ')
+    : track.artists;
+  const featured = track.featured || [];
+  // Build with text nodes — artist names are untrusted, so never innerHTML.
+  el.textContent = '';
+  el.appendChild(document.createTextNode(primary));
+  if (featured.length) {
+    const span = document.createElement('span');
+    span.className = 'np-feat';
+    span.textContent = ' feat. ' + featured.join(', ');
+    el.appendChild(span);
+  }
+}
+
 function renderNowPlaying() {
   const s = np.state;
   if (!s) return;
@@ -2525,7 +2543,7 @@ function renderNowPlaying() {
   }
 
   setText('npTrack', s.track.name);
-  setText('npArtist', s.track.artists);
+  renderNpArtist(s.track);
   const albumParts = [];
   if (s.track.track_number && s.track.album_total_tracks) {
     albumParts.push(`Track ${s.track.track_number} of ${s.track.album_total_tracks}`);

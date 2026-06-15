@@ -380,6 +380,21 @@ app.get('/api/playback', async (req, res) => {
     const item = playback.item;
     const progressMs = playback.progress_ms ?? 0;
 
+    // Split track artists into primary vs featured. An album can have multiple
+    // primary artists, so treat any track artist that's also credited on the
+    // album as primary, and the rest as featured. Fall back to the first artist
+    // when the album credit doesn't overlap (e.g. compilations / "Various
+    // Artists"), which mirrors the index-0 convention used in scoring.
+    const albumArtistIds = new Set(
+      (item.album.artists ?? []).map((a) => a.id),
+    );
+    let primaryArtists = item.artists.filter((a) => albumArtistIds.has(a.id));
+    if (primaryArtists.length === 0 && item.artists.length > 0) {
+      primaryArtists = [item.artists[0]];
+    }
+    const primaryIds = new Set(primaryArtists.map((a) => a.id));
+    const featuredArtists = item.artists.filter((a) => !primaryIds.has(a.id));
+
     let contextInfo: {
       type: 'playlist' | 'album';
       id: string;
@@ -459,6 +474,8 @@ app.get('/api/playback', async (req, res) => {
         id: item.id,
         name: item.name,
         artists: item.artists.map((a) => a.name).join(', '),
+        primaryArtists: primaryArtists.map((a) => a.name),
+        featured: featuredArtists.map((a) => a.name),
         album: item.album.name,
         album_id: item.album.id,
         albumArt,

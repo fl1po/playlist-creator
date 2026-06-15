@@ -46,6 +46,9 @@ function emitProgress(emitter: Emitter, e: WeekProgressEvent): void {
     case 'searching':
       emitter.emit('artistSearchProgress', e.searched, e.total, e.artist);
       break;
+    case 'release-found':
+      emitter.emit('releaseFound', e.artist, e.release, e.type, e.source);
+      break;
     case 'checkpoint':
       emitter.emit('artistSearchPause', e.searched, e.total);
       break;
@@ -61,7 +64,8 @@ function emitProgress(emitter: Emitter, e: WeekProgressEvent): void {
 function emitDecision(emitter: Emitter, d: CollectionDecision): void {
   switch (d.kind) {
     case 'release-found':
-      emitter.emit('releaseFound', d.artist, d.release, d.type, d.source);
+      // Logged live during search/editorial via emitProgress; skip here so the
+      // end-of-date decision replay doesn't double-log each find.
       break;
     case 'variant-picked':
       emitter.emit('variantPicked', d.release, d.variantCount, d.explicit);

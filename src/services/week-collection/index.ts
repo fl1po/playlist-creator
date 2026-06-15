@@ -153,6 +153,13 @@ export type CollectionDecision =
 export type WeekProgressEvent =
   | { phase: 'resumed'; searched: number; total: number; found: number }
   | { phase: 'searching'; searched: number; total: number; artist: string }
+  | {
+      phase: 'release-found';
+      artist: string;
+      release: string;
+      type: string;
+      source?: string;
+    }
   | { phase: 'checkpoint'; searched: number; total: number }
   | { phase: 'editorial'; playlist: string }
   | { phase: 'popularity'; done: number; total: number }
@@ -285,6 +292,12 @@ export async function collectWeek(
           });
           run.decisions.push({
             kind: 'release-found',
+            artist: name,
+            release: release.name,
+            type: release.type,
+          });
+          onProgress?.({
+            phase: 'release-found',
             artist: name,
             release: release.name,
             type: release.type,
@@ -462,6 +475,13 @@ async function mergeEditorial(
         );
         run.decisions.push({
           kind: 'release-found',
+          artist: artistName,
+          release: album.name,
+          type: album.type,
+          source: playlist.name,
+        });
+        run.onProgress?.({
+          phase: 'release-found',
           artist: artistName,
           release: album.name,
           type: album.type,
