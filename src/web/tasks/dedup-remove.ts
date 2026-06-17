@@ -48,6 +48,6 @@ export const dedupRemoveTask: TaskDefinition<DedupRemoveEvents> = {
   },
 
   cleanup(tc) {
-    invalidateNonListenedCache(tc.dataDir);
+    invalidateNonListenedCache(tc.dataDir, tc.userId);
   },
 };

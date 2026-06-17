@@ -127,3 +127,11 @@ export async function redisLoadCache<T = unknown>(
   if (!raw) return null;
   return (typeof raw === 'string' ? JSON.parse(raw) : raw) as T;
 }
+
+export async function redisDeleteCache(
+  userId: string,
+  name: string,
+): Promise<void> {
+  if (!isRedisConfigured()) return;
+  await getRedis().del(`${name}:${userId}`);
+}

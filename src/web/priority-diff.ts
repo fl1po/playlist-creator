@@ -90,7 +90,7 @@ export async function syncIfNeeded(
     meResult.data.id,
     allWeeklyId,
     dataDir,
-    (msg) => broadcast('log', msg),
+    (message, level) => broadcast('log', { level: level ?? 'info', message }),
   );
   if (playlists.length === 0) {
     broadcast('log', 'No unprocessed weekly playlists found');
@@ -145,7 +145,7 @@ export async function syncIfNeeded(
   }
 
   if (result.removed > 0 || result.added > 0) {
-    invalidateNonListenedCache(dataDir);
+    invalidateNonListenedCache(dataDir, meResult.data.id);
   }
   broadcast('sync:complete', {
     totalRemoved: result.removed,

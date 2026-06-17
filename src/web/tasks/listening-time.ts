@@ -59,7 +59,7 @@ export const listeningTimeTask: TaskDefinition<
       me.id,
       userConfig.sourcePlaylists.allWeeklyId,
       tc.dataDir,
-      (msg) => tc.log('info', msg),
+      (msg, level) => tc.log(level ?? 'info', msg),
     );
 
     const force = !!tc.body.force;

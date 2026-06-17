@@ -8,21 +8,38 @@ import {
 } from '../lib/pagination.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
 import type { SimplePlaylist } from '../lib/types.js';
+import {
+  redisDeleteCache,
+  redisLoadCache,
+  redisSaveCache,
+} from '../web/redis-config-store.js';
 
 const NON_LISTENED_CACHE = 'non-listened-cache.json';
+const NON_LISTENED_REDIS = 'nonListened';
 
 interface NonListenedCache {
   playlists: SimplePlaylist[];
 }
 
-/** Invalidate the non-listened playlists and listening time caches. */
-export function invalidateNonListenedCache(dataDir: string): void {
+/**
+ * Invalidate the non-listened playlists and listening time caches — both the
+ * local files and the durable Redis copies (fire-and-forget so callers can stay
+ * synchronous). Pass `userId` to also clear Redis.
+ */
+export function invalidateNonListenedCache(
+  dataDir: string,
+  userId?: string,
+): void {
   for (const file of [NON_LISTENED_CACHE, LISTENING_TIME_CACHE]) {
     try {
       fs.unlinkSync(path.join(dataDir, file));
     } catch {
       /* missing file is fine */
     }
+  }
+  if (userId) {
+    void redisDeleteCache(userId, NON_LISTENED_REDIS);
+    void redisDeleteCache(userId, 'listeningTime');
   }
 }
 
@@ -38,7 +55,7 @@ export async function getNonListenedPlaylists(
   userId: string,
   allWeeklyId: string,
   dataDir: string,
-  log?: (message: string) => void,
+  log?: (message: string, level?: 'info' | 'debug') => void,
 ): Promise<{ playlists: SimplePlaylist[]; awTrackIds: Set<string> }> {
   const emit = log ?? (() => {});
   const cachePath = path.join(dataDir, NON_LISTENED_CACHE);
@@ -46,16 +63,20 @@ export async function getNonListenedPlaylists(
   const awTrackIds = new Set(await getAllPlaylistTracks(ctx, allWeeklyId));
   emit(`Loaded ${awTrackIds.size} tracks from All Weekly`);
 
+  // Cache: prefer the local file, fall back to the durable Redis copy so a
+  // fresh/ephemeral container reuses the scan instead of re-paginating.
+  let cached: NonListenedCache | null = null;
   try {
-    const cached: NonListenedCache = JSON.parse(
-      fs.readFileSync(cachePath, 'utf8'),
-    );
-    if (cached.playlists != null) {
-      emit(`Using cached non-listened playlists (${cached.playlists.length})`);
-      return { playlists: cached.playlists, awTrackIds };
-    }
+    cached = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
   } catch {
-    /* cache miss */
+    cached = await redisLoadCache<NonListenedCache>(
+      userId,
+      NON_LISTENED_REDIS,
+    ).catch(() => null);
+  }
+  if (cached?.playlists != null) {
+    emit(`Using cached non-listened playlists (${cached.playlists.length})`);
+    return { playlists: cached.playlists, awTrackIds };
   }
 
   const allPlaylists = await getAllUserPlaylists(ctx, userId);
@@ -76,11 +97,12 @@ export async function getNonListenedPlaylists(
     const hasOverlap = trackIds.some((id) => awTrackIds.has(id));
 
     if (hasOverlap) {
-      emit(`  ${pl.name} — AW overlap found, cutoff reached`);
+      // Per-playlist scan progress is debug-level (hidden unless toggled on).
+      emit(`  ${pl.name} — AW overlap found, cutoff reached`, 'debug');
       break;
     }
 
-    emit(`  ${pl.name} — non-listened (${i + 1})`);
+    emit(`  ${pl.name} — non-listened (${i + 1})`, 'debug');
     nonListened.push(pl);
   }
 
@@ -88,7 +110,13 @@ export async function getNonListenedPlaylists(
   emit(`Result: ${nonListened.length} non-listened playlists`);
 
   const cache: NonListenedCache = { playlists: nonListened };
-  fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2));
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2));
+  } catch {
+    /* fs is optional (ephemeral container) — Redis is the durable copy */
+  }
+  await redisSaveCache(userId, NON_LISTENED_REDIS, cache).catch(() => {});
 
   return { playlists: nonListened, awTrackIds };
 }

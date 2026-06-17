@@ -175,6 +175,9 @@
   .log-entry.success { color: #1DB954; }
   .log-entry.warn { color: #f1c40f; }
   .log-entry.error { color: #e74c3c; }
+  .log-entry.debug { color: #777; }
+  /* Debug lines (e.g. per-playlist scan progress) are hidden until toggled on. */
+  #logPanel:not(.show-debug) .log-entry.debug { display: none; }
   .log-header {
     display: flex; justify-content: space-between; align-items: center;
     margin-bottom: 8px;
@@ -742,6 +745,7 @@
     <div class="log-header">
       <h2>Live Log</h2>
       <div style="display:flex;align-items:center;gap:8px;">
+        <label class="toggle"><input type="checkbox" id="logShowDebug" onchange="document.getElementById('logPanel').classList.toggle('show-debug', this.checked)"> Debug</label>
         <label class="toggle"><input type="checkbox" id="logAutoScroll" checked> Auto-scroll</label>
         <button class="secondary" onclick="clearLog()">Clear</button>
       </div>
@@ -1098,7 +1102,7 @@ function handleMessage({ type, data }) {
       // Server broadcasts logs as either a {level, message, ts} object or a
       // bare string (e.g. playlist-scan progress); normalize both shapes.
       const p = typeof data === 'string' ? { message: data } : data;
-      log(p.level, p.message, p.ts);
+      log(p.level || 'info', p.message, p.ts);
       break;
     }
 

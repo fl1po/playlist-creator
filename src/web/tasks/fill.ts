@@ -111,6 +111,6 @@ export const fillTask: TaskDefinition<FillEvents, FillCacheKey> = {
 
   cleanup(tc) {
     searchedArtists.clear();
-    invalidateNonListenedCache(tc.dataDir);
+    invalidateNonListenedCache(tc.dataDir, tc.userId);
   },
 };

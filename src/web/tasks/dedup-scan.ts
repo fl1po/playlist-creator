@@ -36,7 +36,7 @@ export const dedupScanTask: TaskDefinition<DedupScanEvents> = {
       me.id,
       userConfig.sourcePlaylists.allWeeklyId,
       tc.dataDir,
-      (msg) => tc.log('info', msg),
+      (msg, level) => tc.log(level ?? 'info', msg),
     );
 
     const scanResults: Array<{

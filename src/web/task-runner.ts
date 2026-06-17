@@ -13,12 +13,17 @@ export type BroadcastEventMap = Record<string, unknown>;
 
 /** Events every task gets without declaring them. */
 export interface BaseEvents extends BroadcastEventMap {
-  log: { level: 'info' | 'warn' | 'error' | 'success'; message: string };
+  log: {
+    level: 'info' | 'warn' | 'error' | 'success' | 'debug';
+    message: string;
+  };
   'data:save': { key: string; value: unknown };
 }
 
 /** Typed broadcast emitter. */
-export type TypedEmit<E extends BroadcastEventMap> = <K extends keyof E & string>(
+export type TypedEmit<E extends BroadcastEventMap> = <
+  K extends keyof E & string,
+>(
   type: K,
   data: E[K],
 ) => void;
@@ -66,7 +71,7 @@ export interface TaskContext<
   emit: TypedEmit<E>;
   /** Sugar for `emit('log', { level, message })`. */
   log: (
-    level: 'info' | 'warn' | 'error' | 'success',
+    level: 'info' | 'warn' | 'error' | 'success' | 'debug',
     message: string,
   ) => void;
   /**
@@ -227,11 +232,14 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
           });
 
           const hydrateAndRun = async () => {
+            // Every task assumes its data dir exists (services write cache files
+            // into it). The client no longer hydrates caches, so the old
+            // mkdir-on-hydrate path may not run — create it unconditionally.
+            fs.mkdirSync(session.dataDir, { recursive: true });
             if (def.caches) {
               for (const binding of def.caches) {
                 const value = tc.caches[binding.key];
                 if (value === undefined) continue;
-                fs.mkdirSync(session.dataDir, { recursive: true });
                 fs.writeFileSync(
                   path.join(session.dataDir, binding.file),
                   JSON.stringify(value, null, 2),
