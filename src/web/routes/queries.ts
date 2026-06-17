@@ -7,18 +7,14 @@ import {
 } from '../../lib/cache-files.js';
 import { getAllUserPlaylists } from '../../lib/pagination.js';
 import { createSpotifyContext } from '../../lib/spotify-context.js';
-import {
-  redisLoadCache,
-  redisLoadFillHistory,
-  redisLoadTrustedArtists,
-} from '../redis-config-store.js';
+import { redisLoadCache, redisLoadFillHistory } from '../redis-config-store.js';
 import type { RouteContext } from '../route-context.js';
 
 export function queryRoutes(ctx: RouteContext): Router {
   const router = Router();
 
   // Find artist (local JSON search)
-  router.post('/find-artist', (req, res) => {
+  router.post('/find-artist', async (req, res) => {
     const session = ctx.requireSession(req, res);
     if (!session) return;
 
@@ -28,11 +24,7 @@ export function queryRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    // Accept client-provided trusted artists or load from file
-    const trusted = (req.body?.trustedArtists ??
-      ctx.loadTrustedArtists(session.dataDir)) as
-      | import('../../lib/types.js').TrustedArtistsFile
-      | null;
+    const trusted = await ctx.loadTrustedArtistsOrRedis(session);
     if (!trusted) {
       res.status(500).json({
         error: 'trusted-artists.json not found — run recalculate first',
@@ -77,11 +69,7 @@ export function queryRoutes(ctx: RouteContext): Router {
     const session = ctx.requireSession(req, res);
     if (!session) return;
 
-    const trusted =
-      ctx.loadTrustedArtists(session.dataDir) ??
-      ((await redisLoadTrustedArtists(session.userId)) as
-        | import('../../lib/types.js').TrustedArtistsFile
-        | null);
+    const trusted = await ctx.loadTrustedArtistsOrRedis(session);
     if (!trusted) {
       res.status(500).json({ error: 'trusted-artists.json not found' });
       return;
@@ -113,11 +101,7 @@ export function queryRoutes(ctx: RouteContext): Router {
     const session = ctx.requireSession(req, res);
     if (!session) return;
 
-    const trusted =
-      ctx.loadTrustedArtists(session.dataDir) ??
-      ((await redisLoadTrustedArtists(session.userId)) as
-        | import('../../lib/types.js').TrustedArtistsFile
-        | null);
+    const trusted = await ctx.loadTrustedArtistsOrRedis(session);
 
     let overview: unknown = null;
     let scoreDistribution: unknown[] | null = null;

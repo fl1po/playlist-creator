@@ -1094,9 +1094,13 @@ function handleMessage({ type, data }) {
       else document.getElementById('statusText').textContent = 'Connected';
       break;
 
-    case 'log':
-      log(data.level, data.message, data.ts);
+    case 'log': {
+      // Server broadcasts logs as either a {level, message, ts} object or a
+      // bare string (e.g. playlist-scan progress); normalize both shapes.
+      const p = typeof data === 'string' ? { message: data } : data;
+      log(p.level, p.message, p.ts);
       break;
+    }
 
     // Fill events
     case 'fill:start':
@@ -1815,10 +1819,15 @@ async function loadArtists() {
   countEl.textContent = 'Loading...';
   const priorities = activeFilters;
 
-  // Try localStorage first (stateless mode), then server
-  const trusted = Store.get('trustedArtists');
+  // Backend is the source of truth — fetch the server, fall back to localStorage
+  // (stateless/offline mode) only if the request fails.
   let artists;
-  if (trusted?.artistCounts) {
+  const res = await api('GET', `/api/artists?priorities=${[...priorities].join(',')}&sort=score`);
+  if (res.ok) {
+    artists = res.artists;
+  } else {
+    const trusted = Store.get('trustedArtists');
+    if (!trusted?.artistCounts) { countEl.textContent = ''; log('error', res.error || 'Failed to load artists'); return; }
     artists = Object.entries(trusted.artistCounts)
       .filter(([, d]) => d.priority !== null && priorities.has(d.priority))
       .sort((a, b) => {
@@ -1826,10 +1835,6 @@ async function loadArtists() {
         return b[1].score - a[1].score;
       })
       .map(([name, data]) => ({ name, ...data }));
-  } else {
-    const res = await api('GET', `/api/artists?priorities=${[...priorities].join(',')}&sort=score`);
-    if (!res.ok) { countEl.textContent = ''; log('error', res.error || 'Failed to load artists'); return; }
-    artists = res.artists;
   }
 
   const tbody = document.getElementById('artistTableBody');
@@ -2542,19 +2547,22 @@ function buildArtistRankIndex(entries) {
 
 async function ensureArtistRankIndex() {
   if (artistRankIndex.size > 0) return;
+  // Backend is the source of truth — fetch the server first, fall back to
+  // localStorage only if it fails.
+  if (!artistRankIndexFetched) {
+    artistRankIndexFetched = true;
+    const res = await api('GET', '/api/artists?priorities=1,2,3,4&sort=score');
+    if (res?.ok && res.artists) {
+      buildArtistRankIndex(res.artists);
+      if (np.state) renderNowPlaying(); // refresh tooltips now that ranks exist
+      return;
+    }
+  }
   const trusted = Store.get('trustedArtists');
   if (trusted?.artistCounts) {
     buildArtistRankIndex(
       Object.entries(trusted.artistCounts).map(([name, d]) => ({ name, ...d })),
     );
-    return;
-  }
-  if (artistRankIndexFetched) return;
-  artistRankIndexFetched = true;
-  const res = await api('GET', '/api/artists?priorities=1,2,3,4&sort=score');
-  if (res?.ok && res.artists) {
-    buildArtistRankIndex(res.artists);
-    if (np.state) renderNowPlaying(); // refresh tooltips now that ranks exist
   }
 }
 

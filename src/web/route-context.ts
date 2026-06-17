@@ -20,6 +20,7 @@ import type { Broadcaster } from './broadcast.js';
 import {
   RedisUserConfigStore,
   isRedisConfigured,
+  redisLoadTrustedArtists,
 } from './redis-config-store.js';
 import { getBearerToken, getRefreshToken, getSessionUserId } from './session.js';
 import type { TaskMutex } from './task-mutex.js';
@@ -53,6 +54,9 @@ export interface RouteContext {
     res: express.Response,
   ): UserSession | null;
   loadTrustedArtists(dataDir: string): TrustedArtistsFile | null;
+  loadTrustedArtistsOrRedis(
+    session: UserSession,
+  ): Promise<TrustedArtistsFile | null>;
 }
 
 export interface RouteContextDeps {
@@ -246,6 +250,17 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
     }
   }
 
+  // Load trusted artists from the local file, falling back to the durable
+  // Redis copy (e.g. ephemeral filesystem). Backend is the source of truth.
+  async function loadTrustedArtistsOrRedis(
+    session: UserSession,
+  ): Promise<TrustedArtistsFile | null> {
+    const local = loadTrustedArtists(session.dataDir);
+    if (local) return local;
+    const fromRedis = await redisLoadTrustedArtists(session.userId);
+    return fromRedis as TrustedArtistsFile | null;
+  }
+
   return {
     broadcaster,
     broadcast,
@@ -263,5 +278,6 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
     getOrCreateUserSession,
     requireSession,
     loadTrustedArtists,
+    loadTrustedArtistsOrRedis,
   };
 }

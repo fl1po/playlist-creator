@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { broadcastEvents } from '../../lib/service-events.js';
-import { type BatchCache, toCachedScanResult } from '../../lib/types.js';
+import {
+  type BatchCache,
+  type TrustedArtistsFile,
+  toCachedScanResult,
+} from '../../lib/types.js';
 import type { PriorityCalculatorEventMap } from '../../services/priority-calculator.js';
 import {
   type PriorityChange,
@@ -10,10 +14,12 @@ import {
   pickReusableScans,
   recalculate,
   snapshotPriorities,
+  snapshotPrioritiesFrom,
 } from '../../services/recalculate.js';
 import { syncIfNeeded } from '../priority-diff.js';
 import {
   redisLoadBatchCache,
+  redisLoadTrustedArtists,
   redisSaveBatchCache,
   redisSaveTrustedArtists,
 } from '../redis-config-store.js';
@@ -64,7 +70,16 @@ export const recalculateTask: TaskDefinition<
     }
 
     const trustedPath = path.join(tc.dataDir, 'trusted-artists.json');
-    const prior = snapshotPriorities(trustedPath);
+    let prior = snapshotPriorities(trustedPath);
+    if (prior.size === 0) {
+      // No local file (e.g. ephemeral filesystem) — fall back to the durable
+      // Redis copy so we diff against the real prior priorities instead of
+      // treating every artist as a brand-new promotion.
+      const fromRedis = (await redisLoadTrustedArtists(
+        tc.userId,
+      )) as TrustedArtistsFile | null;
+      prior = snapshotPrioritiesFrom(fromRedis);
+    }
 
     const result = await recalculate({
       ctx: tc.ctx,
