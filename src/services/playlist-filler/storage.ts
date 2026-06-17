@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { BatchCache, TrustedArtistsFile } from '../../lib/types.js';
 import {
+  redisLoadBatchCache,
+  redisLoadTrustedArtists,
   redisSaveBatchCache,
   redisSaveFillHistory,
   redisSaveTrustedArtists,
@@ -119,8 +121,13 @@ export class RedisAndClientStorage implements FillStorage {
     return this.fs.dataDir;
   }
 
-  loadBatchCache(): Promise<BatchCache> {
-    return this.fs.loadBatchCache();
+  async loadBatchCache(): Promise<BatchCache> {
+    // Prefer the local file, but fall back to Redis when it is empty/missing
+    // (e.g. a fresh container) so the durable backend copy is used.
+    const fromFile = await this.fs.loadBatchCache();
+    if (fromFile && Object.keys(fromFile).length > 0) return fromFile;
+    const fromRedis = await redisLoadBatchCache(this.userId);
+    return (fromRedis as BatchCache) ?? fromFile;
   }
   async saveBatchCache(c: BatchCache): Promise<void> {
     await this.fs.saveBatchCache(c);
@@ -131,8 +138,18 @@ export class RedisAndClientStorage implements FillStorage {
       /* redis optional */
     }
   }
-  loadTrustedArtists(): Promise<TrustedArtistsFile> {
-    return this.fs.loadTrustedArtists();
+  async loadTrustedArtists(): Promise<TrustedArtistsFile> {
+    // Prefer the local file, but fall back to Redis when it is missing so a
+    // fresh container can still run a fill from the durable backend copy.
+    try {
+      return await this.fs.loadTrustedArtists();
+    } catch {
+      const fromRedis = await redisLoadTrustedArtists(this.userId);
+      if (fromRedis) return fromRedis as TrustedArtistsFile;
+      throw new Error(
+        'trusted-artists.json not found and no Redis copy available',
+      );
+    }
   }
   async saveTrustedArtists(t: TrustedArtistsFile): Promise<void> {
     await this.fs.saveTrustedArtists(t);

@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  getPlaylistTracksGroupedByWeek,
   type WeekBreakdownEntry,
+  getPlaylistTracksGroupedByWeek,
 } from '../../domain/aw-breakdown.js';
 import { formatHm } from '../../domain/tracks.js';
 import { AW_BREAKDOWN_CACHE } from '../../lib/cache-files.js';
+import { redisLoadCache, redisSaveCache } from '../redis-config-store.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -45,7 +46,15 @@ export const awBreakdownTask: TaskDefinition<
     try {
       cached = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
     } catch {
-      /* no cache yet */
+      // No local file — fall back to the durable Redis copy (fresh container).
+      try {
+        cached = await redisLoadCache<AwBreakdownCache>(
+          tc.userId,
+          'awBreakdown',
+        );
+      } catch {
+        /* redis optional */
+      }
     }
 
     const awInfo = await tc.ctx.call(
@@ -93,6 +102,11 @@ export const awBreakdownTask: TaskDefinition<
     fs.mkdirSync(tc.dataDir, { recursive: true });
     fs.writeFileSync(cachePath, JSON.stringify(result, null, 2));
     tc.emitData('awBreakdown', result);
+    try {
+      await redisSaveCache(tc.userId, 'awBreakdown', result);
+    } catch {
+      /* redis optional */
+    }
     tc.emit('awBreakdown:complete', result);
 
     const avgTracks =

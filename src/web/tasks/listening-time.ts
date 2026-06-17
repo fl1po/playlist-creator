@@ -9,6 +9,7 @@ import {
 import { getPlaylistTotalDuration } from '../../lib/pagination.js';
 import { getNonListenedPlaylists } from '../../services/non-listened-playlists.js';
 import { broadcastApiCallbacks } from '../../services/playlist-filler/subscribers.js';
+import { redisLoadCache, redisSaveCache } from '../redis-config-store.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -69,7 +70,17 @@ export const listeningTimeTask: TaskDefinition<
       try {
         snapshots = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
       } catch {
-        /* no cache yet */
+        // No local file — fall back to the durable Redis copy so a fresh
+        // container reuses snapshots instead of repaginating every playlist.
+        try {
+          snapshots =
+            (await redisLoadCache<DurationSnapshots>(
+              tc.userId,
+              'durationSnapshots',
+            )) ?? {};
+        } catch {
+          /* redis optional */
+        }
       }
     }
 
@@ -154,6 +165,12 @@ export const listeningTimeTask: TaskDefinition<
 
     tc.emitData('durationSnapshots', snapshots);
     tc.emitData('listeningTime', result);
+    try {
+      await redisSaveCache(tc.userId, 'durationSnapshots', snapshots);
+      await redisSaveCache(tc.userId, 'listeningTime', result);
+    } catch {
+      /* redis optional */
+    }
 
     const avg = candidates.length > 0 ? totalMs / candidates.length : 0;
     tc.log(

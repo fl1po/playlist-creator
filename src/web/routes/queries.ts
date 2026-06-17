@@ -8,6 +8,7 @@ import {
 import { getAllUserPlaylists } from '../../lib/pagination.js';
 import { createSpotifyContext } from '../../lib/spotify-context.js';
 import {
+  redisLoadCache,
   redisLoadFillHistory,
   redisLoadTrustedArtists,
 } from '../redis-config-store.js';
@@ -76,8 +77,11 @@ export function queryRoutes(ctx: RouteContext): Router {
     const session = ctx.requireSession(req, res);
     if (!session) return;
 
-    const trusted = ctx.loadTrustedArtists(session.dataDir)
-      ?? (await redisLoadTrustedArtists(session.userId)) as import('../../lib/types.js').TrustedArtistsFile | null;
+    const trusted =
+      ctx.loadTrustedArtists(session.dataDir) ??
+      ((await redisLoadTrustedArtists(session.userId)) as
+        | import('../../lib/types.js').TrustedArtistsFile
+        | null);
     if (!trusted) {
       res.status(500).json({ error: 'trusted-artists.json not found' });
       return;
@@ -109,8 +113,11 @@ export function queryRoutes(ctx: RouteContext): Router {
     const session = ctx.requireSession(req, res);
     if (!session) return;
 
-    const trusted = ctx.loadTrustedArtists(session.dataDir)
-      ?? (await redisLoadTrustedArtists(session.userId)) as import('../../lib/types.js').TrustedArtistsFile | null;
+    const trusted =
+      ctx.loadTrustedArtists(session.dataDir) ??
+      ((await redisLoadTrustedArtists(session.userId)) as
+        | import('../../lib/types.js').TrustedArtistsFile
+        | null);
 
     let overview: unknown = null;
     let scoreDistribution: unknown[] | null = null;
@@ -288,9 +295,10 @@ export function queryRoutes(ctx: RouteContext): Router {
     }
   });
 
-  // Cached GET routes
-  function cachedGet(route: string, cacheFile: string) {
-    router.get(route, (req, res) => {
+  // Cached GET routes. Prefer the local file, then fall back to the durable
+  // Redis copy so display stays correct on a fresh/ephemeral filesystem.
+  function cachedGet(route: string, cacheFile: string, redisName: string) {
+    router.get(route, async (req, res) => {
       const session = ctx.requireSession(req, res);
       if (!session) return;
       try {
@@ -298,13 +306,20 @@ export function queryRoutes(ctx: RouteContext): Router {
           fs.readFileSync(path.join(session.dataDir, cacheFile), 'utf8'),
         );
         res.json({ ok: true, ...cached });
+        return;
       } catch {
-        res.json({ ok: false });
+        /* no local file — try Redis below */
       }
+      const fromRedis = await redisLoadCache<Record<string, unknown>>(
+        session.userId,
+        redisName,
+      );
+      if (fromRedis) res.json({ ok: true, ...fromRedis });
+      else res.json({ ok: false });
     });
   }
-  cachedGet('/listening-time', LISTENING_TIME_CACHE);
-  cachedGet('/aw-breakdown', AW_BREAKDOWN_CACHE);
+  cachedGet('/listening-time', LISTENING_TIME_CACHE, 'listeningTime');
+  cachedGet('/aw-breakdown', AW_BREAKDOWN_CACHE, 'awBreakdown');
 
   return router;
 }

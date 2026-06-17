@@ -15,6 +15,12 @@ import {
 } from '../services/playlist-clearer.js';
 import { createAuthManager, fetchSpotifyUserId } from './auth.js';
 import { createBroadcaster } from './broadcast.js';
+import {
+  redisLoadBatchCache,
+  redisLoadCache,
+  redisLoadFillHistory,
+  redisLoadTrustedArtists,
+} from './redis-config-store.js';
 import { createRouteContext } from './route-context.js';
 import { authRoutes } from './routes/auth.js';
 import { configRoutes } from './routes/config.js';
@@ -146,15 +152,28 @@ app.get('/api/export-data', async (req, res) => {
   const config =
     read('user-config.json') ?? (await session.userConfigStore.load());
 
+  // Backend is the source of truth: prefer local files, but fall back to Redis
+  // so a fresh/ephemeral filesystem (e.g. after a Railway restart) still serves
+  // the durable copy instead of nulls.
   res.json({
     ok: true,
     config,
-    trustedArtists: read('trusted-artists.json'),
-    batchCache: read('batch-cache.json'),
-    fillHistory: read('fill-history.json'),
-    durationSnapshots: read('duration-snapshots.json'),
-    listeningTime: read('listening-time-cache.json'),
-    awBreakdown: read('aw-breakdown.json'),
+    trustedArtists:
+      read('trusted-artists.json') ??
+      (await redisLoadTrustedArtists(session.userId)),
+    batchCache:
+      read('batch-cache.json') ?? (await redisLoadBatchCache(session.userId)),
+    fillHistory:
+      read('fill-history.json') ?? (await redisLoadFillHistory(session.userId)),
+    durationSnapshots:
+      read('duration-snapshots.json') ??
+      (await redisLoadCache(session.userId, 'durationSnapshots')),
+    listeningTime:
+      read('listening-time-cache.json') ??
+      (await redisLoadCache(session.userId, 'listeningTime')),
+    awBreakdown:
+      read('aw-breakdown.json') ??
+      (await redisLoadCache(session.userId, 'awBreakdown')),
   });
 });
 
@@ -385,9 +404,7 @@ app.get('/api/playback', async (req, res) => {
     // album as primary, and the rest as featured. Fall back to the first artist
     // when the album credit doesn't overlap (e.g. compilations / "Various
     // Artists"), which mirrors the index-0 convention used in scoring.
-    const albumArtistIds = new Set(
-      (item.album.artists ?? []).map((a) => a.id),
-    );
+    const albumArtistIds = new Set((item.album.artists ?? []).map((a) => a.id));
     let primaryArtists = item.artists.filter((a) => albumArtistIds.has(a.id));
     if (primaryArtists.length === 0 && item.artists.length > 0) {
       primaryArtists = [item.artists[0]];
@@ -504,13 +521,28 @@ app.get('/api/album/:id', async (req, res) => {
 
   try {
     const album = await session.client.api.albums.get(req.params.id);
-    const mapTrack = (t: (typeof album.tracks.items)[number]) => ({
-      id: t.id,
-      name: t.name,
-      track_number: t.track_number,
-      duration_ms: t.duration_ms,
-      artists: t.artists.map((a) => a.name).join(', '),
-    });
+    // Split each track's artists into primary vs featured using the album's own
+    // credits — same convention as /api/playback. Any track artist credited on the
+    // album is primary; the rest are featured. Fall back to the first artist when
+    // there's no overlap (compilations / "Various Artists").
+    const albumArtistIds = new Set((album.artists ?? []).map((a) => a.id));
+    const mapTrack = (t: (typeof album.tracks.items)[number]) => {
+      let primary = t.artists.filter((a) => albumArtistIds.has(a.id));
+      if (primary.length === 0 && t.artists.length > 0) {
+        primary = [t.artists[0]];
+      }
+      const primaryIds = new Set(primary.map((a) => a.id));
+      const featured = t.artists.filter((a) => !primaryIds.has(a.id));
+      return {
+        id: t.id,
+        name: t.name,
+        track_number: t.track_number,
+        duration_ms: t.duration_ms,
+        artists: t.artists.map((a) => a.name).join(', '),
+        primaryArtists: primary.map((a) => a.name),
+        featured: featured.map((a) => a.name),
+      };
+    };
     const tracks = album.tracks.items.map(mapTrack);
 
     let offset = album.tracks.items.length;

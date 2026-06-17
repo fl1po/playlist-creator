@@ -431,6 +431,15 @@
     overflow: hidden; text-overflow: ellipsis; margin-top: 2px;
   }
   .now-playing .np-feat { color: #6a6a6a; }
+  .now-playing .np-artist-link { cursor: pointer; }
+  .now-playing .np-artist-link:hover { color: #fff; }
+  .now-playing .np-feat .np-artist-link:hover { color: #999; }
+  .album-track .at-feat { color: #6a6a6a; }
+  tr.artist-flash { animation: artistFlash 1.2s ease-out; }
+  @keyframes artistFlash {
+    0% { background: rgba(29, 185, 84, 0.25); }
+    100% { background: transparent; }
+  }
   .now-playing .np-album {
     font-size: 11px; color: #666; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; margin-top: 1px;
@@ -1346,19 +1355,15 @@ function handleMessage({ type, data }) {
 async function startFill() {
   shouldScrollToLog = true;
   const fresh = document.getElementById('freshToggle').checked;
-  const caches = {};
-  const ta = Store.get('trustedArtists'); if (ta) caches.trustedArtists = ta;
-  const bc = Store.get('batchCache'); if (bc) caches.batchCache = bc;
-  const fh = Store.get('fillHistory'); if (fh) caches.fillHistory = fh;
-  const res = await api('POST', '/api/fill', { fresh, caches });
+  // Backend is the source of truth — do NOT push local caches; the server reads
+  // its own files (falling back to Redis) so stale browser data can't clobber it.
+  const res = await api('POST', '/api/fill', { fresh });
   if (!res.ok) log('error', res.error || 'Failed to start fill');
 }
 
 async function startRecalc() {
   shouldScrollToLog = true;
-  const caches = {};
-  const ta = Store.get('trustedArtists'); if (ta) caches.trustedArtists = ta;
-  const res = await api('POST', '/api/recalculate', { caches });
+  const res = await api('POST', '/api/recalculate', {});
   if (!res.ok) log('error', res.error || 'Failed to start recalculation');
 }
 
@@ -1534,20 +1539,23 @@ async function checkAuth() {
     }
   }
   setAuthenticated(res.authenticated, res.displayName, res.reason);
-  if (res.authenticated) await migrateDataToLocalStorage();
+  if (res.authenticated) await syncDataFromServer();
 }
 
-async function migrateDataToLocalStorage() {
-  // Skip if we already have data locally
-  if (Store.get('trustedArtists')) return;
+// Backend is the source of truth: always refresh localStorage from the server
+// on load so stale browser caches never shadow the durable backend data.
+// (The server's /api/export-data falls back to Redis when its files are empty.)
+async function syncDataFromServer() {
   const res = await api('GET', '/api/export-data');
   if (!res.ok) return;
   const keys = ['trustedArtists', 'batchCache', 'fillHistory', 'durationSnapshots', 'listeningTime', 'awBreakdown'];
-  let migrated = 0;
+  let synced = 0;
   for (const key of keys) {
-    if (res[key]) { Store.set(key, res[key]); migrated++; }
+    // Only overwrite when the backend actually has the dataset; a null means
+    // "no durable copy" (e.g. a regenerable cache), so keep what's local.
+    if (res[key]) { Store.set(key, res[key]); synced++; }
   }
-  if (migrated > 0) log('success', `Migrated ${migrated} data files to local storage`);
+  if (synced > 0) log('success', `Synced ${synced} data sets from server`);
 }
 
 async function logout() {
@@ -1728,20 +1736,19 @@ document.getElementById('ltBudgetHours').addEventListener('change', async functi
 });
 
 async function loadListeningTime() {
-  // Try localStorage first, then server
-  const cached = Store.get('listeningTime');
-  if (cached) { showListeningTimeResult(cached); return; }
+  // Backend is the source of truth — fetch the server, fall back to localStorage.
   const res = await api('GET', '/api/listening-time');
-  if (res.ok) showListeningTimeResult(res);
+  if (res.ok) { showListeningTimeResult(res); return; }
+  const cached = Store.get('listeningTime');
+  if (cached) showListeningTimeResult(cached);
 }
 
 async function calcListeningTime() {
   document.getElementById('ltResult').style.display = 'none';
   shouldScrollToLog = true;
   const force = document.getElementById('ltForceRecalc').checked;
-  const caches = {};
-  const ds = Store.get('durationSnapshots'); if (ds) caches.durationSnapshots = ds;
-  const res = await api('POST', '/api/listening-time', { force, caches });
+  // No client caches — the server reuses its own snapshots (file ?? Redis).
+  const res = await api('POST', '/api/listening-time', { force });
   if (!res.ok) log('error', res.error || 'Failed to start listening time calculation');
 }
 
@@ -1787,20 +1794,19 @@ function toggleAwBreakdown() {
 }
 
 async function loadAwBreakdown() {
-  // Try localStorage first, then server
-  const cached = Store.get('awBreakdown');
-  if (cached) { showAwBreakdownResult(cached); return; }
+  // Backend is the source of truth — fetch the server, fall back to localStorage.
   const res = await api('GET', '/api/aw-breakdown');
-  if (res.ok) showAwBreakdownResult(res);
+  if (res.ok) { showAwBreakdownResult(res); return; }
+  const cached = Store.get('awBreakdown');
+  if (cached) showAwBreakdownResult(cached);
 }
 
 async function calcAwBreakdown() {
   document.getElementById('awResult').style.display = 'none';
   shouldScrollToLog = true;
   const force = document.getElementById('awForceRecalc').checked;
-  const caches = {};
-  const ab = Store.get('awBreakdown'); if (ab) caches.awBreakdown = ab;
-  const res = await api('POST', '/api/aw-breakdown', { force, caches });
+  // No client caches — the server reuses its own cache (file ?? Redis).
+  const res = await api('POST', '/api/aw-breakdown', { force });
   if (!res.ok) log('error', res.error || 'Failed to start AW breakdown calculation');
 }
 
@@ -1845,6 +1851,12 @@ async function loadArtists() {
   }
   document.getElementById('artistTableWrap').classList.add('visible');
   countEl.textContent = `${artists.length} artists`;
+
+  // Rebuild the now-playing rank index so it tracks recalculations. The `artists`
+  // array above is filtered by activeFilters, so rebuild from the full pool.
+  artistRankIndex = new Map();
+  artistRankIndexFetched = false;
+  ensureArtistRankIndex();
 }
 
 function toggleFilter(p) {
@@ -2508,19 +2520,87 @@ async function fetchPlayback() {
   updateAlbumIfOpen();
 }
 
+// Maps artist name -> { rank, score, priority } across the full trusted pool
+// (priority !== null), ordered by priority tier then score desc — the same order
+// as the bottom artists table. Powers the now-playing hover tooltip.
+let artistRankIndex = new Map();
+let artistRankIndexFetched = false;
+
+function buildArtistRankIndex(entries) {
+  const ranked = entries
+    .filter((a) => a.priority != null)
+    .sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return b.score - a.score;
+    });
+  const idx = new Map();
+  ranked.forEach((a, i) => {
+    idx.set(a.name, { rank: i + 1, score: a.score, priority: a.priority });
+  });
+  artistRankIndex = idx;
+}
+
+async function ensureArtistRankIndex() {
+  if (artistRankIndex.size > 0) return;
+  const trusted = Store.get('trustedArtists');
+  if (trusted?.artistCounts) {
+    buildArtistRankIndex(
+      Object.entries(trusted.artistCounts).map(([name, d]) => ({ name, ...d })),
+    );
+    return;
+  }
+  if (artistRankIndexFetched) return;
+  artistRankIndexFetched = true;
+  const res = await api('GET', '/api/artists?priorities=1,2,3,4&sort=score');
+  if (res?.ok && res.artists) {
+    buildArtistRankIndex(res.artists);
+    if (np.state) renderNowPlaying(); // refresh tooltips now that ranks exist
+  }
+}
+
+function scrollToArtist(name) {
+  const row = document.querySelector(`tr[data-artist="${CSS.escape(name)}"]`);
+  if (!row) return; // not currently rendered → no-op, leave filters untouched
+  row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  row.classList.remove('artist-flash');
+  void row.offsetWidth; // restart the flash animation on a repeat click
+  row.classList.add('artist-flash');
+  setTimeout(() => row.classList.remove('artist-flash'), 1200);
+}
+
+// Append artist names to `parent`, wrapping any trusted artist in a clickable
+// span with a rank/score tooltip. Names are untrusted, so always use text nodes.
+function appendArtistNames(parent, names) {
+  names.forEach((name, i) => {
+    if (i > 0) parent.appendChild(document.createTextNode(', '));
+    const info = artistRankIndex.get(name);
+    if (info) {
+      const span = document.createElement('span');
+      span.className = 'np-artist-link';
+      span.textContent = name;
+      span.title = `#${info.rank} overall · P${info.priority} · score ${info.score}`;
+      span.onclick = () => scrollToArtist(name);
+      parent.appendChild(span);
+    } else {
+      parent.appendChild(document.createTextNode(name));
+    }
+  });
+}
+
 function renderNpArtist(track) {
   const el = document.getElementById('npArtist');
+  if (artistRankIndex.size === 0) ensureArtistRankIndex();
   const primary = (track.primaryArtists && track.primaryArtists.length)
-    ? track.primaryArtists.join(', ')
-    : track.artists;
+    ? track.primaryArtists
+    : (track.artists ? track.artists.split(', ') : []);
   const featured = track.featured || [];
-  // Build with text nodes — artist names are untrusted, so never innerHTML.
   el.textContent = '';
-  el.appendChild(document.createTextNode(primary));
+  appendArtistNames(el, primary);
   if (featured.length) {
     const span = document.createElement('span');
     span.className = 'np-feat';
-    span.textContent = ' feat. ' + featured.join(', ');
+    span.appendChild(document.createTextNode(' feat. '));
+    appendArtistNames(span, featured);
     el.appendChild(span);
   }
 }
@@ -2624,11 +2704,17 @@ async function openAlbum() {
   document.getElementById('albumOverlay').classList.remove('hidden');
 
   setText('albumTitle', s.track.album);
-  setText('albumArtist', s.track.artists);
+  // Seed with album-level artists, not the song's full string (which includes
+  // this track's features) — renderAlbumMeta overwrites with the real album
+  // credits once loaded.
+  setText('albumArtist', (s.track.primaryArtists && s.track.primaryArtists.length)
+    ? s.track.primaryArtists.join(', ')
+    : s.track.artists);
   setText('albumInfo', '');
   document.getElementById('albumCover').src = s.track.albumArtLarge || s.track.albumArt || '';
 
   if (albumCache?.id === albumId) {
+    renderAlbumMeta();
     renderAlbumTracks();
     return;
   }
@@ -2683,9 +2769,11 @@ function renderAlbumTracks() {
   const container = document.getElementById('albumTracks');
   container.innerHTML = data.tracks.map(t => {
     const active = newActive === t.id ? ' active' : '';
+    const feat = (t.featured && t.featured.length)
+      ? `<span class="at-feat"> feat. ${esc(t.featured.join(', '))}</span>` : '';
     return `<div class="album-track${active}">` +
       `<span class="at-num">${t.track_number}</span>` +
-      `<span class="at-name" title="${esc(t.artists)}">${esc(t.name)}</span>` +
+      `<span class="at-name" title="${esc(t.artists)}">${esc(t.name)}${feat}</span>` +
       (t.liked ? `<span class="at-liked">\u2665</span>` : '') +
       `<span class="at-pop"><span class="at-pop-fill" style="width:${t.popularity ?? 0}%"></span></span>` +
       `<span class="at-dur">${fmtClock(t.duration_ms)}</span>` +

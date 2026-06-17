@@ -103,3 +103,27 @@ export async function redisLoadBatchCache(
   if (!raw) return null;
   return typeof raw === 'string' ? JSON.parse(raw) : raw;
 }
+
+// ── Generic per-user JSON cache ─────────────────────────────────────────────
+// Used for the regenerable analytics caches (durationSnapshots / listeningTime /
+// awBreakdown) so they survive an ephemeral filesystem the same way the core
+// datasets do. `name` is the key prefix, e.g. `durationSnapshots:<userId>`.
+
+export async function redisSaveCache(
+  userId: string,
+  name: string,
+  data: unknown,
+): Promise<void> {
+  if (!isRedisConfigured()) return;
+  await getRedis().set(`${name}:${userId}`, JSON.stringify(data));
+}
+
+export async function redisLoadCache<T = unknown>(
+  userId: string,
+  name: string,
+): Promise<T | null> {
+  if (!isRedisConfigured()) return null;
+  const raw = await getRedis().get<string>(`${name}:${userId}`);
+  if (!raw) return null;
+  return (typeof raw === 'string' ? JSON.parse(raw) : raw) as T;
+}
