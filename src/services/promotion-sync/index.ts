@@ -86,6 +86,10 @@ export type PromotionProgressEvent =
       playlist: string;
       removed: number;
       added: number;
+      /** Demoted artists whose tracks were removed (removal events). */
+      removedArtists?: string[];
+      /** Promoted artists whose tracks were added (addition events). */
+      addedArtists?: string[];
     };
 
 // ── Input / result ───────────────────────────────────────────────────────────
@@ -222,6 +226,7 @@ export async function syncPriorityChanges(
           playlist: pl.name,
           removed: removeIds.length,
           added: 0,
+          removedArtists: [...removedArtists],
         });
       }
     }
@@ -317,11 +322,15 @@ export async function syncPriorityChanges(
       if (trackIds.length > 0) {
         await writes.addTracks(pl.id, trackIds);
         bump(pl.name, 'added', trackIds.length);
+        const addedArtists = [
+          ...new Set(collected.map((c) => c.release.artistName)),
+        ];
         onProgress?.({
           phase: 'playlist-synced',
           playlist: pl.name,
           removed: 0,
           added: trackIds.length,
+          addedArtists,
         });
       }
     }

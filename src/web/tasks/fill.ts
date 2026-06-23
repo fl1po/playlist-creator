@@ -70,6 +70,7 @@ export const fillTask: TaskDefinition<FillEvents, FillCacheKey> = {
       externalPlaylistSources: userConfig.externalPlaylistSources,
       genreFilters: userConfig.genreFilters,
       editorialFilter: userConfig.editorialFilter,
+      scoring: userConfig.scoring,
     };
 
     const result = await runFill({
@@ -88,6 +89,15 @@ export const fillTask: TaskDefinition<FillEvents, FillCacheKey> = {
       result.prioritiesBefore,
       result.prioritiesAfter,
     );
+    // Surface the per-artist priority changes the same way recalc does, so a
+    // fill also shows who was promoted/demoted — not just the sync counts.
+    if (changes.length > 0) {
+      changes.sort(
+        (a, b) =>
+          (a.to ?? 99) - (b.to ?? 99) || (a.from ?? 99) - (b.from ?? 99),
+      );
+      tc.broadcast('recalc:changes', { changes });
+    }
     try {
       await syncIfNeeded(
         changes,

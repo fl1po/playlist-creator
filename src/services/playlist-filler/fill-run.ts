@@ -111,6 +111,7 @@ interface RecalcDeps {
   storage: FillStorage;
   emitter: ServiceEmitter<PlaylistFillerEventMap>;
   sources: SourcePlaylists;
+  scoring?: PlaylistFillerOptions['scoring'];
 }
 
 /**
@@ -126,7 +127,7 @@ async function maybeRecalculate(
   cache: BatchCache,
   targetDate: string,
 ): Promise<boolean> {
-  const { ctx, storage, emitter, sources } = deps;
+  const { ctx, storage, emitter, sources, scoring } = deps;
 
   const live = await fetchSourceSnapshots(ctx, sources);
   const delta = diffSnapshots(cache, live);
@@ -156,6 +157,14 @@ async function maybeRecalculate(
   const result = await recalculate({
     ctx,
     sources,
+    // Honor the user's configured thresholds/weights instead of recalculate's
+    // hardcoded defaults — otherwise a mid-fill recalc silently re-tiers every
+    // artist against the wrong thresholds and mass-demotes them.
+    scoring: scoring && {
+      weights: scoring,
+      thresholds: scoring.priorityThresholds,
+      featuredMultiplier: scoring.featuredMultiplier,
+    },
     preloaded: pickReusableScans(cache, delta),
     prior,
   });
@@ -300,6 +309,7 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
             bestOfAllWeeklyId: cfg.bestOfAllWeeklyId,
             useLikedSongs: cfg.useLikedSongs,
           },
+          scoring: config.scoring,
         },
         cache,
         targetDate,

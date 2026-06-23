@@ -652,8 +652,9 @@
       <h2>Recalculate Priorities</h2>
       <div class="card-row">
         <button id="recalcBtn" onclick="startRecalc()">Recalculate</button>
+        <label class="toggle"><input type="checkbox" id="recalcForce"> Force</label>
       </div>
-      <p class="hint" id="recalcHint">Scan All Weekly and Best of All Weekly playlists to recalculate artist scores and priority tiers (P1-P4).</p>
+      <p class="hint" id="recalcHint">Scan All Weekly and Best of All Weekly playlists to recalculate artist scores and priority tiers (P1-P4). Force re-runs even when source playlists are unchanged (e.g. after a scoring config change).</p>
       <div class="progress-bar" id="recalcProgress"><div class="fill" id="recalcProgressFill"></div></div>
       <div class="progress-text" id="recalcProgressText"></div>
     </div>
@@ -1253,9 +1254,13 @@ function handleMessage({ type, data }) {
       log('info', `Playlist sync started — ${data.demoted} demoted, ${data.promoted} promoted, ${data.playlists} playlist(s)`);
       setFetching(true);
       break;
-    case 'sync:playlistSync':
-      log('info', `  Synced "${data.name}": −${data.removed} +${data.added}`);
+    case 'sync:playlistSync': {
+      let detail = '';
+      if (data.removedArtists?.length) detail += ` (removed ${data.removedArtists.join(', ')})`;
+      if (data.addedArtists?.length) detail += ` (added ${data.addedArtists.join(', ')})`;
+      log('info', `  Synced "${data.name}": −${data.removed} +${data.added}${detail}`);
       break;
+    }
     case 'sync:complete':
       log('success', `Playlist sync complete — ${data.totalRemoved} removed, ${data.totalAdded} added across ${data.playlistsSynced} playlist(s)`);
       setFetching(false);
@@ -1371,7 +1376,8 @@ async function startFill() {
 
 async function startRecalc() {
   shouldScrollToLog = true;
-  const res = await api('POST', '/api/recalculate', {});
+  const force = document.getElementById('recalcForce').checked;
+  const res = await api('POST', '/api/recalculate', { force });
   if (!res.ok) log('error', res.error || 'Failed to start recalculation');
 }
 

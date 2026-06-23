@@ -56,6 +56,13 @@ export interface EditorialFilterConfig {
   minFollowers: number;
 }
 
+export interface ScoringConfig {
+  awWeight: number;
+  boawWeight: number;
+  featuredMultiplier: number;
+  priorityThresholds: { p1: number; p2: number; p3: number; p4: number };
+}
+
 export interface PlaylistFillerOptions {
   freshMode?: boolean;
   allWeeklyId?: string;
@@ -65,4 +72,7 @@ export interface PlaylistFillerOptions {
   externalPlaylistSources?: ExternalPlaylistSource[];
   genreFilters?: import('../../domain/filters.js').GenreFilterLists;
   editorialFilter?: EditorialFilterConfig;
+  /** User scoring config; threaded into the mid-fill recalc so it honors the
+   *  user's thresholds/weights instead of falling back to hardcoded defaults. */
+  scoring?: ScoringConfig;
 }

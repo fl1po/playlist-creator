@@ -18,11 +18,14 @@ import {
   syncPriorityChanges,
 } from '../services/promotion-sync/index.js';
 
-/** Render the loggable decisions; counts go through the sync events instead. */
+/**
+ * Render the loggable decisions; counts go through the sync events instead.
+ * Removed/added artists are now shown inline per playlist (sync:playlistSync),
+ * so only the skip diagnostics (low-popularity / variant-stripped) are logged
+ * here to avoid duplicating the demotion-removed detail.
+ */
 function describeDecision(d: SyncDecision): string | null {
   switch (d.kind) {
-    case 'demotion-removed':
-      return `  ${d.playlist}: removed ${d.trackCount} track(s) from ${d.artists.join(', ')}`;
     case 'low-popularity':
       return `  low-popularity: ${d.artist} — ${d.release} (${d.popularity})`;
     case 'variant-stripped':
@@ -134,6 +137,8 @@ export async function syncIfNeeded(
           name: e.playlist,
           removed: e.removed,
           added: e.added,
+          removedArtists: e.removedArtists,
+          addedArtists: e.addedArtists,
         });
       }
     },
