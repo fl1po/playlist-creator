@@ -1,11 +1,6 @@
-import fs from 'node:fs';
-import path from 'node:path';
+import { BATCH_CACHE, TRUSTED_ARTISTS } from '../../lib/cache-files.js';
 import { broadcastEvents } from '../../lib/service-events.js';
-import {
-  type BatchCache,
-  type TrustedArtistsFile,
-  toCachedScanResult,
-} from '../../lib/types.js';
+import { type BatchCache, toCachedScanResult } from '../../lib/types.js';
 import type { PriorityCalculatorEventMap } from '../../services/priority-calculator.js';
 import { syncIfNeeded } from '../../services/promotion-sync/run.js';
 import { broadcastSyncHandlers } from '../../services/promotion-sync/subscribers.js';
@@ -15,15 +10,8 @@ import {
   pickReusableScans,
   recalculate,
   shouldSkipRecalculation,
-  snapshotPriorities,
   snapshotPrioritiesFrom,
 } from '../../services/recalculate.js';
-import {
-  redisLoadBatchCache,
-  redisLoadTrustedArtists,
-  redisSaveBatchCache,
-  redisSaveTrustedArtists,
-} from '../redis-config-store.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -37,25 +25,17 @@ interface RecalculateEvents extends BaseEvents {
   // interop surface, not the typed emit map.
 }
 
-type RecalculateCacheKey = 'trustedArtists' | 'batchCache';
-
-export const recalculateTask: TaskDefinition<
-  RecalculateEvents,
-  RecalculateCacheKey
-> = {
+export const recalculateTask: TaskDefinition<RecalculateEvents> = {
   name: 'recalculate',
   path: '/recalculate',
   startMessage: 'Recalculation started',
-  caches: [{ key: 'trustedArtists', file: 'trusted-artists.json' }],
 
-  async run(tc: TaskContext<RecalculateEvents, RecalculateCacheKey>) {
+  async run(tc: TaskContext<RecalculateEvents>) {
     tc.log('info', 'Starting priority recalculation...');
 
     const userConfig = await tc.userConfig();
     const force = !!tc.body.force;
-    const cache = (tc.caches.batchCache ??
-      (await redisLoadBatchCache(tc.userId)) ??
-      {}) as BatchCache;
+    const cache: BatchCache = (await tc.cache.load(BATCH_CACHE)) ?? {};
 
     const live = await fetchSourceSnapshots(tc.ctx, userConfig.sourcePlaylists);
     // This task is responsible for creating the baseline trusted-artists
@@ -69,17 +49,7 @@ export const recalculateTask: TaskDefinition<
       return;
     }
 
-    const trustedPath = path.join(tc.dataDir, 'trusted-artists.json');
-    let prior = snapshotPriorities(trustedPath);
-    if (prior.size === 0) {
-      // No local file (e.g. ephemeral filesystem) — fall back to the durable
-      // Redis copy so we diff against the real prior priorities instead of
-      // treating every artist as a brand-new promotion.
-      const fromRedis = (await redisLoadTrustedArtists(
-        tc.userId,
-      )) as TrustedArtistsFile | null;
-      prior = snapshotPrioritiesFrom(fromRedis);
-    }
+    const prior = snapshotPrioritiesFrom(await tc.cache.load(TRUSTED_ARTISTS));
 
     const result = await recalculate({
       ctx: tc.ctx,
@@ -154,10 +124,7 @@ export const recalculateTask: TaskDefinition<
     );
 
     // Persist only after the entire process (including sync) succeeds
-    fs.writeFileSync(
-      trustedPath,
-      JSON.stringify(result.trustedArtists, null, 2),
-    );
+    await tc.cache.save(TRUSTED_ARTISTS, result.trustedArtists);
     tc.emitData('trustedArtists', result.trustedArtists);
     const updatedCache: BatchCache = {
       ...cache,
@@ -167,8 +134,7 @@ export const recalculateTask: TaskDefinition<
       boawScanCache: toCachedScanResult(result.scanResults.boaw),
     };
     tc.emitData('batchCache', updatedCache);
-    await redisSaveBatchCache(tc.userId, updatedCache);
-    await redisSaveTrustedArtists(tc.userId, result.trustedArtists);
+    await tc.cache.save(BATCH_CACHE, updatedCache);
 
     tc.log('success', 'Priorities recalculated and saved');
   },

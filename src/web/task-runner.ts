@@ -1,6 +1,7 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import type express from 'express';
+import { createDurableCache } from '../lib/durable-cache.js';
+import type { DurableCache } from '../lib/durable-cache.js';
 import type { RequestPacer } from '../lib/request-pacer.js';
 import { createSpotifyContext } from '../lib/spotify-context.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
@@ -33,10 +34,7 @@ type UserProfile = Awaited<
   ReturnType<SpotifyClient['api']['currentUser']['profile']>
 >;
 
-export interface TaskContext<
-  E extends BaseEvents = BaseEvents,
-  C extends string = string,
-> {
+export interface TaskContext<E extends BaseEvents = BaseEvents> {
   /** Abort-wrapped Spotify client. */
   client: SpotifyClient;
   /** SpotifyContext with pacer and optional API callbacks. */
@@ -60,8 +58,8 @@ export interface TaskContext<
   checkAbort: () => void;
   /** Shared request pacer. */
   pacer: RequestPacer;
-  /** Client-provided caches (from request body), keyed by declared cache names. */
-  caches: { [K in C]: unknown };
+  /** File-then-Redis durable cache, scoped to this user. */
+  cache: DurableCache;
   /**
    * Emit data back to client for localStorage persistence.
    * Sugar for `emit('data:save', { key, value })`.
@@ -88,23 +86,7 @@ export interface TaskContext<
   me: () => Promise<UserProfile>;
 }
 
-/**
- * Declarative binding from a client-provided cache field on `body.caches` to
- * a file inside the user's data directory. The runner hydrates each binding
- * before `run()` so tasks don't write the same `fs.mkdirSync` + `writeFileSync`
- * pair inline.
- */
-export interface CacheBinding<K extends string = string> {
-  /** Field name on `body.caches`. */
-  key: K;
-  /** Filename inside `dataDir` to write the cache to (JSON-stringified). */
-  file: string;
-}
-
-export interface TaskDefinition<
-  E extends BaseEvents = BaseEvents,
-  C extends string = string,
-> {
+export interface TaskDefinition<E extends BaseEvents = BaseEvents> {
   /** Task name shown in status broadcasts (e.g. "fill"). */
   name: string;
   /** API route path (e.g. "/fill"). Mounted under /api. */
@@ -117,17 +99,12 @@ export interface TaskDefinition<
   apiCallbacks?: (
     broadcast: (type: string, data: unknown) => void,
   ) => ApiCallOptions;
-  /**
-   * Cache fields on `body.caches` to hydrate to disk before `run()`.
-   * Each present cache is written to `dataDir/<file>` as JSON.
-   */
-  caches?: ReadonlyArray<CacheBinding<C>>;
   /** The task body. */
-  run: (tc: TaskContext<E, C>) => Promise<void>;
+  run: (tc: TaskContext<E>) => Promise<void>;
   /** Always runs after task (success, failure, or abort). */
-  cleanup?: (tc: TaskContext<E, C>) => void | Promise<void>;
+  cleanup?: (tc: TaskContext<E>) => void | Promise<void>;
   /** Custom error handler for task-specific error broadcasts. Called before the generic log. */
-  onError?: (tc: TaskContext<E, C>, error: unknown, aborted: boolean) => void;
+  onError?: (tc: TaskContext<E>, error: unknown, aborted: boolean) => void;
   /** Message sent in the immediate HTTP response. */
   startMessage?: string;
 }
@@ -142,9 +119,7 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
   const { taskMutex, broadcaster, pacer } = routeCtx;
 
   return {
-    register<E extends BaseEvents = BaseEvents, C extends string = string>(
-      def: TaskDefinition<E, C>,
-    ) {
+    register<E extends BaseEvents = BaseEvents>(def: TaskDefinition<E>) {
       const method = def.method ?? 'post';
       app[method](
         `/api${def.path}`,
@@ -188,7 +163,7 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
           let mePromise: Promise<UserProfile> | undefined;
           const checkAbort = () => taskMutex.checkAbort();
 
-          const tc: TaskContext<E, C> = {
+          const tc: TaskContext<E> = {
             client: abortableClient,
             ctx,
             body,
@@ -198,8 +173,10 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
             broadcast: userBroadcast,
             checkAbort,
             pacer,
-            caches: ((body.caches as Record<string, unknown>) ??
-              {}) as TaskContext<E, C>['caches'],
+            cache: createDurableCache({
+              userId: session.userId,
+              dataDir: session.dataDir,
+            }),
             emitData: (key, value) => {
               userBroadcast('data:save', { key, value });
             },
@@ -231,25 +208,13 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
             message: def.startMessage ?? `${def.name} started`,
           });
 
-          const hydrateAndRun = async () => {
-            // Every task assumes its data dir exists (services write cache files
-            // into it). The client no longer hydrates caches, so the old
-            // mkdir-on-hydrate path may not run — create it unconditionally.
+          const runTask = async () => {
+            // Every task assumes its data dir exists (services write cache files into it).
             fs.mkdirSync(session.dataDir, { recursive: true });
-            if (def.caches) {
-              for (const binding of def.caches) {
-                const value = tc.caches[binding.key];
-                if (value === undefined) continue;
-                fs.writeFileSync(
-                  path.join(session.dataDir, binding.file),
-                  JSON.stringify(value, null, 2),
-                );
-              }
-            }
             await def.run(tc);
           };
 
-          hydrateAndRun()
+          runTask()
             .catch((err) => {
               def.onError?.(tc, err, abort.aborted);
               if (abort.aborted) {

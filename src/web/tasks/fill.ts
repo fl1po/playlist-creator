@@ -22,18 +22,16 @@ interface FillEvents extends BaseEvents {
   // interop surface.
 }
 
-type FillCacheKey = 'trustedArtists' | 'batchCache' | 'fillHistory';
-
 const searchedArtists = new Set<string>();
 export const getSearchedArtists = (): ReadonlySet<string> => searchedArtists;
 
-export const fillTask: TaskDefinition<FillEvents, FillCacheKey> = {
+export const fillTask: TaskDefinition<FillEvents> = {
   name: 'fill',
   path: '/fill',
   startMessage: 'Fill started',
   apiCallbacks: (b) => broadcastApiCallbacks(b),
 
-  async run(tc: TaskContext<FillEvents, FillCacheKey>) {
+  async run(tc: TaskContext<FillEvents>) {
     const freshMode = !!tc.body.fresh;
     searchedArtists.clear();
     tc.log('info', `Starting playlist fill (fresh=${freshMode})...`);
@@ -43,11 +41,6 @@ export const fillTask: TaskDefinition<FillEvents, FillCacheKey> = {
     const storage = new RedisAndClientStorage(
       tc.dataDir,
       tc.userId,
-      {
-        trustedArtists: tc.caches.trustedArtists,
-        batchCache: tc.caches.batchCache,
-        fillHistory: tc.caches.fillHistory,
-      },
       tc.emitData,
     );
 

@@ -4,7 +4,16 @@ import { fileURLToPath } from 'node:url';
 import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import compression from 'compression';
 import express from 'express';
+import {
+  AW_BREAKDOWN,
+  BATCH_CACHE,
+  DURATION_SNAPSHOTS,
+  FILL_HISTORY,
+  LISTENING_TIME,
+  TRUSTED_ARTISTS,
+} from '../lib/cache-files.js';
 import { UserTokenStore, createAppConfigStore } from '../lib/config.js';
+import { createDurableCache } from '../lib/durable-cache.js';
 import { RequestPacer } from '../lib/request-pacer.js';
 import { broadcastEvents } from '../lib/service-events.js';
 import { createSpotifyContext } from '../lib/spotify-context.js';
@@ -15,12 +24,6 @@ import {
 } from '../services/playlist-clearer.js';
 import { createAuthManager, fetchSpotifyUserId } from './auth.js';
 import { createBroadcaster } from './broadcast.js';
-import {
-  redisLoadBatchCache,
-  redisLoadCache,
-  redisLoadFillHistory,
-  redisLoadTrustedArtists,
-} from './redis-config-store.js';
 import { createRouteContext } from './route-context.js';
 import { authRoutes } from './routes/auth.js';
 import { configRoutes } from './routes/config.js';
@@ -155,26 +158,20 @@ app.get('/api/export-data', async (req, res) => {
   // Backend is the source of truth: prefer local files, but fall back to Redis
   // so a fresh/ephemeral filesystem (e.g. after a Railway restart) still serves
   // the durable copy instead of nulls.
-  res.json({
-    ok: true,
-    config,
-    trustedArtists:
-      read('trusted-artists.json') ??
-      (await redisLoadTrustedArtists(session.userId)),
-    batchCache:
-      read('batch-cache.json') ?? (await redisLoadBatchCache(session.userId)),
-    fillHistory:
-      read('fill-history.json') ?? (await redisLoadFillHistory(session.userId)),
-    durationSnapshots:
-      read('duration-snapshots.json') ??
-      (await redisLoadCache(session.userId, 'durationSnapshots')),
-    listeningTime:
-      read('listening-time-cache.json') ??
-      (await redisLoadCache(session.userId, 'listeningTime')),
-    awBreakdown:
-      read('aw-breakdown.json') ??
-      (await redisLoadCache(session.userId, 'awBreakdown')),
+  const cache = createDurableCache({
+    userId: session.userId,
+    dataDir: session.dataDir,
   });
+  const caches = await cache.loadMany({
+    trustedArtists: TRUSTED_ARTISTS,
+    batchCache: BATCH_CACHE,
+    fillHistory: FILL_HISTORY,
+    durationSnapshots: DURATION_SNAPSHOTS,
+    listeningTime: LISTENING_TIME,
+    awBreakdown: AW_BREAKDOWN,
+  });
+
+  res.json({ ok: true, config, ...caches });
 });
 
 // Import data (for migrating from local to production)
@@ -203,17 +200,17 @@ app.post('/api/import-data', async (req, res) => {
     }
   }
 
-  // Save trustedArtists + fillHistory to Redis for cross-device access
+  // Save trustedArtists + fillHistory for cross-device access
   if (trustedArtists || fillHistory) {
     try {
-      const { redisSaveTrustedArtists, redisSaveFillHistory } = await import(
-        './redis-config-store.js'
-      );
-      if (trustedArtists)
-        await redisSaveTrustedArtists(session.userId, trustedArtists);
-      if (fillHistory) await redisSaveFillHistory(session.userId, fillHistory);
+      const cache = createDurableCache({
+        userId: session.userId,
+        dataDir: session.dataDir,
+      });
+      if (trustedArtists) await cache.save(TRUSTED_ARTISTS, trustedArtists);
+      if (fillHistory) await cache.save(FILL_HISTORY, fillHistory);
     } catch (err) {
-      console.error('Failed to save to Redis:', err);
+      console.error('Failed to save imported data:', err);
     }
   }
 
@@ -391,7 +388,7 @@ app.get('/api/playback', async (req, res) => {
     const spotifyApi = session.client.api;
     const playback = await spotifyApi.player.getPlaybackState();
 
-    if (!playback?.item || !('album' in playback.item)) {
+    if (!(playback?.item && 'album' in playback.item)) {
       res.json({ playing: false });
       return;
     }

@@ -1,12 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type express from 'express';
+import { TRUSTED_ARTISTS } from '../lib/cache-files.js';
 import {
   BridgedConfigStore,
   InMemoryTokenStore,
   UserTokenStore,
 } from '../lib/config.js';
 import type { IAppConfigStore } from '../lib/config.js';
+import { createDurableCache } from '../lib/durable-cache.js';
 import type { RequestPacer } from '../lib/request-pacer.js';
 import { createSpotifyClient } from '../lib/spotify-client.js';
 import type {
@@ -20,9 +22,12 @@ import type { Broadcaster } from './broadcast.js';
 import {
   RedisUserConfigStore,
   isRedisConfigured,
-  redisLoadTrustedArtists,
 } from './redis-config-store.js';
-import { getBearerToken, getRefreshToken, getSessionUserId } from './session.js';
+import {
+  getBearerToken,
+  getRefreshToken,
+  getSessionUserId,
+} from './session.js';
 import type { TaskMutex } from './task-mutex.js';
 
 export interface UserSession {
@@ -53,7 +58,6 @@ export interface RouteContext {
     req: express.Request,
     res: express.Response,
   ): UserSession | null;
-  loadTrustedArtists(dataDir: string): TrustedArtistsFile | null;
   loadTrustedArtistsOrRedis(
     session: UserSession,
   ): Promise<TrustedArtistsFile | null>;
@@ -240,25 +244,15 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
     return session;
   }
 
-  function loadTrustedArtists(dataDir: string): TrustedArtistsFile | null {
-    try {
-      return JSON.parse(
-        fs.readFileSync(path.join(dataDir, 'trusted-artists.json'), 'utf8'),
-      );
-    } catch {
-      return null;
-    }
-  }
-
   // Load trusted artists from the local file, falling back to the durable
   // Redis copy (e.g. ephemeral filesystem). Backend is the source of truth.
   async function loadTrustedArtistsOrRedis(
     session: UserSession,
   ): Promise<TrustedArtistsFile | null> {
-    const local = loadTrustedArtists(session.dataDir);
-    if (local) return local;
-    const fromRedis = await redisLoadTrustedArtists(session.userId);
-    return fromRedis as TrustedArtistsFile | null;
+    return createDurableCache({
+      userId: session.userId,
+      dataDir: session.dataDir,
+    }).load(TRUSTED_ARTISTS);
   }
 
   return {
@@ -277,7 +271,6 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
     getUserDataDir,
     getOrCreateUserSession,
     requireSession,
-    loadTrustedArtists,
     loadTrustedArtistsOrRedis,
   };
 }

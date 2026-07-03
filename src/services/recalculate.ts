@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import type { PriorityThresholds, ScoringWeights } from '../domain/artists.js';
 import type { EventHandlers } from '../lib/service-events.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
@@ -9,11 +8,11 @@ import {
   isRoleTaggedCache,
   toScanResult,
 } from '../lib/types.js';
-import type { PriorityChange } from './promotion-sync/index.js';
 import {
   type PriorityCalculatorEventMap,
   PriorityCalculatorService,
 } from './priority-calculator.js';
+import type { PriorityChange } from './promotion-sync/index.js';
 
 export type { PriorityChange } from './promotion-sync/index.js';
 
@@ -158,8 +157,7 @@ export function shouldSkipRecalculation(
   const hasBothSnapshots = !!(
     cache.allWeeklySnapshot && cache.bestOfAllWeeklySnapshot
   );
-  const skip =
-    !delta.anyChanged && (opts.skipOnColdCache || hasBothSnapshots);
+  const skip = !delta.anyChanged && (opts.skipOnColdCache || hasBothSnapshots);
   return { skip, delta };
 }
 
@@ -189,23 +187,6 @@ export function pickReusableScans(
 }
 
 // ── Priority snapshot + diff (over the trusted-artists file) ────────────────
-
-/** Snapshot artist → priority from a trusted-artists.json on disk. */
-export function snapshotPriorities(
-  trustedPath: string,
-): Map<string, number | null> {
-  const priorities = new Map<string, number | null>();
-  try {
-    const prev = JSON.parse(
-      fs.readFileSync(trustedPath, 'utf-8'),
-    ) as TrustedArtistsFile;
-    for (const [name, data] of Object.entries(prev.artistCounts))
-      priorities.set(name, data.priority);
-  } catch {
-    /* first run or missing file */
-  }
-  return priorities;
-}
 
 /** Snapshot artist → priority from an in-memory trusted-artists value. */
 export function snapshotPrioritiesFrom(

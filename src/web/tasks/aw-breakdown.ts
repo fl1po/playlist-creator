@@ -1,12 +1,9 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   type WeekBreakdownEntry,
   getPlaylistTracksGroupedByWeek,
 } from '../../domain/aw-breakdown.js';
 import { formatHm } from '../../domain/tracks.js';
-import { AW_BREAKDOWN_CACHE } from '../../lib/cache-files.js';
-import { redisLoadCache, redisSaveCache } from '../redis-config-store.js';
+import { AW_BREAKDOWN } from '../../lib/cache-files.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -26,36 +23,18 @@ interface AwBreakdownEvents extends BaseEvents {
   'awBreakdown:progress': { fetched: number; total: number };
 }
 
-type AwBreakdownCacheKey = 'awBreakdown';
-
-export const awBreakdownTask: TaskDefinition<
-  AwBreakdownEvents,
-  AwBreakdownCacheKey
-> = {
+export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
   name: 'aw-breakdown',
   path: '/aw-breakdown',
   startMessage: 'AW breakdown calculation started',
-  caches: [{ key: 'awBreakdown', file: AW_BREAKDOWN_CACHE }],
 
-  async run(tc: TaskContext<AwBreakdownEvents, AwBreakdownCacheKey>) {
+  async run(tc: TaskContext<AwBreakdownEvents>) {
     const userConfig = await tc.userConfig();
     const awId = userConfig.sourcePlaylists.allWeeklyId;
 
-    const cachePath = path.join(tc.dataDir, AW_BREAKDOWN_CACHE);
-    let cached: AwBreakdownCache | null = null;
-    try {
-      cached = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
-    } catch {
-      // No local file — fall back to the durable Redis copy (fresh container).
-      try {
-        cached = await redisLoadCache<AwBreakdownCache>(
-          tc.userId,
-          'awBreakdown',
-        );
-      } catch {
-        /* redis optional */
-      }
-    }
+    const cached = (await tc.cache.load(
+      AW_BREAKDOWN,
+    )) as AwBreakdownCache | null;
 
     const awInfo = await tc.ctx.call(
       () => tc.ctx.api.playlists.getPlaylist(awId, undefined, 'snapshot_id'),
@@ -99,14 +78,8 @@ export const awBreakdownTask: TaskDefinition<
       weeks,
     };
 
-    fs.mkdirSync(tc.dataDir, { recursive: true });
-    fs.writeFileSync(cachePath, JSON.stringify(result, null, 2));
+    await tc.cache.save(AW_BREAKDOWN, result);
     tc.emitData('awBreakdown', result);
-    try {
-      await redisSaveCache(tc.userId, 'awBreakdown', result);
-    } catch {
-      /* redis optional */
-    }
     tc.emit('awBreakdown:complete', result);
 
     const avgTracks =

@@ -1,15 +1,12 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { formatHm } from '../../domain/tracks.js';
 import {
-  DURATION_SNAPSHOT_CACHE,
+  DURATION_SNAPSHOTS,
   type DurationSnapshots,
-  LISTENING_TIME_CACHE,
+  LISTENING_TIME,
 } from '../../lib/cache-files.js';
 import { getPlaylistTotalDuration } from '../../lib/pagination.js';
 import { getNonListenedPlaylists } from '../../services/non-listened-playlists.js';
 import { broadcastApiCallbacks } from '../../services/playlist-filler/subscribers.js';
-import { redisLoadCache, redisSaveCache } from '../redis-config-store.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -38,19 +35,13 @@ interface ListeningTimeEvents extends BaseEvents {
   'listeningTime:complete': ListeningTimeResult;
 }
 
-type ListeningTimeCacheKey = 'durationSnapshots';
-
-export const listeningTimeTask: TaskDefinition<
-  ListeningTimeEvents,
-  ListeningTimeCacheKey
-> = {
+export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
   name: 'listening-time',
   path: '/listening-time',
   startMessage: 'Listening time calculation started',
   apiCallbacks: (b) => broadcastApiCallbacks(b),
-  caches: [{ key: 'durationSnapshots', file: DURATION_SNAPSHOT_CACHE }],
 
-  async run(tc: TaskContext<ListeningTimeEvents, ListeningTimeCacheKey>) {
+  async run(tc: TaskContext<ListeningTimeEvents>) {
     const userConfig = await tc.userConfig();
     const me = await tc.me();
 
@@ -64,25 +55,9 @@ export const listeningTimeTask: TaskDefinition<
 
     const force = !!tc.body.force;
 
-    const snapshotPath = path.join(tc.dataDir, DURATION_SNAPSHOT_CACHE);
-    let snapshots: DurationSnapshots = {};
-    if (!force) {
-      try {
-        snapshots = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
-      } catch {
-        // No local file — fall back to the durable Redis copy so a fresh
-        // container reuses snapshots instead of repaginating every playlist.
-        try {
-          snapshots =
-            (await redisLoadCache<DurationSnapshots>(
-              tc.userId,
-              'durationSnapshots',
-            )) ?? {};
-        } catch {
-          /* redis optional */
-        }
-      }
-    }
+    const snapshots: DurationSnapshots = force
+      ? {}
+      : ((await tc.cache.load(DURATION_SNAPSHOTS)) ?? {});
 
     let totalMs = 0;
     let totalTracks = 0;
@@ -147,7 +122,7 @@ export const listeningTimeTask: TaskDefinition<
     for (const id of Object.keys(snapshots)) {
       if (!candidateIds.has(id)) delete snapshots[id];
     }
-    fs.writeFileSync(snapshotPath, JSON.stringify(snapshots, null, 2));
+    await tc.cache.save(DURATION_SNAPSHOTS, snapshots);
 
     const result: ListeningTimeResult = {
       totalMs,
@@ -156,21 +131,12 @@ export const listeningTimeTask: TaskDefinition<
       perPlaylist,
     };
 
-    fs.writeFileSync(
-      path.join(tc.dataDir, LISTENING_TIME_CACHE),
-      JSON.stringify(result, null, 2),
-    );
+    await tc.cache.save(LISTENING_TIME, result);
 
     tc.emit('listeningTime:complete', result);
 
     tc.emitData('durationSnapshots', snapshots);
     tc.emitData('listeningTime', result);
-    try {
-      await redisSaveCache(tc.userId, 'durationSnapshots', snapshots);
-      await redisSaveCache(tc.userId, 'listeningTime', result);
-    } catch {
-      /* redis optional */
-    }
 
     const avg = candidates.length > 0 ? totalMs / candidates.length : 0;
     tc.log(

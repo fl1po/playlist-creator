@@ -1,13 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { BatchCache, TrustedArtistsFile } from '../../lib/types.js';
 import {
-  redisLoadBatchCache,
-  redisLoadTrustedArtists,
-  redisSaveBatchCache,
-  redisSaveFillHistory,
-  redisSaveTrustedArtists,
-} from '../../web/redis-config-store.js';
+  BATCH_CACHE,
+  FILL_HISTORY,
+  TRUSTED_ARTISTS,
+} from '../../lib/cache-files.js';
+import { createDurableCache } from '../../lib/durable-cache.js';
+import type { DurableCache } from '../../lib/durable-cache.js';
+import type { BatchCache, TrustedArtistsFile } from '../../lib/types.js';
 
 export interface FillHistoryEntry {
   timestamp: string;
@@ -38,9 +38,6 @@ export interface FillStorage {
   readonly dataDir: string;
 }
 
-const BATCH_CACHE = 'batch-cache.json';
-const TRUSTED_ARTISTS = 'trusted-artists.json';
-const FILL_HISTORY = 'fill-history.json';
 const PROGRESS = 'batch-p1p2-progress.json';
 
 function readJson<T>(p: string, fallback: T): T {
@@ -60,21 +57,21 @@ export class FileStorage implements FillStorage {
   constructor(public readonly dataDir: string) {}
 
   async loadBatchCache(): Promise<BatchCache> {
-    return readJson<BatchCache>(path.join(this.dataDir, BATCH_CACHE), {});
+    return readJson<BatchCache>(path.join(this.dataDir, BATCH_CACHE.file), {});
   }
   async saveBatchCache(c: BatchCache): Promise<void> {
-    writeJson(path.join(this.dataDir, BATCH_CACHE), c);
+    writeJson(path.join(this.dataDir, BATCH_CACHE.file), c);
   }
   async loadTrustedArtists(): Promise<TrustedArtistsFile> {
     return JSON.parse(
-      fs.readFileSync(path.join(this.dataDir, TRUSTED_ARTISTS), 'utf8'),
+      fs.readFileSync(path.join(this.dataDir, TRUSTED_ARTISTS.file), 'utf8'),
     );
   }
   async saveTrustedArtists(t: TrustedArtistsFile): Promise<void> {
-    writeJson(path.join(this.dataDir, TRUSTED_ARTISTS), t);
+    writeJson(path.join(this.dataDir, TRUSTED_ARTISTS.file), t);
   }
   async appendFillHistory(entry: FillHistoryEntry): Promise<void> {
-    const p = path.join(this.dataDir, FILL_HISTORY);
+    const p = path.join(this.dataDir, FILL_HISTORY.file);
     const history = readJson<unknown[]>(p, []);
     history.push(entry);
     writeJson(p, history);
@@ -84,96 +81,56 @@ export class FileStorage implements FillStorage {
   }
 }
 
-export interface RedisAndClientHydrate {
-  trustedArtists?: unknown;
-  batchCache?: unknown;
-  fillHistory?: unknown;
-}
-
 /**
- * FileStorage decorator that:
- *  - hydrates the data dir from client-provided caches on construction
- *  - mirrors saves to Redis
- *  - emits `data:save` to the client after each save so the browser can persist
+ * FillStorage backed by DurableCache (file-then-Redis fallback, mirrored writes),
+ * plus the two capabilities unique to the fill flow: mirroring every save to the
+ * browser client via `emit` for localStorage, and fillHistory's append semantics.
+ * `saveProgress` stays local-only, unmirrored — it's a resumability checkpoint,
+ * not one of the datasets that needs to survive an ephemeral filesystem.
  */
 export class RedisAndClientStorage implements FillStorage {
-  private fs: FileStorage;
+  private cache: DurableCache;
+  private progressPath: string;
+
   constructor(
-    dataDir: string,
-    private userId: string,
-    hydrate?: RedisAndClientHydrate,
+    public readonly dataDir: string,
+    userId: string,
     private emit?: (key: string, value: unknown) => void,
   ) {
-    this.fs = new FileStorage(dataDir);
     fs.mkdirSync(dataDir, { recursive: true });
-    if (hydrate?.trustedArtists) {
-      writeJson(path.join(dataDir, TRUSTED_ARTISTS), hydrate.trustedArtists);
-    }
-    if (hydrate?.batchCache) {
-      writeJson(path.join(dataDir, BATCH_CACHE), hydrate.batchCache);
-    }
-    if (hydrate?.fillHistory) {
-      writeJson(path.join(dataDir, FILL_HISTORY), hydrate.fillHistory);
-    }
-  }
-
-  get dataDir(): string {
-    return this.fs.dataDir;
+    this.cache = createDurableCache({ userId, dataDir });
+    this.progressPath = path.join(dataDir, PROGRESS);
   }
 
   async loadBatchCache(): Promise<BatchCache> {
-    // Prefer the local file, but fall back to Redis when it is empty/missing
-    // (e.g. a fresh container) so the durable backend copy is used.
-    const fromFile = await this.fs.loadBatchCache();
-    if (fromFile && Object.keys(fromFile).length > 0) return fromFile;
-    const fromRedis = await redisLoadBatchCache(this.userId);
-    return (fromRedis as BatchCache) ?? fromFile;
+    return (await this.cache.load(BATCH_CACHE)) ?? {};
   }
   async saveBatchCache(c: BatchCache): Promise<void> {
-    await this.fs.saveBatchCache(c);
+    await this.cache.save(BATCH_CACHE, c);
     this.emit?.('batchCache', c);
-    try {
-      await redisSaveBatchCache(this.userId, c);
-    } catch {
-      /* redis optional */
-    }
   }
   async loadTrustedArtists(): Promise<TrustedArtistsFile> {
-    // Prefer the local file, but fall back to Redis when it is missing so a
-    // fresh container can still run a fill from the durable backend copy.
-    try {
-      return await this.fs.loadTrustedArtists();
-    } catch {
-      const fromRedis = await redisLoadTrustedArtists(this.userId);
-      if (fromRedis) return fromRedis as TrustedArtistsFile;
+    const t = await this.cache.load(TRUSTED_ARTISTS);
+    if (!t) {
       throw new Error(
         'trusted-artists.json not found and no Redis copy available',
       );
     }
+    return t;
   }
   async saveTrustedArtists(t: TrustedArtistsFile): Promise<void> {
-    await this.fs.saveTrustedArtists(t);
+    await this.cache.save(TRUSTED_ARTISTS, t);
     this.emit?.('trustedArtists', t);
-    try {
-      await redisSaveTrustedArtists(this.userId, t);
-    } catch {
-      /* redis optional */
-    }
   }
   async appendFillHistory(entry: FillHistoryEntry): Promise<void> {
-    await this.fs.appendFillHistory(entry);
-    const all = readJson<unknown[]>(
-      path.join(this.fs.dataDir, FILL_HISTORY),
-      [],
-    );
-    this.emit?.('fillHistory', all);
-    try {
-      await redisSaveFillHistory(this.userId, all);
-    } catch {
-      /* redis optional */
-    }
+    const history = ((await this.cache.load(FILL_HISTORY)) ??
+      []) as FillHistoryEntry[];
+    history.push(entry);
+    await this.cache.save(FILL_HISTORY, history);
+    this.emit?.('fillHistory', history);
   }
   saveProgress(p: ProgressFile): Promise<void> {
-    return this.fs.saveProgress(p);
+    writeJson(this.progressPath, p);
+    return Promise.resolve();
   }
 }

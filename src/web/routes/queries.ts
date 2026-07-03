@@ -1,13 +1,13 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { Router } from 'express';
 import {
-  AW_BREAKDOWN_CACHE,
-  LISTENING_TIME_CACHE,
+  AW_BREAKDOWN,
+  FILL_HISTORY,
+  LISTENING_TIME,
 } from '../../lib/cache-files.js';
+import { createDurableCache } from '../../lib/durable-cache.js';
+import type { CacheDescriptor } from '../../lib/durable-cache.js';
 import { getAllUserPlaylists } from '../../lib/pagination.js';
 import { createSpotifyContext } from '../../lib/spotify-context.js';
-import { redisLoadCache, redisLoadFillHistory } from '../redis-config-store.js';
 import type { RouteContext } from '../route-context.js';
 
 export function queryRoutes(ctx: RouteContext): Router {
@@ -137,19 +137,11 @@ export function queryRoutes(ctx: RouteContext): Router {
       }));
     }
 
-    let fillHistory: unknown[] = [];
-    try {
-      fillHistory = JSON.parse(
-        fs.readFileSync(
-          path.join(session.dataDir, 'fill-history.json'),
-          'utf8',
-        ),
-      );
-    } catch {
-      /* no file — try Redis */
-      const redisFH = await redisLoadFillHistory(session.userId);
-      if (redisFH) fillHistory = redisFH;
-    }
+    const cache = createDurableCache({
+      userId: session.userId,
+      dataDir: session.dataDir,
+    });
+    const fillHistory = (await cache.load(FILL_HISTORY)) ?? [];
 
     res.json({
       ok: true,
@@ -281,29 +273,21 @@ export function queryRoutes(ctx: RouteContext): Router {
 
   // Cached GET routes. Prefer the local file, then fall back to the durable
   // Redis copy so display stays correct on a fresh/ephemeral filesystem.
-  function cachedGet(route: string, cacheFile: string, redisName: string) {
+  function cachedGet(route: string, descriptor: CacheDescriptor<unknown>) {
     router.get(route, async (req, res) => {
       const session = ctx.requireSession(req, res);
       if (!session) return;
-      try {
-        const cached = JSON.parse(
-          fs.readFileSync(path.join(session.dataDir, cacheFile), 'utf8'),
-        );
-        res.json({ ok: true, ...cached });
-        return;
-      } catch {
-        /* no local file — try Redis below */
-      }
-      const fromRedis = await redisLoadCache<Record<string, unknown>>(
-        session.userId,
-        redisName,
-      );
-      if (fromRedis) res.json({ ok: true, ...fromRedis });
+      const cached = await createDurableCache({
+        userId: session.userId,
+        dataDir: session.dataDir,
+      }).load(descriptor);
+      if (cached)
+        res.json({ ok: true, ...(cached as Record<string, unknown>) });
       else res.json({ ok: false });
     });
   }
-  cachedGet('/listening-time', LISTENING_TIME_CACHE, 'listeningTime');
-  cachedGet('/aw-breakdown', AW_BREAKDOWN_CACHE, 'awBreakdown');
+  cachedGet('/listening-time', LISTENING_TIME);
+  cachedGet('/aw-breakdown', AW_BREAKDOWN);
 
   return router;
 }

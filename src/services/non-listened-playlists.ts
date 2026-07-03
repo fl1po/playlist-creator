@@ -1,21 +1,12 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { parseDate } from '../domain/tracks.js';
-import { LISTENING_TIME_CACHE } from '../lib/cache-files.js';
+import { LISTENING_TIME, NON_LISTENED } from '../lib/cache-files.js';
+import { createDurableCache } from '../lib/durable-cache.js';
 import {
   getAllPlaylistTracks,
   getAllUserPlaylists,
 } from '../lib/pagination.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
 import type { SimplePlaylist } from '../lib/types.js';
-import {
-  redisDeleteCache,
-  redisLoadCache,
-  redisSaveCache,
-} from '../web/redis-config-store.js';
-
-const NON_LISTENED_CACHE = 'non-listened-cache.json';
-const NON_LISTENED_REDIS = 'nonListened';
 
 interface NonListenedCache {
   playlists: SimplePlaylist[];
@@ -23,24 +14,14 @@ interface NonListenedCache {
 
 /**
  * Invalidate the non-listened playlists and listening time caches — both the
- * local files and the durable Redis copies (fire-and-forget so callers can stay
- * synchronous). Pass `userId` to also clear Redis.
+ * local files and the durable Redis copies.
  */
-export function invalidateNonListenedCache(
+export async function invalidateNonListenedCache(
   dataDir: string,
-  userId?: string,
-): void {
-  for (const file of [NON_LISTENED_CACHE, LISTENING_TIME_CACHE]) {
-    try {
-      fs.unlinkSync(path.join(dataDir, file));
-    } catch {
-      /* missing file is fine */
-    }
-  }
-  if (userId) {
-    void redisDeleteCache(userId, NON_LISTENED_REDIS);
-    void redisDeleteCache(userId, 'listeningTime');
-  }
+  userId: string,
+): Promise<void> {
+  const cache = createDurableCache({ userId, dataDir });
+  await Promise.all([cache.delete(NON_LISTENED), cache.delete(LISTENING_TIME)]);
 }
 
 /**
@@ -58,22 +39,12 @@ export async function getNonListenedPlaylists(
   log?: (message: string, level?: 'info' | 'debug') => void,
 ): Promise<{ playlists: SimplePlaylist[]; awTrackIds: Set<string> }> {
   const emit = log ?? (() => {});
-  const cachePath = path.join(dataDir, NON_LISTENED_CACHE);
+  const cache = createDurableCache({ userId, dataDir });
 
   const awTrackIds = new Set(await getAllPlaylistTracks(ctx, allWeeklyId));
   emit(`Loaded ${awTrackIds.size} tracks from All Weekly`);
 
-  // Cache: prefer the local file, fall back to the durable Redis copy so a
-  // fresh/ephemeral container reuses the scan instead of re-paginating.
-  let cached: NonListenedCache | null = null;
-  try {
-    cached = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-  } catch {
-    cached = await redisLoadCache<NonListenedCache>(
-      userId,
-      NON_LISTENED_REDIS,
-    ).catch(() => null);
-  }
+  const cached = (await cache.load(NON_LISTENED)) as NonListenedCache | null;
   if (cached?.playlists != null) {
     emit(`Using cached non-listened playlists (${cached.playlists.length})`);
     return { playlists: cached.playlists, awTrackIds };
@@ -109,14 +80,7 @@ export async function getNonListenedPlaylists(
   nonListened.reverse();
   emit(`Result: ${nonListened.length} non-listened playlists`);
 
-  const cache: NonListenedCache = { playlists: nonListened };
-  try {
-    fs.mkdirSync(dataDir, { recursive: true });
-    fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2));
-  } catch {
-    /* fs is optional (ephemeral container) — Redis is the durable copy */
-  }
-  await redisSaveCache(userId, NON_LISTENED_REDIS, cache).catch(() => {});
+  await cache.save(NON_LISTENED, { playlists: nonListened });
 
   return { playlists: nonListened, awTrackIds };
 }
