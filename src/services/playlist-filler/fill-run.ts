@@ -22,10 +22,10 @@ import { syncIfNeeded } from '../promotion-sync/run.js';
 import type { SyncHandlers } from '../promotion-sync/subscribers.js';
 import {
   type SourcePlaylists,
-  diffSnapshots,
   fetchSourceSnapshots,
   pickReusableScans,
   recalculate,
+  shouldSkipRecalculation,
   snapshotPrioritiesFrom,
 } from '../recalculate.js';
 import {
@@ -198,7 +198,12 @@ async function maybeRecalculate(
   const { ctx, storage, emitter, sources, scoring } = deps;
 
   const live = await fetchSourceSnapshots(ctx, sources);
-  const delta = diffSnapshots(cache, live);
+  // A fill assumes trusted-artists.json already exists, so a cold cache just
+  // means "nothing to compare against yet" — skip and defer the first
+  // recalculation to the explicit recalculate action.
+  const { skip, delta } = shouldSkipRecalculation(cache, live, {
+    skipOnColdCache: true,
+  });
 
   const persistSnapshots = async () => {
     cache.allWeeklySnapshot = live.aw;
@@ -206,7 +211,7 @@ async function maybeRecalculate(
     await storage.saveBatchCache(cache);
   };
 
-  if (!delta.anyChanged) {
+  if (skip) {
     emitter.emit('log', 'Snapshots unchanged — skipping recalculation');
     await persistSnapshots();
     return false;

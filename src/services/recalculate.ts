@@ -128,6 +128,41 @@ export function diffSnapshots(
   return { awChanged, boawChanged, anyChanged: awChanged || boawChanged };
 }
 
+export interface RecalculationGateOptions {
+  /**
+   * Whether a cold cache (no snapshot recorded for a source yet) is allowed
+   * to skip recalculation on its own, same as an unchanged snapshot would.
+   *
+   * - `true` (fill's mid-fill check): a fill assumes `trusted-artists.json`
+   *   already exists, so a cold cache just means "nothing to compare against
+   *   yet" — skip and defer the first recalculation to the explicit
+   *   recalculate action.
+   * - `false` (the recalculate action itself): this is the caller
+   *   responsible for creating that baseline file, so a cold cache must
+   *   never skip — it has to run at least once to produce one.
+   */
+  skipOnColdCache: boolean;
+}
+
+/**
+ * Decide whether recalculation can be skipped, given cached vs. live source
+ * snapshots. Pure and synchronous — callers fetch `live` via
+ * `fetchSourceSnapshots` first, so this never needs a `SpotifyContext`.
+ */
+export function shouldSkipRecalculation(
+  cache: Pick<BatchCache, 'allWeeklySnapshot' | 'bestOfAllWeeklySnapshot'>,
+  live: SourceSnapshots,
+  opts: RecalculationGateOptions,
+): { skip: boolean; delta: SnapshotDelta } {
+  const delta = diffSnapshots(cache, live);
+  const hasBothSnapshots = !!(
+    cache.allWeeklySnapshot && cache.bestOfAllWeeklySnapshot
+  );
+  const skip =
+    !delta.anyChanged && (opts.skipOnColdCache || hasBothSnapshots);
+  return { skip, delta };
+}
+
 /** Pick scan caches the calculator can reuse for sources that didn't change. */
 export function pickReusableScans(
   cache: BatchCache,

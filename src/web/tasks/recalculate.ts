@@ -11,10 +11,10 @@ import { syncIfNeeded } from '../../services/promotion-sync/run.js';
 import { broadcastSyncHandlers } from '../../services/promotion-sync/subscribers.js';
 import {
   type PriorityChange,
-  diffSnapshots,
   fetchSourceSnapshots,
   pickReusableScans,
   recalculate,
+  shouldSkipRecalculation,
   snapshotPriorities,
   snapshotPrioritiesFrom,
 } from '../../services/recalculate.js';
@@ -58,14 +58,13 @@ export const recalculateTask: TaskDefinition<
       {}) as BatchCache;
 
     const live = await fetchSourceSnapshots(tc.ctx, userConfig.sourcePlaylists);
-    const delta = diffSnapshots(cache, live);
+    // This task is responsible for creating the baseline trusted-artists
+    // file, so a cold cache must never skip — it has to run at least once.
+    const { skip, delta } = shouldSkipRecalculation(cache, live, {
+      skipOnColdCache: false,
+    });
 
-    if (
-      !force &&
-      cache.allWeeklySnapshot &&
-      cache.bestOfAllWeeklySnapshot &&
-      !delta.anyChanged
-    ) {
+    if (!force && skip) {
       tc.log('info', 'Snapshots unchanged — skipping recalculation');
       return;
     }
