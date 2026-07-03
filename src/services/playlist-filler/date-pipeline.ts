@@ -206,7 +206,12 @@ export async function processDate(
         () => ctx.api.playlists.addItemsToPlaylist(playlistId, uris),
         'add tracks to playlist',
       );
-      if (!addResult.success && addResult.authError) throw addResult.error;
+      if (!addResult.success) {
+        throw (
+          addResult.error ??
+          new Error(`Failed to add tracks to playlist ${playlistId}`)
+        );
+      }
     }
   }
 

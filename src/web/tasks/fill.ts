@@ -1,16 +1,11 @@
 import { invalidateNonListenedCache } from '../../services/non-listened-playlists.js';
 import { runFill } from '../../services/playlist-filler/fill-run.js';
-import {
-  computePriorityChanges,
-  maybeAppendFillHistory,
-  writeProgressFile,
-} from '../../services/playlist-filler/post.js';
 import { RedisAndClientStorage } from '../../services/playlist-filler/storage.js';
 import {
   broadcastApiCallbacks,
   broadcastHandlers,
 } from '../../services/playlist-filler/subscribers.js';
-import { syncIfNeeded } from '../priority-diff.js';
+import { broadcastSyncHandlers } from '../../services/promotion-sync/subscribers.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -78,39 +73,18 @@ export const fillTask: TaskDefinition<FillEvents, FillCacheKey> = {
       config,
       storage,
       handlers,
+      syncHandlers: broadcastSyncHandlers(tc.broadcast),
       fresh: freshMode,
     });
 
-    // Post-fill: progress file, history, then sync if P1/P2 boundary crossed.
-    await writeProgressFile(storage, result);
-    await maybeAppendFillHistory(storage, result);
-
-    const changes = computePriorityChanges(
-      result.prioritiesBefore,
-      result.prioritiesAfter,
-    );
     // Surface the per-artist priority changes the same way recalc does, so a
     // fill also shows who was promoted/demoted — not just the sync counts.
-    if (changes.length > 0) {
-      changes.sort(
+    if (result.priorityChanges.length > 0) {
+      const changes = [...result.priorityChanges].sort(
         (a, b) =>
           (a.to ?? 99) - (b.to ?? 99) || (a.from ?? 99) - (b.from ?? 99),
       );
       tc.broadcast('recalc:changes', { changes });
-    }
-    try {
-      await syncIfNeeded(
-        changes,
-        tc.client,
-        tc.dataDir,
-        config.allWeeklyId ?? '',
-        config.editorialFilter.minPopularity,
-        tc.pacer,
-        tc.broadcast,
-      );
-    } catch (syncErr) {
-      tc.checkAbort();
-      tc.log('warn', `Post-fill sync failed: ${syncErr}`);
     }
   },
 

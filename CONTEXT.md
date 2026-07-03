@@ -27,7 +27,7 @@ The scored artist roster produced by recalculation (`trusted-artists.json`). Sou
 ### Filling
 
 **Fill**:
-The operation that builds weekly playlists for every unprocessed Friday — one week collection per date, plus the playlist writes.
+The operation that builds weekly playlists for every unprocessed Friday — one week collection per date, plus the playlist writes. Always ends with a promotion sync if any of the fill's own mid-fill recalculations crossed a P1/P2 boundary; a fill isn't finished until that trailing sync has run, regardless of whether it was started from the CLI or the web UI.
 _Avoid_: batch run, sync
 
 **Week collection**:
@@ -47,7 +47,7 @@ A record of one choice made during week collection — variant picked, deluxe tr
 ### Syncing
 
 **Promotion sync**:
-Reconciling already-published weekly playlists with a recalculation's priority changes — removing the tracks of artists demoted out of P1/P2, and backfilling in-window releases from artists promoted into P1/P2. Runs after recalculation, over unprocessed (non-listened) weekly playlists only. Shares the release-discovery and track-collection engine with week collection, but has no editorial merge, no checkpoints, and no Friday window of its own (it matches each playlist's own date). Returns its own collection decisions, removal included.
+Reconciling already-published weekly playlists with a recalculation's priority changes — removing the tracks of artists demoted out of P1/P2, and backfilling in-window releases from artists promoted into P1/P2. Runs after recalculation, over unprocessed (non-listened) weekly playlists only — whether that recalculation happened standalone or mid-fill. Shares the release-discovery and track-collection engine with week collection, but has no editorial merge, no checkpoints, and no Friday window of its own (it matches each playlist's own date). Returns its own collection decisions, removal included.
 _Avoid_: playlist sync, priority diff, backfill
 
 **Priority change**:

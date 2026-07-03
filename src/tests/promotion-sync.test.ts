@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { PlaylistTrackWithArtists } from '../lib/pagination.js';
+import type { SpotifyContext } from '../lib/spotify-context.js';
 import type {
   AlbumTrack,
   ArtistData,
   TrustedArtistsFile,
 } from '../lib/types.js';
+import { spotifyPlaylistWrites } from '../services/promotion-sync/adapters.js';
 import {
   type PlaylistWrites,
   type PriorityChange,
@@ -446,4 +448,33 @@ test('no P1/P2 boundary crossings: nothing is read or written', async () => {
   assert.equal(result.playlistsSynced, 0);
   assert.equal(writes.added.size, 0);
   assert.equal(writes.removed.size, 0);
+});
+
+// ── spotifyPlaylistWrites adapter ────────────────────────────────────────────
+// Exercises the production adapter directly (not the recording fixture above),
+// since a failed Spotify write must surface as a thrown error rather than be
+// silently treated as done.
+
+function fakeCtxWithFailingCall(error: Error): SpotifyContext {
+  return {
+    api: {} as SpotifyContext['api'],
+    client: {} as SpotifyContext['client'],
+    async call() {
+      return { success: false, error };
+    },
+  };
+}
+
+test('spotifyPlaylistWrites.addTracks throws when the Spotify call fails', async () => {
+  const writes = spotifyPlaylistWrites(
+    fakeCtxWithFailingCall(new Error('rate limited')),
+  );
+  await assert.rejects(writes.addTracks('pl1', ['t1']), /rate limited/);
+});
+
+test('spotifyPlaylistWrites.removeTracks throws when the Spotify call fails', async () => {
+  const writes = spotifyPlaylistWrites(
+    fakeCtxWithFailingCall(new Error('rate limited')),
+  );
+  await assert.rejects(writes.removeTracks('pl1', ['t1']), /rate limited/);
 });

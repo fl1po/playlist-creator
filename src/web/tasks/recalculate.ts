@@ -7,6 +7,8 @@ import {
   toCachedScanResult,
 } from '../../lib/types.js';
 import type { PriorityCalculatorEventMap } from '../../services/priority-calculator.js';
+import { syncIfNeeded } from '../../services/promotion-sync/run.js';
+import { broadcastSyncHandlers } from '../../services/promotion-sync/subscribers.js';
 import {
   type PriorityChange,
   diffSnapshots,
@@ -16,7 +18,6 @@ import {
   snapshotPriorities,
   snapshotPrioritiesFrom,
 } from '../../services/recalculate.js';
-import { syncIfNeeded } from '../priority-diff.js';
 import {
   redisLoadBatchCache,
   redisLoadTrustedArtists,
@@ -138,15 +139,19 @@ export const recalculateTask: TaskDefinition<
     // Must complete before persisting, so a failure allows re-running from scratch.
     await syncIfNeeded(
       changes,
-      tc.client,
-      tc.dataDir,
-      userConfig.sourcePlaylists.allWeeklyId,
-      userConfig.editorialFilter.minPopularity,
-      tc.pacer,
-      tc.broadcast,
-      // Pass the fresh priorities: the file is persisted only after this sync,
-      // so reading it inside the syncer would yield the stale pre-recalc P1/P2.
-      result.trustedArtists,
+      {
+        ctx: tc.ctx,
+        dataDir: tc.dataDir,
+        userId: tc.userId,
+        handlers: broadcastSyncHandlers(tc.broadcast),
+      },
+      {
+        allWeeklyId: userConfig.sourcePlaylists.allWeeklyId,
+        minPopularity: userConfig.editorialFilter.minPopularity,
+        // Pass the fresh priorities: the file is persisted only after this
+        // sync, so reading a stored copy would yield the stale pre-recalc P1/P2.
+        trustedArtists: result.trustedArtists,
+      },
     );
 
     // Persist only after the entire process (including sync) succeeds

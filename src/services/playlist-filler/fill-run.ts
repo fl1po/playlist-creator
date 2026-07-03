@@ -17,6 +17,9 @@ import {
   type TrustedArtistsFile,
   toCachedScanResult,
 } from '../../lib/types.js';
+import type { PriorityChange } from '../promotion-sync/index.js';
+import { syncIfNeeded } from '../promotion-sync/run.js';
+import type { SyncHandlers } from '../promotion-sync/subscribers.js';
 import {
   type SourcePlaylists,
   diffSnapshots,
@@ -40,7 +43,7 @@ import type {
   PlaylistFillerEventMap,
   PlaylistFillerOptions,
 } from './events.js';
-import type { FillStorage } from './storage.js';
+import type { FillHistoryEntry, FillStorage, ProgressFile } from './storage.js';
 
 export type PrioritySnapshot = Map<string, number | null>;
 
@@ -50,14 +53,79 @@ export interface FillRunOptions {
   storage: FillStorage;
   /** Event handlers — caller composes from `consoleHandlers()` or `broadcastHandlers()`. */
   handlers: EventHandlers<PlaylistFillerEventMap>;
+  /** Promotion-sync progress/logging — caller composes from `consoleSyncHandlers()` or `broadcastSyncHandlers()`. */
+  syncHandlers: SyncHandlers;
   fresh?: boolean;
 }
 
 export interface FillResult {
   results: DateResult[];
   durationMinutes: number;
-  prioritiesBefore: PrioritySnapshot;
-  prioritiesAfter: PrioritySnapshot;
+  /** Priority changes (promotions/demotions) accrued across the whole fill. */
+  priorityChanges: PriorityChange[];
+  /** Set when a P1/P2 boundary crossing triggered promotion sync. */
+  syncedPlaylists: number | null;
+}
+
+/** Diff before/after priorities into a flat change list. */
+function computePriorityChanges(
+  before: PrioritySnapshot,
+  after: PrioritySnapshot,
+): PriorityChange[] {
+  const changes: PriorityChange[] = [];
+  for (const [name, from] of before) {
+    const to = after.get(name) ?? null;
+    if (from !== to) changes.push({ artist: name, from, to });
+  }
+  for (const [name, to] of after) {
+    if (!before.has(name)) changes.push({ artist: name, from: null, to });
+  }
+  return changes;
+}
+
+/** Write the per-run progress file. */
+async function writeProgressFile(
+  storage: FillStorage,
+  results: DateResult[],
+): Promise<void> {
+  const completed = results.filter((r) => !(r.error || r.skipped));
+  const progress: ProgressFile = {
+    completed: completed.length,
+    total: results.length,
+    lastProcessed: results[results.length - 1]?.date,
+    results,
+  };
+  await storage.saveProgress(progress);
+}
+
+/** Append a fill-history entry if any tracks were added. */
+async function maybeAppendFillHistory(
+  storage: FillStorage,
+  results: DateResult[],
+): Promise<void> {
+  const completed = results.filter((r) => !(r.error || r.skipped));
+  const totalTracks = completed.reduce((s, r) => s + (r.tracksAdded || 0), 0);
+  if (totalTracks === 0) return;
+
+  const releasesByPriority: Record<string, number> = {};
+  for (const r of completed) {
+    for (const rel of r.releases ?? []) {
+      const key =
+        rel.priority === 'editorial' ? 'editorial' : `p${rel.priority}`;
+      releasesByPriority[key] = (releasesByPriority[key] || 0) + 1;
+    }
+  }
+  const entry: FillHistoryEntry = {
+    timestamp: new Date().toISOString(),
+    datesProcessed: completed.length,
+    datesTotal: results.length,
+    totalTracks,
+    totalAlbums: completed.reduce((s, r) => s + (r.albumsCount || 0), 0),
+    totalSingles: completed.reduce((s, r) => s + (r.singlesCount || 0), 0),
+    totalSkipped: completed.reduce((s, r) => s + (r.skippedCount || 0), 0),
+    releasesByPriority,
+  };
+  await storage.appendFillHistory(entry);
 }
 
 const DEFAULTS = {
@@ -178,6 +246,61 @@ async function maybeRecalculate(
   return true;
 }
 
+/**
+ * Common tail for every fill, regardless of how many dates were processed:
+ * persist progress/history, diff priorities, and sync any P1/P2 boundary
+ * crossings into the already-published weekly playlists. Both callers (CLI
+ * and web) get this for free — a fill isn't done until this has run.
+ */
+async function finishFill(
+  opts: FillRunOptions,
+  userId: string,
+  prioritiesBefore: PrioritySnapshot,
+  results: DateResult[],
+  durationMinutes: number,
+): Promise<FillResult> {
+  const { ctx, storage, config } = opts;
+  await writeProgressFile(storage, results);
+  await maybeAppendFillHistory(storage, results);
+
+  const trustedArtists = await storage.loadTrustedArtists();
+  const prioritiesAfter = snapshotFromTrusted(trustedArtists);
+  const priorityChanges = computePriorityChanges(
+    prioritiesBefore,
+    prioritiesAfter,
+  );
+
+  // A sync failure shouldn't fail an otherwise-successful fill — log and move
+  // on. (Recalculation's own sync call, by contrast, must propagate so a
+  // failure blocks persistence and the operation can be retried cleanly.)
+  let syncResult: Awaited<ReturnType<typeof syncIfNeeded>> = null;
+  try {
+    syncResult = await syncIfNeeded(
+      priorityChanges,
+      { ctx, dataDir: storage.dataDir, userId, handlers: opts.syncHandlers },
+      {
+        allWeeklyId: config.allWeeklyId ?? DEFAULTS.allWeeklyId,
+        minPopularity: (config.editorialFilter ?? DEFAULTS.editorialFilter)
+          .minPopularity,
+        trustedArtists,
+      },
+    );
+  } catch (syncErr) {
+    const err = syncErr instanceof Error ? syncErr : new Error(String(syncErr));
+    if (err.name === 'AbortError' || err.message === 'Stopped by user') {
+      throw err;
+    }
+    opts.syncHandlers.onLog(`Post-fill sync failed: ${err.message}`, 'warn');
+  }
+
+  return {
+    results,
+    durationMinutes,
+    priorityChanges,
+    syncedPlaylists: syncResult?.playlistsSynced ?? null,
+  };
+}
+
 export async function runFill(opts: FillRunOptions): Promise<FillResult> {
   const { ctx, storage, config } = opts;
   const emitter = new ServiceEmitter<PlaylistFillerEventMap>(opts.handlers);
@@ -251,12 +374,7 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
 
   if (datesToProcess.length === 0) {
     emitter.emit('log', 'All weekly playlists are already filled.');
-    return {
-      results: [],
-      durationMinutes: 0,
-      prioritiesBefore,
-      prioritiesAfter: await loadPrioritiesSnapshot(storage),
-    };
+    return finishFill(opts, userId, prioritiesBefore, [], 0);
   }
 
   emitter.emit('start', datesToProcess);
@@ -364,6 +482,5 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
   const durationMinutes = Math.round((Date.now() - startTime) / 1000 / 60);
   emitter.emit('batchComplete', results, durationMinutes);
 
-  const prioritiesAfter = await loadPrioritiesSnapshot(storage);
-  return { results, durationMinutes, prioritiesBefore, prioritiesAfter };
+  return finishFill(opts, userId, prioritiesBefore, results, durationMinutes);
 }

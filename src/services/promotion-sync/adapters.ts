@@ -29,7 +29,9 @@ export function promotionReads(ctx: SpotifyContext): PromotionReads {
 
 /**
  * Production PlaylistWrites adapter: chunks at Spotify's 100-item limit and
- * formats track ids as `spotify:track:` uris.
+ * formats track ids as `spotify:track:` uris. Throws on any failed chunk —
+ * `ctx.call` has already exhausted its own retries by the time it reports
+ * failure, so a caller must not treat the write as done.
  */
 export function spotifyPlaylistWrites(ctx: SpotifyContext): PlaylistWrites {
   return {
@@ -38,10 +40,15 @@ export function spotifyPlaylistWrites(ctx: SpotifyContext): PlaylistWrites {
         const uris = trackIds
           .slice(i, i + WRITE_CHUNK)
           .map((id) => `spotify:track:${id}`);
-        await ctx.call(
+        const result = await ctx.call(
           () => ctx.api.playlists.addItemsToPlaylist(playlistId, uris),
           `add tracks to ${playlistId}`,
         );
+        if (!result.success) {
+          throw (
+            result.error ?? new Error(`Failed to add tracks to ${playlistId}`)
+          );
+        }
       }
     },
     async removeTracks(playlistId, trackIds) {
@@ -49,11 +56,17 @@ export function spotifyPlaylistWrites(ctx: SpotifyContext): PlaylistWrites {
         const tracks = trackIds
           .slice(i, i + WRITE_CHUNK)
           .map((id) => ({ uri: `spotify:track:${id}` }));
-        await ctx.call(
+        const result = await ctx.call(
           () =>
             ctx.api.playlists.removeItemsFromPlaylist(playlistId, { tracks }),
           `remove tracks from ${playlistId}`,
         );
+        if (!result.success) {
+          throw (
+            result.error ??
+            new Error(`Failed to remove tracks from ${playlistId}`)
+          );
+        }
       }
     },
   };
