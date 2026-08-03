@@ -11,16 +11,28 @@
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: #121212; color: #e0e0e0; min-height: 100vh;
   }
+  /* Header + session banner stay pinned while the page scrolls */
+  .topbar {
+    position: sticky; top: 0; z-index: 50; background: #121212;
+  }
   header {
     display: flex; justify-content: space-between; align-items: center;
+    gap: 8px 12px; flex-wrap: wrap;
     padding: 16px 24px; background: #181818; border-bottom: 1px solid #282828;
   }
-  header h1 { font-size: 20px; font-weight: 600; }
+  header h1 { font-size: 20px; font-weight: 600; white-space: nowrap; }
   header h1 span { color: #1DB954; }
-  .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #999; }
+  .status {
+    display: flex; align-items: center; gap: 8px; font-size: 13px; color: #999;
+    margin-left: auto; min-width: 0;
+  }
+  .status #userDisplay {
+    max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .status #statusText { white-space: nowrap; }
   .status-dot {
     width: 8px; height: 8px; border-radius: 50%;
-    background: #555; transition: background 0.3s;
+    background: #555; transition: background 0.3s; flex-shrink: 0;
   }
   .status-dot.connected { background: #1DB954; }
   .status-dot.error { background: #e74c3c; }
@@ -147,7 +159,7 @@
   .result-item .meta { color: #999; font-size: 12px; margin-top: 2px; }
 
   /* Artist table */
-  .artist-table-wrap { margin-top: 12px; max-height: 400px; overflow-y: auto; display: none; }
+  .artist-table-wrap { margin-top: 12px; max-height: 400px; overflow: auto; display: none; }
   .artist-table-wrap.visible { display: block; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th { text-align: left; padding: 6px 8px; border-bottom: 1px solid #383838; color: #999; font-weight: 500; position: sticky; top: 0; background: #181818; }
@@ -171,6 +183,8 @@
   }
   .log-entry { white-space: pre-wrap; word-break: break-word; }
   .log-entry .ts { color: #555; }
+  /* Entries from an earlier day carry their date and a dimmer, warmer stamp */
+  .log-entry .ts.past { color: #8a7538; }
   .log-entry.info { color: #aaa; }
   .log-entry.success { color: #1DB954; }
   .log-entry.warn { color: #f1c40f; }
@@ -558,6 +572,40 @@
   }
   .album-track.active .at-pop-fill { background: #1DB954; }
   .album-track .at-dur { color: #666; font-size: 12px; flex-shrink: 0; font-variant-numeric: tabular-nums; min-width: 32px; text-align: right; }
+
+  /* ── Mobile ──────────────────────────────────────────────────── */
+  @media (max-width: 700px) {
+    header { padding: 12px 14px; gap: 8px; }
+    header h1 { font-size: 16px; }
+    /* The dot carries the connection state; its tooltip holds the label. */
+    .status #statusText { display: none; }
+    .status { gap: 6px; font-size: 12px; }
+    /* Account name is dropped so the header stays a single row */
+    .status #userDisplay { display: none; }
+    .status button.secondary, .status button.danger { padding: 6px 12px; font-size: 12px; }
+    .gear-btn { padding: 6px 4px; }
+
+    main { padding: 16px 14px; }
+    /* Single column — the 340px minimum overflows a phone viewport. */
+    .cards { grid-template-columns: 1fr; gap: 12px; }
+    .card { padding: 16px; }
+
+    .now-playing .np-inner { padding: 12px 14px; gap: 12px; }
+    .now-playing .np-art { width: 48px; height: 48px; }
+    .now-playing .np-time { min-width: 0; }
+
+    .log-header { flex-wrap: wrap; gap: 8px; }
+    .log-panel { height: 220px; }
+
+    .settings-overlay, .picker-overlay, .album-overlay { padding: 16px 10px; }
+    .settings-panel { padding: 16px; }
+    .settings-row { flex-wrap: wrap; }
+    .settings-row label { min-width: 100%; }
+    .settings-footer { flex-wrap: wrap; }
+
+    .album-header { padding: 16px; gap: 12px; }
+    .album-cover { width: 110px; height: 110px; }
+  }
 </style>
 </head>
 <body>
@@ -586,6 +634,7 @@
   </div>
 </div>
 
+<div class="topbar">
 <header>
   <h1><span>Spotify</span> Automation</h1>
   <div class="status">
@@ -595,7 +644,7 @@
     <button class="secondary" id="authBtn" onclick="authenticate()" style="display:none;">Authenticate</button>
     <button class="secondary" id="logoutBtn" onclick="logout()" style="display:none;font-size:12px;padding:6px 14px;">Logout</button>
     <button class="danger" id="stopBtn" onclick="stopTask()" style="display:none;">Stop</button>
-    <div class="status-dot" id="statusDot"></div>
+    <div class="status-dot" id="statusDot" title="Connecting..."></div>
     <span id="statusText">Connecting...</span>
   </div>
 </header>
@@ -603,6 +652,7 @@
 <div class="token-banner" id="tokenBanner">
   <span>Session expired</span>
   <button onclick="refreshSession()">Refresh</button>
+</div>
 </div>
 
 <main>
@@ -1051,6 +1101,12 @@ function updateFillProgress() {
 }
 
 // ── SSE Connection ──────────────────────────────────────────────
+// The label is hidden on narrow screens, so mirror it onto the dot's tooltip.
+function setStatusText(text) {
+  document.getElementById('statusText').textContent = text;
+  document.getElementById('statusDot').title = text;
+}
+
 function connect() {
   const userId = Store.getUserId();
   const url = userId ? `/api/events?userId=${encodeURIComponent(userId)}` : '/api/events';
@@ -1062,7 +1118,7 @@ function connect() {
     wsConnected = true;
     authProbedThisDisconnect = false;
     document.getElementById('statusDot').className = 'status-dot connected';
-    document.getElementById('statusText').textContent = 'Connected';
+    setStatusText('Connected');
     updateButtons();
     log('success', 'Connected');
   };
@@ -1070,7 +1126,7 @@ function connect() {
   es.onerror = () => {
     wsConnected = false;
     document.getElementById('statusDot').className = 'status-dot error';
-    document.getElementById('statusText').textContent = 'Disconnected';
+    setStatusText('Disconnected');
     updateButtons();
     // Probe auth at most once per disconnect; reset on next successful onopen.
     if (!tokenExpired && !authProbedThisDisconnect) {
@@ -1095,8 +1151,8 @@ function handleMessage({ type, data }) {
     case 'status':
       busy = data.busy;
       updateButtons();
-      if (data.task) document.getElementById('statusText').textContent = `Running: ${data.task}`;
-      else document.getElementById('statusText').textContent = 'Connected';
+      if (data.task) setStatusText(`Running: ${data.task}`);
+      else setStatusText('Connected');
       break;
 
     case 'log': {
@@ -1946,8 +2002,14 @@ function log(level, message, ts) {
   const panel = document.getElementById('logPanel');
   const entry = document.createElement('div');
   entry.className = `log-entry ${level}`;
-  const tsStr = (ts ? new Date(ts) : new Date()).toLocaleTimeString();
-  entry.innerHTML = `<span class="ts">${tsStr}</span> ${esc(message)}`;
+  // Replayed history can be days old — mark anything not from today with its
+  // date so the bare time isn't misread as "just now".
+  const d = ts ? new Date(ts) : new Date();
+  const isToday = d.toDateString() === new Date().toDateString();
+  const tsStr = isToday
+    ? d.toLocaleTimeString()
+    : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString()}`;
+  entry.innerHTML = `<span class="ts${isToday ? '' : ' past'}">${tsStr}</span> ${esc(message)}`;
   panel.appendChild(entry);
   if (document.getElementById('logAutoScroll').checked) {
     panel.scrollTop = panel.scrollHeight;
@@ -2156,6 +2218,9 @@ function collectSettings() {
       minPopularity: Number(document.getElementById('cfgMinPop').value) || 10,
       minFollowers: Number(document.getElementById('cfgMinFollowers').value) || 100000,
     },
+    // Lives outside the modal (Listening Time card) — carry it through so a
+    // settings save doesn't reset it to the default.
+    weeklyListeningBudget: parseFloat(document.getElementById('ltBudgetHours').value) || 15,
   };
 }
 

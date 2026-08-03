@@ -60,8 +60,10 @@ export function configRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // No log broadcast here: this endpoint also backs implicit writes (the
+    // listening-budget input, config migration). Only an explicit Save in the
+    // settings modal logs, and the client does that itself.
     await session.userConfigStore.save(config);
-    ctx.broadcast('log', { level: 'success', message: 'Settings saved' });
     res.json({ ok: true });
   });
 
