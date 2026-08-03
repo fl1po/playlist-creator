@@ -8,12 +8,34 @@ export interface Broadcaster {
     userId: string | null,
     currentTask: string | null,
     searchedArtists: ReadonlySet<string>,
+    lastEventId?: string | null,
   ): void;
   removeClient(res: Response): void;
   clearHistory(): void;
 }
 
 const MAX_LOG_HISTORY = 500;
+
+/**
+ * Changes on every process start. Event ids are `<boot>-<seq>`, so a client
+ * resuming with an id minted by a previous process replays from scratch
+ * instead of skipping the new history.
+ */
+const BOOT_ID = Date.now().toString(36);
+
+interface HistoryEntry {
+  seq: number;
+  msg: string;
+}
+
+/** Position to resume from, or 0 to replay everything. */
+function resumeSeq(lastEventId: string | null | undefined): number {
+  if (!lastEventId) return 0;
+  const sep = lastEventId.lastIndexOf('-');
+  if (sep < 0 || lastEventId.slice(0, sep) !== BOOT_ID) return 0;
+  const seq = Number(lastEventId.slice(sep + 1));
+  return Number.isFinite(seq) ? seq : 0;
+}
 
 /** High-frequency or transient types that should not be stored. */
 const SKIP_HISTORY = new Set([
@@ -27,13 +49,17 @@ const SKIP_HISTORY = new Set([
 
 export function createBroadcaster(): Broadcaster {
   const clients = new Map<Response, string | null>(); // res -> userId
-  const logHistory = new Map<string, string[]>(); // userId -> messages
+  const logHistory = new Map<string, HistoryEntry[]>(); // userId -> messages
+  let seq = 0;
 
-  function send(res: Response, msg: string) {
-    if (!res.writableEnded) res.write(`data: ${msg}\n\n`);
+  function send(res: Response, msg: string, eventId?: string) {
+    if (res.writableEnded) return;
+    res.write(
+      eventId ? `id: ${eventId}\ndata: ${msg}\n\n` : `data: ${msg}\n\n`,
+    );
   }
 
-  function getUserHistory(userId: string): string[] {
+  function getUserHistory(userId: string): HistoryEntry[] {
     let h = logHistory.get(userId);
     if (!h) {
       h = [];
@@ -57,14 +83,18 @@ export function createBroadcaster(): Broadcaster {
   /** Broadcast to a specific user's clients only */
   function broadcastTo(userId: string, type: string, data: unknown) {
     const msg = JSON.stringify({ type, data: stampLog(type, data) });
+    // Every message is numbered so a reconnecting client can tell the server
+    // where it left off; only the durable ones are kept for replay.
+    seq += 1;
     if (!SKIP_HISTORY.has(type)) {
       const history = getUserHistory(userId);
-      history.push(msg);
+      history.push({ seq, msg });
       if (history.length > MAX_LOG_HISTORY)
         history.splice(0, history.length - MAX_LOG_HISTORY);
     }
+    const eventId = `${BOOT_ID}-${seq}`;
     for (const [res, uid] of clients) {
-      if (uid === userId) send(res, msg);
+      if (uid === userId) send(res, msg, eventId);
     }
   }
 
@@ -73,6 +103,7 @@ export function createBroadcaster(): Broadcaster {
     userId: string | null,
     currentTask: string | null,
     searchedArtists: ReadonlySet<string>,
+    lastEventId?: string | null,
   ) {
     clients.set(res, userId);
     send(
@@ -91,11 +122,13 @@ export function createBroadcaster(): Broadcaster {
         }),
       );
     }
-    // Send user-specific history
+    // Replay user history from where this client left off. EventSource resends
+    // its last id automatically, so a dropped connection (idle proxy timeout,
+    // sleeping tab) resumes instead of re-appending the whole log.
     if (userId) {
-      const history = logHistory.get(userId);
-      if (history) {
-        for (const msg of history) send(res, msg);
+      const from = resumeSeq(lastEventId);
+      for (const entry of logHistory.get(userId) ?? []) {
+        if (entry.seq > from) send(res, entry.msg, `${BOOT_ID}-${entry.seq}`);
       }
     }
     res.on('close', () => clients.delete(res));

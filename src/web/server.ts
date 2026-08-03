@@ -114,8 +114,17 @@ app.get('/api/events', (req, res) => {
     userId,
     taskMutex.currentTask,
     getSearchedArtists(),
+    (req.headers['last-event-id'] as string) ?? null,
   );
-  req.on('close', () => broadcaster.removeClient(res));
+  // Comment frames keep idle proxies (Railway drops at ~5min) from killing the
+  // stream, which otherwise reconnects endlessly during quiet periods.
+  const keepAlive = setInterval(() => {
+    if (!res.writableEnded) res.write(': ping\n\n');
+  }, 25_000);
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    broadcaster.removeClient(res);
+  });
 });
 
 // ── Mount route modules ─────────────────────────────────────────────────────
