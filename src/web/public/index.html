@@ -1101,6 +1101,10 @@ function updateFillProgress() {
 }
 
 // ── SSE Connection ──────────────────────────────────────────────
+// Timestamp of the SSE event currently being dispatched; log() falls back to
+// it so event-derived lines carry the event's time, not the render time.
+let currentEventTs = null;
+
 // The label is hidden on narrow screens, so mirror it onto the dot's tooltip.
 function setStatusText(text) {
   document.getElementById('statusText').textContent = text;
@@ -1113,6 +1117,7 @@ function connect() {
   const es = new EventSource(url);
 
   let authProbedThisDisconnect = false;
+  let openedBefore = false;
 
   es.onopen = () => {
     wsConnected = true;
@@ -1120,7 +1125,10 @@ function connect() {
     document.getElementById('statusDot').className = 'status-dot connected';
     setStatusText('Connected');
     updateButtons();
-    log('success', 'Connected');
+    // The status dot already says we're connected, so the first open needs no
+    // line — only a recovery from a dropped stream is worth logging.
+    if (openedBefore) log('success', 'Reconnected');
+    openedBefore = true;
   };
 
   es.onerror = () => {
@@ -1142,7 +1150,15 @@ function connect() {
 
   es.onmessage = (e) => {
     const msg = JSON.parse(e.data);
-    handleMessage(msg);
+    // Most handlers below log without passing a timestamp; while one is
+    // running, log() adopts the event's own so replayed history keeps the
+    // time the work happened.
+    currentEventTs = msg.ts ?? null;
+    try {
+      handleMessage(msg);
+    } finally {
+      currentEventTs = null;
+    }
   };
 }
 
@@ -2004,13 +2020,22 @@ function log(level, message, ts) {
   entry.className = `log-entry ${level}`;
   // Replayed history can be days old — mark anything not from today with its
   // date so the bare time isn't misread as "just now".
-  const d = ts ? new Date(ts) : new Date();
+  const d = new Date(ts ?? currentEventTs ?? Date.now());
   const isToday = d.toDateString() === new Date().toDateString();
   const tsStr = isToday
     ? d.toLocaleTimeString()
     : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString()}`;
   entry.innerHTML = `<span class="ts${isToday ? '' : ' past'}">${tsStr}</span> ${esc(message)}`;
-  panel.appendChild(entry);
+  // Replayed history arrives after whatever the client logged live on connect,
+  // so place by timestamp rather than appending — otherwise a "now" line sits
+  // above entries from hours ago. Entries normally arrive in order, so this
+  // walks back a step or two at most.
+  entry.dataset.ts = d.getTime();
+  let prev = panel.lastElementChild;
+  while (prev && Number(prev.dataset.ts) > d.getTime()) {
+    prev = prev.previousElementSibling;
+  }
+  panel.insertBefore(entry, prev ? prev.nextElementSibling : panel.firstChild);
   if (document.getElementById('logAutoScroll').checked) {
     panel.scrollTop = panel.scrollHeight;
   }

@@ -76,13 +76,24 @@ export function createBroadcaster(): Broadcaster {
 
   /** Broadcast to ALL connected clients (used for global events like reload) */
   function broadcast(type: string, data: unknown) {
-    const msg = JSON.stringify({ type, data: stampLog(type, data) });
+    const msg = JSON.stringify({
+      type,
+      data: stampLog(type, data),
+      ts: Date.now(),
+    });
     for (const [res] of clients) send(res, msg);
   }
 
   /** Broadcast to a specific user's clients only */
   function broadcastTo(userId: string, type: string, data: unknown) {
-    const msg = JSON.stringify({ type, data: stampLog(type, data) });
+    // Every message is stamped, not just `log` ones: the client renders log
+    // lines out of task events too, and on replay those must show when the
+    // event happened rather than when the client re-rendered it.
+    const msg = JSON.stringify({
+      type,
+      data: stampLog(type, data),
+      ts: Date.now(),
+    });
     // Every message is numbered so a reconnecting client can tell the server
     // where it left off; only the durable ones are kept for replay.
     seq += 1;

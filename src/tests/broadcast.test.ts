@@ -99,6 +99,31 @@ test('an event id from a previous process replays everything', () => {
   assert.equal(logs.length, 1);
 });
 
+test('replayed events keep the timestamp of when they happened', async () => {
+  const b = createBroadcaster();
+  // The client renders log lines out of task events, so every type — not just
+  // `log` — has to carry a timestamp or the replay reads as "just now".
+  b.broadcastTo('u1', 'fill:start', { dates: ['31.07.26'] });
+  const emittedAt = Date.now();
+  await new Promise((r) => setTimeout(r, 15));
+
+  const client = fakeClient();
+  b.addClient(client.res, 'u1', null, NO_ARTISTS);
+
+  const frames = client.frames.join('');
+  const replayed = frames
+    .split('\n')
+    .filter((l) => l.startsWith('data: '))
+    .map((l) => JSON.parse(l.slice(6)) as { type: string; ts?: number })
+    .find((m) => m.type === 'fill:start');
+
+  assert.ok(replayed?.ts, 'event must carry a timestamp');
+  assert.ok(
+    replayed.ts <= emittedAt,
+    'timestamp must be the original, not the replay time',
+  );
+});
+
 test('history is scoped per user', () => {
   const b = createBroadcaster();
   b.broadcastTo('u1', 'log', { level: 'info', message: 'mine' });
