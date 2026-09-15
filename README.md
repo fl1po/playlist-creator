@@ -218,8 +218,89 @@ All core actions are also available as CLI commands. They read/write the same pe
 | `pnpm find-artist <name>` | Look up artist priority |
 | `pnpm list-artists` | List artists by priority |
 | `pnpm clear <playlist>` | Clear a playlist by name |
+| `pnpm year-playlist <year>` | Build a retrospective year collection (see below) |
 
 </details>
+
+## Year collection
+
+A retrospective mode: build a canon of one past year's releases shaped by your
+roster but not gated by it. Where Fill answers "what came out this week from
+artists I follow", this answers "what defined this year in the scenes I care
+about" — including artists you have never listened to.
+
+```bash
+pnpm year-playlist 2016            # collect — writes a plan, touches nothing
+# review year-plan-2016.md
+pnpm year-playlist 2016 --apply    # create the monthly playlists
+```
+
+| Flag | Effect |
+|---|---|
+| `--apply` | Create the playlists from an existing plan |
+| `--rescore` | Rebuild the plan from checkpointed data — seconds, no refetch |
+| `--fresh` | Discard both plan and checkpoint, refetch everything |
+| `--allow-degraded` | Write the plan even if calls were lost mid-run |
+
+The two phases are separate because fetching costs hours and scoring costs
+seconds. The collect phase writes `year-plan-<year>.json` (every release with
+its scores and every rejection with a reason) plus a readable Markdown summary.
+`--apply` builds the playlists from that plan without re-fetching.
+
+### Interruptions
+
+A full collect is roughly two hours, nearly all of it waiting on the
+one-request-per-second pacer, so it is built to survive losing the terminal.
+
+Each expensive phase writes to `year-plan-<year>.progress.json` as it finishes,
+and the two longest loops — candidate resolution and the album sweep — flush
+every 25 items. **Re-running the same command resumes from the last flush**;
+`--fresh` is what starts over. Short network drops are absorbed by the API
+wrapper, which retries for about nine minutes per call before giving up.
+
+Calls that fail after their retries are counted per phase rather than silently
+swallowed, because their damage is invisible in the output: a dropped album
+batch yields releases with no tracks, a dropped artist batch yields a wrong
+cluster assignment. If a phase's failure rate crosses its threshold the run
+**refuses to write a plan** and tells you to re-run — the checkpoint means only
+the failed work is retried. `--allow-degraded` overrides this, and the summary
+then carries a "Failed calls" table.
+
+Because the checkpoint holds every fetched result, tuning scoring constants is
+cheap: edit them and run `--rescore` for a rebuilt plan in seconds.
+
+Over SSH, run it under `nohup` or `screen` so a disconnect does not SIGHUP the
+process mid-sweep.
+
+How it works:
+
+1. **Taste profile** — genres for the whole roster, weighted by priority tier,
+   reduced to a genre vector and a distribution over ~13 scene clusters.
+2. **Expansion** — every P1/P2 artist is resolved on Deezer and its related
+   artists collected. Spotify's `/recommendations` and `/related-artists` return
+   404 for apps registered after November 2024, so Deezer is the taste graph.
+   An artist's *co-citation count* — how many of your seeds point at them — is
+   the primary relevance signal.
+3. **Relevance cut** — co-citation, genre affinity and roster tier, cut before
+   any album fetching. This is what keeps the run at ~3,000 Spotify calls.
+4. **Qualification** — albums and EPs only; reissues, compilations, live albums
+   and remix packs excluded. Where a base and deluxe edition both exist in-year
+   the deluxe wins, the inverse of weekly fill.
+5. **Acclaim** — Spotify popularity and Deezer rank (endurance) blended 35/65
+   with Last.fm playcount (critical standing), each converted to a percentile
+   **within the release's own cluster** so grime competes with grime. Below
+   5,000 Last.fm listeners the critic signal is treated as absent rather than
+   low — its coverage of Afro and UK-Black music is thin enough that a
+   percentile there measures noise.
+6. **Floor** — a release must clear the bottom quartile of its own cluster.
+   Nothing is cut to hit a track target; releases go in whole or not at all.
+
+Output is 12 playlists named `YYYY.MM`, releases date-ascending, tracks in album
+sequence. The naming deliberately avoids the `DD.MM.YY` weekly convention —
+`fill-run` and `non-listened-playlists` both match that pattern.
+
+Requires a free [Last.fm API key](https://www.last.fm/api/account/create) in
+`.env` as `LASTFM_API_KEY`.
 
 ## Project structure
 

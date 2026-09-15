@@ -1117,7 +1117,6 @@ function connect() {
   const es = new EventSource(url);
 
   let authProbedThisDisconnect = false;
-  let openedBefore = false;
 
   es.onopen = () => {
     wsConnected = true;
@@ -1125,10 +1124,6 @@ function connect() {
     document.getElementById('statusDot').className = 'status-dot connected';
     setStatusText('Connected');
     updateButtons();
-    // The status dot already says we're connected, so the first open needs no
-    // line — only a recovery from a dropped stream is worth logging.
-    if (openedBefore) log('success', 'Reconnected');
-    openedBefore = true;
   };
 
   es.onerror = () => {
@@ -1635,13 +1630,11 @@ async function syncDataFromServer() {
   const res = await api('GET', '/api/export-data');
   if (!res.ok) return;
   const keys = ['trustedArtists', 'batchCache', 'fillHistory', 'durationSnapshots', 'listeningTime', 'awBreakdown'];
-  let synced = 0;
   for (const key of keys) {
     // Only overwrite when the backend actually has the dataset; a null means
     // "no durable copy" (e.g. a regenerable cache), so keep what's local.
-    if (res[key]) { Store.set(key, res[key]); synced++; }
+    if (res[key]) Store.set(key, res[key]);
   }
-  if (synced > 0) log('success', `Synced ${synced} data sets from server`);
 }
 
 async function logout() {

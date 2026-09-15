@@ -14,6 +14,7 @@
     "find-artist": "tsc && node build/cli/find-artist.js",
     "clear": "tsc && node build/cli/clear.js",
     "list-artists": "tsc && node build/cli/list-artists.js",
+    "year-playlist": "tsc && node --env-file=.env build/cli/year-playlist.js",
     "simulate-featured": "tsc && node build/cli/simulate-featured.js",
     "probe-popularity": "tsc && node build/cli/probe-popularity.js",
     "import-from-redis": "tsc && node build/cli/import-from-redis.js",

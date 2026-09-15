@@ -21,6 +21,12 @@ interface DeezerTrack {
   explicit_lyrics: boolean;
 }
 
+export interface DeezerArtist {
+  id: number;
+  name: string;
+  nb_fan: number;
+}
+
 export interface DeezerAlbumDetail {
   id: number;
   title: string;
@@ -29,6 +35,21 @@ export interface DeezerAlbumDetail {
   record_type: string;
   explicit_lyrics: boolean;
   tracks: { data: DeezerTrack[] };
+}
+
+/**
+ * Fold a name for comparison: NFD-decompose, strip diacritics, lowercase.
+ *
+ * Deezer and Spotify disagree on Unicode normalization, so a raw comparison
+ * drops real artists — "Sinéad Harnett", "Lila Iké", "Chlöe", "thủy" and
+ * "Lolo Zouaï" all failed to resolve before this.
+ */
+function foldName(name: string): string {
+  return name
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .trim();
 }
 
 export class DeezerClient {
@@ -77,9 +98,7 @@ export class DeezerClient {
   }
 
   /** Search for an album by artist + title. Returns top 3 results. */
-  async searchAlbum(
-    query: string,
-  ): Promise<DeezerAlbumSearchResult[]> {
+  async searchAlbum(query: string): Promise<DeezerAlbumSearchResult[]> {
     const encoded = encodeURIComponent(query);
     const data = await this.fetch<{ data: DeezerAlbumSearchResult[] }>(
       `/search/album?q=${encoded}&limit=3`,
@@ -90,5 +109,39 @@ export class DeezerClient {
   /** Get full album details including tracks with rank. */
   async getAlbum(albumId: number): Promise<DeezerAlbumDetail | null> {
     return this.fetch<DeezerAlbumDetail>(`/album/${albumId}`);
+  }
+
+  /**
+   * Resolve an artist name to a Deezer artist.
+   *
+   * Requires an exact (case-insensitive) name match on one of the top hits —
+   * Deezer's search happily returns tribute acts and soundalikes, and a wrong
+   * resolution silently poisons the whole related-artist graph downstream.
+   */
+  async searchArtist(name: string): Promise<DeezerArtist | null> {
+    const data = await this.fetch<{ data: DeezerArtist[] }>(
+      `/search/artist?q=${encodeURIComponent(name)}&limit=10`,
+    );
+    const results = data?.data ?? [];
+    const target = foldName(name);
+    const matches = results.filter((a) => foldName(a.name) === target);
+    if (matches.length === 0) return null;
+
+    // Deezer carries duplicate and impostor profiles under the same name —
+    // "Fousheé" matched a profile with 4 fans, "Chlöe" one with 7. The
+    // canonical artist is the one people actually follow.
+    return matches.reduce((best, a) => (a.nb_fan > best.nb_fan ? a : best));
+  }
+
+  /**
+   * Artists Deezer considers similar. This is the taste graph the whole
+   * expansion rests on, since Spotify's related-artists endpoint has been
+   * deprecated and returns 404 for apps registered after November 2024.
+   */
+  async relatedArtists(artistId: number): Promise<DeezerArtist[]> {
+    const data = await this.fetch<{ data: DeezerArtist[] }>(
+      `/artist/${artistId}/related?limit=25`,
+    );
+    return data?.data ?? [];
   }
 }

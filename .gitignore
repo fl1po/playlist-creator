@@ -8,6 +8,10 @@ user-config.json
 trusted-artists.json
 batch-cache.json
 batch-p1p2-progress.json
+year-plan-*.json
+year-plan-*.md
+*.progress.json
+*.progress.json.tmp
 # MCP server (not part of playlist automation)
 src/index.ts
 src/read.ts
