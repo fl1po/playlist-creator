@@ -38,6 +38,8 @@ export interface UserConfig {
     minFollowers: number;
   };
   weeklyListeningBudget: number;
+  /** Dashboard blocks pinned to the top of the page, by element id. */
+  pinnedBlocks: string[];
 }
 
 // ── Defaults (current hardcoded values) ──────────────────────────────────────
@@ -106,6 +108,7 @@ export const DEFAULT_USER_CONFIG: UserConfig = {
     minFollowers: 100000,
   },
   weeklyListeningBudget: 15,
+  pinnedBlocks: ['appHeader'],
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -169,6 +172,7 @@ export function mergeConfigWithDefaults(
     },
     weeklyListeningBudget:
       partial.weeklyListeningBudget ?? defaults.weeklyListeningBudget,
+    pinnedBlocks: partial.pinnedBlocks ?? defaults.pinnedBlocks,
   };
 }
 

@@ -55,13 +55,23 @@ export function configRoutes(ctx: RouteContext): Router {
       errors.push('Featured multiplier must be between 0 and 1');
     }
 
+    if (
+      config.pinnedBlocks != null &&
+      !(
+        Array.isArray(config.pinnedBlocks) &&
+        config.pinnedBlocks.every((id: unknown) => typeof id === 'string')
+      )
+    ) {
+      errors.push('Pinned blocks must be a list of block ids');
+    }
+
     if (errors.length > 0) {
       res.status(400).json({ error: errors.join('; ') });
       return;
     }
 
     // No log broadcast here: this endpoint also backs implicit writes (the
-    // listening-budget input, config migration). Only an explicit Save in the
+    // listening-budget input, pinned blocks, config migration). Only an explicit Save in the
     // settings modal logs, and the client does that itself.
     await session.userConfigStore.save(config);
     res.json({ ok: true });

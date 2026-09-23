@@ -11,10 +11,23 @@
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: #121212; color: #e0e0e0; min-height: 100vh;
   }
-  /* Header + session banner stay pinned while the page scrolls */
+  /* Sticky stack at the top of the page: pinned header, session banner, then
+     the pinned blocks one after another (layoutPins() moves them in and out) */
   .topbar {
     position: sticky; top: 0; z-index: 50; background: #121212;
   }
+  .pinned-zone {
+    max-width: 1200px; margin: 0 auto; padding: 0 24px;
+    max-height: 70vh; overflow-y: auto;
+  }
+  .pinned-zone:has(> .now-playing.visible, > #logBlock) { padding-block: 12px; }
+  .topbar:has(.pinned-zone > .now-playing.visible, .pinned-zone > #logBlock) {
+    box-shadow: 0 6px 12px rgba(0, 0, 0, 0.5);
+  }
+  .pinned-zone > .now-playing { margin-bottom: 12px; }
+  .pinned-zone > .now-playing:last-child { margin-bottom: 0; }
+  .pin-btn svg { transform: rotate(45deg); transition: transform 0.2s; }
+  .pin-btn.active svg { transform: none; fill: currentColor; }
   header {
     display: flex; justify-content: space-between; align-items: center;
     gap: 8px 12px; flex-wrap: wrap;
@@ -198,6 +211,7 @@
   }
   .log-header h2 { font-size: 14px; }
   .log-header button { padding: 4px 12px; font-size: 12px; }
+  .log-header .pin-btn { padding: 4px 6px; }
 
   /* Auth overlay */
   .auth-overlay {
@@ -586,6 +600,7 @@
     .gear-btn { padding: 6px 4px; }
 
     main { padding: 16px 14px; }
+    .pinned-zone { padding-inline: 14px; }
     /* Single column — the 340px minimum overflows a phone viewport. */
     .cards { grid-template-columns: 1fr; gap: 12px; }
     .card { padding: 16px; }
@@ -634,11 +649,13 @@
   </div>
 </div>
 
-<div class="topbar">
-<header>
+<span id="appHeaderHome"></span>
+<div class="topbar" id="pinStack">
+<header id="appHeader">
   <h1><span>Spotify</span> Automation</h1>
   <div class="status">
     <span id="userDisplay" style="font-size:12px;color:#999;display:none;"></span>
+    <button class="gear-btn pin-btn" data-pin="appHeader" onclick="togglePin('appHeader')" title="Pin to top"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="17" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg></button>
     <button class="gear-btn" id="statsBtn" onclick="toggleStats()" title="Stats"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="12" x2="2" y2="8"/><line x1="6" y1="12" x2="6" y2="4"/><line x1="10" y1="12" x2="10" y2="6"/><line x1="14" y1="12" x2="14" y2="2"/></svg></button>
     <button class="gear-btn" onclick="openSettings()" title="Settings">&#9881;</button>
     <button class="secondary" id="authBtn" onclick="authenticate()" style="display:none;">Authenticate</button>
@@ -653,9 +670,11 @@
   <span>Session expired</span>
   <button onclick="refreshSession()">Refresh</button>
 </div>
+<div class="pinned-zone" id="pinnedZone"></div>
 </div>
 
 <main>
+  <span id="nowPlayingHome"></span>
   <div class="now-playing" id="nowPlaying">
     <div class="np-inner">
       <div class="np-dot" id="npDot"></div>
@@ -676,6 +695,7 @@
           <div class="np-remaining-tracks" id="npRemainingTracks"></div>
         </div>
       </div>
+      <button class="gear-btn pin-btn" data-pin="nowPlaying" onclick="togglePin('nowPlaying')" title="Pin to top"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="17" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg></button>
     </div>
   </div>
 
@@ -792,13 +812,15 @@
   </div>
 
   <!-- Log Panel -->
-  <div>
+  <span id="logBlockHome"></span>
+  <div id="logBlock">
     <div class="log-header">
       <h2>Live Log</h2>
       <div style="display:flex;align-items:center;gap:8px;">
         <label class="toggle"><input type="checkbox" id="logShowDebug" onchange="document.getElementById('logPanel').classList.toggle('show-debug', this.checked)"> Debug</label>
         <label class="toggle"><input type="checkbox" id="logAutoScroll" checked> Auto-scroll</label>
         <button class="secondary" onclick="clearLog()">Clear</button>
+        <button class="gear-btn pin-btn" data-pin="logBlock" onclick="togglePin('logBlock')" title="Pin to top"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="17" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg></button>
       </div>
     </div>
     <div class="log-panel" id="logPanel"></div>
@@ -2113,6 +2135,7 @@ async function loadConfig() {
     if (currentConfig.weeklyListeningBudget) {
       document.getElementById('ltBudgetHours').value = currentConfig.weeklyListeningBudget;
     }
+    if (currentConfig.pinnedBlocks) applyPinnedBlocks(currentConfig.pinnedBlocks);
     // If server has no config but we have it in localStorage (from migration), push it
     if (!res.configured) {
       const localConfig = Store.get('config');
@@ -2239,6 +2262,7 @@ function collectSettings() {
     // Lives outside the modal (Listening Time card) — carry it through so a
     // settings save doesn't reset it to the default.
     weeklyListeningBudget: parseFloat(document.getElementById('ltBudgetHours').value) || 15,
+    pinnedBlocks: [...pinned],
   };
 }
 
@@ -2904,6 +2928,58 @@ function updateAlbumIfOpen() {
 function closeAlbum() {
   document.getElementById('albumOverlay').classList.add('hidden');
 }
+
+// ── Pinned blocks ────────────────────────────────────────────────
+// Pinning moves a block into the sticky stack at the top of the page, where
+// pinned blocks sit one after another in PINNABLE order. Unpinning puts the
+// block back at its placeholder (#<id>Home).
+// The user config is the source of truth; localStorage only mirrors it so the
+// layout is right on first paint, before /api/config answers.
+const PINNABLE = ['appHeader', 'nowPlaying', 'logBlock'];
+const pinned = new Set(Store.get('pinnedBlocks') ?? ['appHeader']);
+
+function applyPinnedBlocks(ids) {
+  pinned.clear();
+  ids.filter(id => PINNABLE.includes(id)).forEach(id => pinned.add(id));
+  Store.set('pinnedBlocks', [...pinned]);
+  layoutPins();
+}
+
+function layoutPins() {
+  const stack = document.getElementById('pinStack');
+  const zone = document.getElementById('pinnedZone');
+  // Moving a node resets its scroll position, so carry the log's across
+  const logPanel = document.getElementById('logPanel');
+  const logScroll = logPanel.scrollTop;
+  for (const id of PINNABLE) {
+    const el = document.getElementById(id);
+    if (!pinned.has(id)) document.getElementById(`${id}Home`).after(el);
+    // The header leads the stack, above the session banner
+    else if (id === 'appHeader') stack.prepend(el);
+    else zone.append(el);
+  }
+  logPanel.scrollTop = logScroll;
+  document.querySelectorAll('.pin-btn').forEach(btn => {
+    const on = pinned.has(btn.dataset.pin);
+    btn.classList.toggle('active', on);
+    btn.title = on ? 'Unpin' : 'Pin to top';
+  });
+}
+
+async function togglePin(id) {
+  if (pinned.has(id)) pinned.delete(id); else pinned.add(id);
+  Store.set('pinnedBlocks', [...pinned]);
+  layoutPins();
+  if (!currentConfig) return;
+  currentConfig.pinnedBlocks = [...pinned];
+  await api('PUT', '/api/config', currentConfig);
+}
+
+// Keep scrollIntoView targets from landing underneath the pinned stack
+new ResizeObserver(([entry]) => {
+  document.documentElement.style.scrollPaddingTop = `${entry.target.offsetHeight}px`;
+}).observe(document.getElementById('pinStack'));
+layoutPins();
 
 // ── Init ─────────────────────────────────────────────────────────
 connect();
