@@ -107,8 +107,14 @@ export function createDurableCache(opts: {
   dataDir: string;
   /** Test/composition-root seam. Omit to use the production Upstash-backed port (or none, if unconfigured). */
   redis?: RedisPort | null;
+  /**
+   * Called after every successful save — the web session mirrors each dataset
+   * to the browser's localStorage under `descriptor.redisName` here, so no
+   * writer has to pair its save with a client push by hand.
+   */
+  onSave?: (descriptor: CacheDescriptor<unknown>, value: unknown) => void;
 }): DurableCache {
-  const { userId, dataDir } = opts;
+  const { userId, dataDir, onSave } = opts;
   const redis =
     opts.redis === undefined ? getProductionRedisPort() : opts.redis;
 
@@ -148,6 +154,7 @@ export function createDurableCache(opts: {
         /* redis optional */
       }
     }
+    onSave?.(descriptor as CacheDescriptor<unknown>, value);
   }
 
   async function del(descriptor: CacheDescriptor<unknown>): Promise<void> {

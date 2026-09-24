@@ -17,6 +17,7 @@ export interface AuthDeps {
   };
   getUserDataDir: (userId: string) => string;
   broadcast: (type: string, data: unknown) => void;
+  broadcastTo: (userId: string, type: string, data: unknown) => void;
   mainPort: number;
 }
 
@@ -150,7 +151,14 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
     return { userId: user.id, displayName: user.displayName };
   }
 
-  function buildAuthSuccessPage(displayName: string, authToken: string): string {
+  function buildAuthSuccessPage(
+    displayName: string,
+    authToken: string,
+    openerOrigins: string[] | null,
+  ): string {
+    // null = same origin as the app; otherwise the callback server runs on its
+    // own port and must name the app's origin(s) explicitly.
+    const targets = JSON.stringify(openerOrigins);
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Authenticated</title>
 <style>*{margin:0;padding:0;box-sizing:border-box}body{background:#121212;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center}
 .card{padding:48px 32px}.icon{width:48px;height:48px;margin:0 auto 20px;background:#1a3a25;border-radius:50%;display:flex;align-items:center;justify-content:center}
@@ -161,7 +169,7 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
 <h1>Authenticated</h1>
 <p>Welcome, ${displayName.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c] ?? c)}</p>
 <p class="closing">This window will close automatically...</p>
-</div><script>setTimeout(()=>{if(window.opener){window.close()}else{window.location.href='/?auth_token=' + encodeURIComponent(document.body.dataset.token)}},1500)</script></body></html>`;
+</div><script>setTimeout(()=>{const t=document.body.dataset.token;if(window.opener){for(const o of (${targets}??[location.origin])){try{window.opener.postMessage({type:'spotify-auth',token:t},o)}catch{}}window.close()}else{window.location.href='/?auth_token='+encodeURIComponent(t)}},1500)</script></body></html>`;
   }
 
   function startCallbackServer(port: number, callbackPath: string) {
@@ -204,26 +212,22 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
         const appConfig = deps.loadAppConfig();
         const user = await completeAuth(code, appConfig);
         const authToken = createAuthToken(user.userId);
-        const tokens = recentTokens.get(user.userId);
 
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(buildAuthSuccessPage(user.displayName, authToken));
-        deps.broadcast('log', {
+        res.end(
+          buildAuthSuccessPage(user.displayName, authToken, [
+            `http://localhost:${deps.mainPort}`,
+            `http://127.0.0.1:${deps.mainPort}`,
+          ]),
+        );
+        // Credentials never ride the event stream: the popup hands the one-time
+        // token to its opener (see buildAuthSuccessPage), and the user's other
+        // tabs just learn that auth completed.
+        deps.broadcastTo(user.userId, 'log', {
           level: 'success',
           message: `Spotify authenticated: ${user.displayName}`,
         });
-        deps.broadcast('auth', {
-          authenticated: true,
-          token: authToken,
-          credentials: tokens
-            ? {
-                accessToken: tokens.accessToken,
-                refreshToken: tokens.refreshToken,
-                userId: user.userId,
-                displayName: user.displayName,
-              }
-            : undefined,
-        });
+        deps.broadcastTo(user.userId, 'auth', { authenticated: true });
         if (authResolve) {
           authResolve();
           authResolve = null;
@@ -301,25 +305,16 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
       const appConfig = deps.loadAppConfig();
       const user = await completeAuth(code, appConfig);
       const authToken = createAuthToken(user.userId);
-      const tokens = recentTokens.get(user.userId);
 
-      res.send(buildAuthSuccessPage(user.displayName, authToken));
-      deps.broadcast('log', {
+      res.send(buildAuthSuccessPage(user.displayName, authToken, null));
+      // Credentials never ride the event stream: the popup hands the one-time
+      // token to its opener (see buildAuthSuccessPage), and the user's other
+      // tabs just learn that auth completed.
+      deps.broadcastTo(user.userId, 'log', {
         level: 'success',
         message: `Spotify authenticated: ${user.displayName}`,
       });
-      deps.broadcast('auth', {
-        authenticated: true,
-        token: authToken,
-        credentials: tokens
-          ? {
-              accessToken: tokens.accessToken,
-              refreshToken: tokens.refreshToken,
-              userId: user.userId,
-              displayName: user.displayName,
-            }
-          : undefined,
-      });
+      deps.broadcastTo(user.userId, 'auth', { authenticated: true });
       if (authResolve) {
         authResolve();
         authResolve = null;

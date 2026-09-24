@@ -2,6 +2,7 @@ import { filterByPriority } from '../../domain/artists.js';
 import { generateFridayDates, parseDate } from '../../domain/tracks.js';
 import { abortableSleep } from '../../lib/abort.js';
 import { isAuthError } from '../../lib/api-wrapper.js';
+import { TRUSTED_ARTISTS } from '../../lib/cache-files.js';
 import {
   getAllPlaylistTracks,
   getAllUserPlaylists,
@@ -11,23 +12,20 @@ import {
   ServiceEmitter,
 } from '../../lib/service-events.js';
 import type { SpotifyContext } from '../../lib/spotify-context.js';
-import {
-  type BatchCache,
-  type DateResult,
-  type TrustedArtistsFile,
-  toCachedScanResult,
+import type {
+  BatchCache,
+  DateResult,
+  TrustedArtistsFile,
 } from '../../lib/types.js';
+import type { UserConfig } from '../../lib/user-config.js';
 import type { PriorityChange } from '../promotion-sync/index.js';
-import { syncIfNeeded } from '../promotion-sync/run.js';
 import type { SyncHandlers } from '../promotion-sync/subscribers.js';
 import {
-  type SourcePlaylists,
-  fetchSourceSnapshots,
-  pickReusableScans,
+  type RecalculationDeps,
   recalculate,
-  shouldSkipRecalculation,
-  snapshotPrioritiesFrom,
-} from '../recalculate.js';
+  syncPending,
+} from '../recalculation/index.js';
+import { syncProgressTo } from '../recalculation/subscribers.js';
 import {
   batchCacheCheckpoints,
   deezerPopularitySource,
@@ -38,19 +36,15 @@ import {
   type DatePipelineDeps,
   processDate,
 } from './date-pipeline.js';
-import type {
-  ExternalPlaylistSource,
-  PlaylistFillerEventMap,
-  PlaylistFillerOptions,
-} from './events.js';
+import type { PlaylistFillerEventMap } from './events.js';
 import type { FillHistoryEntry, FillStorage, ProgressFile } from './storage.js';
-
-export type PrioritySnapshot = Map<string, number | null>;
 
 export interface FillRunOptions {
   ctx: SpotifyContext;
-  config: PlaylistFillerOptions;
+  userConfig: UserConfig;
   storage: FillStorage;
+  /** Roster + recalculation: re-scored between weeks, synced at the end. */
+  recalculation: RecalculationDeps;
   /** Event handlers — caller composes from `consoleHandlers()` or `broadcastHandlers()`. */
   handlers: EventHandlers<PlaylistFillerEventMap>;
   /** Promotion-sync progress/logging — caller composes from `consoleSyncHandlers()` or `broadcastSyncHandlers()`. */
@@ -61,26 +55,10 @@ export interface FillRunOptions {
 export interface FillResult {
   results: DateResult[];
   durationMinutes: number;
-  /** Priority changes (promotions/demotions) accrued across the whole fill. */
+  /** Tier moves from every mid-fill recalculation, in order. */
   priorityChanges: PriorityChange[];
-  /** Set when a P1/P2 boundary crossing triggered promotion sync. */
+  /** Set when the trailing promotion sync reconciled playlists. */
   syncedPlaylists: number | null;
-}
-
-/** Diff before/after priorities into a flat change list. */
-function computePriorityChanges(
-  before: PrioritySnapshot,
-  after: PrioritySnapshot,
-): PriorityChange[] {
-  const changes: PriorityChange[] = [];
-  for (const [name, from] of before) {
-    const to = after.get(name) ?? null;
-    if (from !== to) changes.push({ artist: name, from, to });
-  }
-  for (const [name, to] of after) {
-    if (!before.has(name)) changes.push({ artist: name, from: null, to });
-  }
-  return changes;
 }
 
 /** Write the per-run progress file. */
@@ -128,31 +106,6 @@ async function maybeAppendFillHistory(
   await storage.appendFillHistory(entry);
 }
 
-const DEFAULTS = {
-  allWeeklyId: '',
-  bestOfAllWeeklyId: '',
-  editorialPlaylists: [] as Array<{ id: string; name: string }>,
-  externalPlaylistSources: [] as ExternalPlaylistSource[],
-  editorialFilter: { minPopularity: 10, minFollowers: 100000 },
-};
-
-function snapshotFromTrusted(t: TrustedArtistsFile): PrioritySnapshot {
-  const m: PrioritySnapshot = new Map();
-  for (const [name, data] of Object.entries(t.artistCounts))
-    m.set(name, data.priority);
-  return m;
-}
-
-async function loadPrioritiesSnapshot(
-  storage: FillStorage,
-): Promise<PrioritySnapshot> {
-  try {
-    return snapshotFromTrusted(await storage.loadTrustedArtists());
-  } catch {
-    return new Map();
-  }
-}
-
 /** Emit 'resumed' (if applicable) so subscribers can restore UI/log state. */
 async function emitResumedIfAny(
   opts: FillRunOptions,
@@ -163,173 +116,74 @@ async function emitResumedIfAny(
     const cache = await opts.storage.loadBatchCache();
     const progress = cache.artistSearchProgress;
     if (!progress || progress.artistsSearched <= 0) return;
-    const trusted = await opts.storage.loadTrustedArtists();
+    const trusted = await opts.recalculation.cache.load(TRUSTED_ARTISTS);
+    if (!trusted) return;
     const p1p2 = filterByPriority(trusted.artistCounts, [1, 2]);
     const count = Math.min(progress.artistsSearched, p1p2.length);
     const names: string[] = [];
     for (let i = 0; i < count; i++) names.push(p1p2[i][0]);
     emitter.emit('resumed', progress.date, names);
   } catch {
-    /* no cache / trusted file yet */
+    /* no cache yet */
   }
-}
-
-interface RecalcDeps {
-  ctx: SpotifyContext;
-  storage: FillStorage;
-  emitter: ServiceEmitter<PlaylistFillerEventMap>;
-  sources: SourcePlaylists;
-  scoring?: PlaylistFillerOptions['scoring'];
-}
-
-/**
- * Mid-Fill recalc: if either source playlist's snapshot has changed since the
- * cached one, re-run the priority calculator. Skipped when the current date is
- * mid-search so an in-flight artist scan isn't invalidated.
- *
- * Returns true when a recalc happened (caller should reload trusted artists).
- * Always updates `cache.{aw,boaw}Snapshot` and persists the cache.
- */
-async function maybeRecalculate(
-  deps: RecalcDeps,
-  cache: BatchCache,
-  targetDate: string,
-): Promise<boolean> {
-  const { ctx, storage, emitter, sources, scoring } = deps;
-
-  const live = await fetchSourceSnapshots(ctx, sources);
-  // A fill assumes trusted-artists.json already exists, so a cold cache just
-  // means "nothing to compare against yet" — skip and defer the first
-  // recalculation to the explicit recalculate action.
-  const { skip, delta } = shouldSkipRecalculation(cache, live, {
-    skipOnColdCache: true,
-  });
-
-  const persistSnapshots = async () => {
-    cache.allWeeklySnapshot = live.aw;
-    cache.bestOfAllWeeklySnapshot = live.boaw;
-    await storage.saveBatchCache(cache);
-  };
-
-  if (skip) {
-    emitter.emit('log', 'Snapshots unchanged — skipping recalculation');
-    await persistSnapshots();
-    return false;
-  }
-
-  const progress = cache.artistSearchProgress;
-  const midSearch =
-    progress && progress.date === targetDate && progress.artistsSearched > 0;
-  if (midSearch) {
-    await persistSnapshots();
-    return false;
-  }
-
-  emitter.emit('recalculating');
-  const prior = snapshotPrioritiesFrom(await storage.loadTrustedArtists());
-  const result = await recalculate({
-    ctx,
-    sources,
-    // Honor the user's configured thresholds/weights instead of recalculate's
-    // hardcoded defaults — otherwise a mid-fill recalc silently re-tiers every
-    // artist against the wrong thresholds and mass-demotes them.
-    scoring: scoring && {
-      weights: scoring,
-      thresholds: scoring.priorityThresholds,
-      featuredMultiplier: scoring.featuredMultiplier,
-    },
-    preloaded: pickReusableScans(cache, delta),
-    prior,
-  });
-
-  await storage.saveTrustedArtists(result.trustedArtists);
-  cache.awScanCache = toCachedScanResult(result.scanResults.aw);
-  cache.boawScanCache = toCachedScanResult(result.scanResults.boaw);
-  await persistSnapshots();
-
-  emitter.emit('recalculated', result.tierChanges ?? []);
-  return true;
 }
 
 /**
  * Common tail for every fill, regardless of how many dates were processed:
- * persist progress/history, diff priorities, and sync any P1/P2 boundary
- * crossings into the already-published weekly playlists. Both callers (CLI
- * and web) get this for free — a fill isn't done until this has run.
+ * persist progress/history, then promotion-sync whatever priority changes are
+ * pending — this fill's mid-fill recalculations', or ones an earlier run left.
+ * Both callers (CLI and web) get this for free — a fill isn't done until this
+ * has run.
  */
 async function finishFill(
   opts: FillRunOptions,
-  userId: string,
-  prioritiesBefore: PrioritySnapshot,
   results: DateResult[],
+  priorityChanges: PriorityChange[],
   durationMinutes: number,
 ): Promise<FillResult> {
-  const { ctx, storage, config } = opts;
+  const { storage, syncHandlers } = opts;
   await writeProgressFile(storage, results);
   await maybeAppendFillHistory(storage, results);
 
-  const trustedArtists = await storage.loadTrustedArtists();
-  const prioritiesAfter = snapshotFromTrusted(trustedArtists);
-  const priorityChanges = computePriorityChanges(
-    prioritiesBefore,
-    prioritiesAfter,
-  );
-
-  // A sync failure shouldn't fail an otherwise-successful fill — log and move
-  // on. (Recalculation's own sync call, by contrast, must propagate so a
-  // failure blocks persistence and the operation can be retried cleanly.)
-  let syncResult: Awaited<ReturnType<typeof syncIfNeeded>> = null;
+  // A sync failure shouldn't fail an otherwise-successful fill: the changes
+  // stay pending, and the next recalculation or fill applies them.
+  let syncedPlaylists: number | null = null;
   try {
-    syncResult = await syncIfNeeded(
-      priorityChanges,
-      { ctx, dataDir: storage.dataDir, userId, handlers: opts.syncHandlers },
-      {
-        allWeeklyId: config.allWeeklyId ?? DEFAULTS.allWeeklyId,
-        minPopularity: (config.editorialFilter ?? DEFAULTS.editorialFilter)
-          .minPopularity,
-        trustedArtists,
-      },
+    const synced = await syncPending(
+      opts.userConfig,
+      opts.recalculation,
+      syncProgressTo(syncHandlers),
     );
+    if (synced) {
+      syncHandlers.onComplete(synced);
+      syncedPlaylists = synced.playlistsSynced;
+    }
   } catch (syncErr) {
     const err = syncErr instanceof Error ? syncErr : new Error(String(syncErr));
     if (err.name === 'AbortError' || err.message === 'Stopped by user') {
       throw err;
     }
-    opts.syncHandlers.onLog(`Post-fill sync failed: ${err.message}`, 'warn');
+    syncHandlers.onLog(
+      `Post-fill sync failed: ${err.message} — the priority changes stay pending for the next run`,
+      'warn',
+    );
   }
 
-  return {
-    results,
-    durationMinutes,
-    priorityChanges,
-    syncedPlaylists: syncResult?.playlistsSynced ?? null,
-  };
+  return { results, durationMinutes, priorityChanges, syncedPlaylists };
 }
 
 export async function runFill(opts: FillRunOptions): Promise<FillResult> {
-  const { ctx, storage, config } = opts;
+  const { ctx, storage } = opts;
   const emitter = new ServiceEmitter<PlaylistFillerEventMap>(opts.handlers);
 
   await emitResumedIfAny(opts, emitter);
-  const prioritiesBefore = await loadPrioritiesSnapshot(storage);
 
-  const cfg = {
-    allWeeklyId: config.allWeeklyId ?? DEFAULTS.allWeeklyId,
-    bestOfAllWeeklyId: config.bestOfAllWeeklyId ?? DEFAULTS.bestOfAllWeeklyId,
-    useLikedSongs: config.useLikedSongs ?? false,
-    editorialPlaylists:
-      config.editorialPlaylists ?? DEFAULTS.editorialPlaylists,
-    externalPlaylistSources:
-      config.externalPlaylistSources ?? DEFAULTS.externalPlaylistSources,
-    editorialFilter: config.editorialFilter ?? DEFAULTS.editorialFilter,
-    genreFilters: config.genreFilters,
-  };
-
+  const { sourcePlaylists } = opts.userConfig;
   const dpConfig: DatePipelineConfig = {
-    editorialPlaylists: cfg.editorialPlaylists,
-    externalPlaylistSources: cfg.externalPlaylistSources,
-    editorialFilter: cfg.editorialFilter,
-    genreFilters: cfg.genreFilters,
+    editorialPlaylists: opts.userConfig.editorialPlaylists,
+    externalPlaylistSources: opts.userConfig.externalPlaylistSources,
+    editorialFilter: opts.userConfig.editorialFilter,
+    genreFilters: opts.userConfig.genreFilters,
   };
 
   // ── User profile ─────────────────────────────────────────────────────────
@@ -379,7 +233,7 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
 
   if (datesToProcess.length === 0) {
     emitter.emit('log', 'All weekly playlists are already filled.');
-    return finishFill(opts, userId, prioritiesBefore, [], 0);
+    return finishFill(opts, [], [], 0);
   }
 
   emitter.emit('start', datesToProcess);
@@ -404,17 +258,21 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
   // ── Load All Weekly tracks for dedup ─────────────────────────────────────
   emitter.emit('log', 'Loading All Weekly tracks for duplicate checking...');
   const allWeeklyTracks = new Set(
-    await getAllPlaylistTracks(ctx, cfg.allWeeklyId),
+    await getAllPlaylistTracks(ctx, sourcePlaylists.allWeeklyId),
   );
   emitter.emit('log', `Loaded ${allWeeklyTracks.size} tracks from All Weekly`);
 
   // ── Load trusted artists ─────────────────────────────────────────────────
-  let trustedArtists: TrustedArtistsFile = await storage.loadTrustedArtists();
-  let p1p2Artists = filterByPriority(trustedArtists.artistCounts, [1, 2]);
+  let trustedArtists: TrustedArtistsFile | null =
+    await opts.recalculation.cache.load(TRUSTED_ARTISTS);
+  let p1p2Artists = trustedArtists
+    ? filterByPriority(trustedArtists.artistCounts, [1, 2])
+    : [];
   emitter.emit('log', `P1+P2 artists: ${p1p2Artists.length}`);
 
   // ── Per-date batch loop ──────────────────────────────────────────────────
   const results: DateResult[] = [];
+  const priorityChanges: PriorityChange[] = [];
   const startTime = Date.now();
 
   for (let i = 0; i < datesToProcess.length; i++) {
@@ -422,26 +280,30 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
     emitter.emit('dateStart', targetDate, i, datesToProcess.length);
 
     try {
-      const recalculated = await maybeRecalculate(
-        {
-          ctx,
-          storage,
-          emitter,
-          sources: {
-            allWeeklyId: cfg.allWeeklyId,
-            bestOfAllWeeklyId: cfg.bestOfAllWeeklyId,
-            useLikedSongs: cfg.useLikedSongs,
+      // Re-score between weeks, never half-way through one: an in-flight
+      // artist search must keep the roster it started with. A change skipped
+      // here still registers on the next date.
+      const progress = cache.artistSearchProgress;
+      const midSearch =
+        progress?.date === targetDate && progress.artistsSearched > 0;
+      if (!midSearch) {
+        const recalc = await recalculate(opts.userConfig, opts.recalculation, {
+          onProgress: (e) => {
+            if (e.phase === 'recalculating') emitter.emit('recalculating');
           },
-          scoring: config.scoring,
-        },
-        cache,
-        targetDate,
-      );
-
-      if (recalculated) {
-        trustedArtists = await storage.loadTrustedArtists();
-        p1p2Artists = filterByPriority(trustedArtists.artistCounts, [1, 2]);
-        emitter.emit('log', `Reloaded P1+P2 artists: ${p1p2Artists.length}`);
+        });
+        if (recalc.outcome === 'recalculated') {
+          trustedArtists = recalc.roster;
+          p1p2Artists = filterByPriority(trustedArtists.artistCounts, [1, 2]);
+          priorityChanges.push(...recalc.changes);
+          emitter.emit('recalculated', recalc.changes);
+          emitter.emit('log', `Reloaded P1+P2 artists: ${p1p2Artists.length}`);
+        } else {
+          emitter.emit('log', 'Snapshots unchanged — skipping recalculation');
+        }
+      }
+      if (!trustedArtists) {
+        throw new Error('No trusted artists roster — run a recalculation');
       }
 
       if (i > 0 && (i + 1) % 10 === 0) {
@@ -487,5 +349,5 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
   const durationMinutes = Math.round((Date.now() - startTime) / 1000 / 60);
   emitter.emit('batchComplete', results, durationMinutes);
 
-  return finishFill(opts, userId, prioritiesBefore, results, durationMinutes);
+  return finishFill(opts, results, priorityChanges, durationMinutes);
 }

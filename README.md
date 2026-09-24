@@ -212,7 +212,7 @@ All core actions are also available as CLI commands. They read/write the same pe
 
 | Command | Description |
 |---|---|
-| `pnpm recalculate` | Rebuild trusted-artists scores |
+| `pnpm recalculate` | Rebuild trusted-artists scores and sync priority changes (`--force`, `--no-sync`) |
 | `pnpm fill` | Fill missing weekly playlists |
 | `pnpm fill:fresh` | Fill ignoring batch cache |
 | `pnpm find-artist <name>` | Look up artist priority |
@@ -328,7 +328,7 @@ src/
 │   ├── playlist-filler/          # Fill pipeline (see below)
 │   ├── playlist-syncer.ts        # Source playlist snapshot diffing
 │   ├── release-collector.ts      # New-release scan per artist
-│   ├── priority-calculator.ts    # AW/BoAW scan + scoring
+│   ├── recalculation/            # Re-score roster + sync pending priority changes
 │   ├── artist-lookup.ts          # Single-artist search
 │   ├── playlist-clearer.ts       # Clear a target playlist
 │   └── non-listened-playlists.ts # Find unfilled Fridays
@@ -350,7 +350,6 @@ The fill pipeline is split into focused modules:
 - **`index.ts`** — `runFill()` / `runWebFill()` entry points
 - **`orchestrator.ts`** — coordinates release collection, per-date processing, and priority recalculation
 - **`date-pipeline.ts`** — processes a single Friday: fetch sources, dedup, filter, add tracks
-- **`recalculate.ts`** — detects source snapshot changes and triggers a priority recalc when needed
 - **`events.ts`** — typed event map for progress + log streaming
 - **`presenter.ts`** — adapts events for CLI console output or WebSocket broadcast
-- **`storage.ts`** — dual-backed persistence (filesystem only, or filesystem + Redis + live client broadcast)
+- **`storage.ts`** — the fill's own persistence (week progress, fill history) over a DurableCache

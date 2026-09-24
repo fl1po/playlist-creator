@@ -135,9 +135,6 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
 
     tc.emit('listeningTime:complete', result);
 
-    tc.emitData('durationSnapshots', snapshots);
-    tc.emitData('listeningTime', result);
-
     const avg = candidates.length > 0 ? totalMs / candidates.length : 0;
     tc.log(
       'success',

@@ -1,11 +1,12 @@
 import { invalidateNonListenedCache } from '../../services/non-listened-playlists.js';
 import { runFill } from '../../services/playlist-filler/fill-run.js';
-import { RedisAndClientStorage } from '../../services/playlist-filler/storage.js';
+import { DurableFillStorage } from '../../services/playlist-filler/storage.js';
 import {
   broadcastApiCallbacks,
   broadcastHandlers,
 } from '../../services/playlist-filler/subscribers.js';
 import { broadcastSyncHandlers } from '../../services/promotion-sync/subscribers.js';
+import { spotifyRecalculationPorts } from '../../services/recalculation/adapters.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -38,47 +39,26 @@ export const fillTask: TaskDefinition<FillEvents> = {
 
     const userConfig = await tc.userConfig();
 
-    const storage = new RedisAndClientStorage(
-      tc.dataDir,
-      tc.userId,
-      tc.emitData,
-    );
-
     const handlers = broadcastHandlers(tc.broadcast, {
       searchedArtists,
       checkAbort: tc.checkAbort,
     });
 
-    const config = {
-      freshMode,
-      allWeeklyId: userConfig.sourcePlaylists.allWeeklyId,
-      bestOfAllWeeklyId: userConfig.sourcePlaylists.bestOfAllWeeklyId,
-      useLikedSongs: userConfig.sourcePlaylists.useLikedSongs,
-      editorialPlaylists: userConfig.editorialPlaylists,
-      externalPlaylistSources: userConfig.externalPlaylistSources,
-      genreFilters: userConfig.genreFilters,
-      editorialFilter: userConfig.editorialFilter,
-      scoring: userConfig.scoring,
-    };
-
-    const result = await runFill({
+    await runFill({
       ctx: tc.ctx,
-      config,
-      storage,
+      userConfig,
+      storage: new DurableFillStorage(tc.cache, tc.dataDir),
+      recalculation: {
+        cache: tc.cache,
+        ports: spotifyRecalculationPorts(tc.ctx, {
+          userId: tc.userId,
+          dataDir: tc.dataDir,
+        }),
+      },
       handlers,
       syncHandlers: broadcastSyncHandlers(tc.broadcast),
       fresh: freshMode,
     });
-
-    // Surface the per-artist priority changes the same way recalc does, so a
-    // fill also shows who was promoted/demoted — not just the sync counts.
-    if (result.priorityChanges.length > 0) {
-      const changes = [...result.priorityChanges].sort(
-        (a, b) =>
-          (a.to ?? 99) - (b.to ?? 99) || (a.from ?? 99) - (b.from ?? 99),
-      );
-      tc.broadcast('recalc:changes', { changes });
-    }
   },
 
   onError(tc, error, aborted) {
@@ -86,8 +66,8 @@ export const fillTask: TaskDefinition<FillEvents> = {
     else tc.emit('fill:error', { date: 'batch', message: String(error) });
   },
 
-  cleanup(tc) {
+  async cleanup(tc) {
     searchedArtists.clear();
-    invalidateNonListenedCache(tc.dataDir, tc.userId);
+    await invalidateNonListenedCache(tc.dataDir, tc.userId);
   },
 };

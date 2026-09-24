@@ -32,8 +32,8 @@ export function fixedPopularitySource(
 /**
  * Production CheckpointStore: week progress lives in
  * `BatchCache.artistSearchProgress`, persisted through FillStorage (file or
- * Redis-mirrored). Holds the live cache object so snapshots and scan caches
- * written by the fill are preserved on every save.
+ * Redis-mirrored). The fill owns the batch cache; this holds the fill's live
+ * copy so its other fields survive every save.
  */
 export function batchCacheCheckpoints(
   storage: FillStorage,

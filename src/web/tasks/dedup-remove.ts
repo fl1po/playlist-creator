@@ -47,7 +47,7 @@ export const dedupRemoveTask: TaskDefinition<DedupRemoveEvents> = {
     tc.log('success', `Removed ${totalRemoved} duplicate tracks`);
   },
 
-  cleanup(tc) {
-    invalidateNonListenedCache(tc.dataDir, tc.userId);
+  async cleanup(tc) {
+    await invalidateNonListenedCache(tc.dataDir, tc.userId);
   },
 };

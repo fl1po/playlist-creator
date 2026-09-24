@@ -1,5 +1,10 @@
+import type { PriorityChange } from '../services/promotion-sync/index.js';
 import type { CacheDescriptor } from './durable-cache.js';
-import type { BatchCache, TrustedArtistsFile } from './types.js';
+import type {
+  BatchCache,
+  RecalculationState,
+  TrustedArtistsFile,
+} from './types.js';
 
 export const LISTENING_TIME_CACHE = 'listening-time-cache.json';
 export const DURATION_SNAPSHOT_CACHE = 'duration-snapshots.json';
@@ -22,6 +27,20 @@ export const BATCH_CACHE: CacheDescriptor<BatchCache> = {
   redisName: 'batchCache',
   file: 'batch-cache.json',
   isEmpty: (v) => !v || Object.keys(v).length === 0,
+};
+
+/** Owned by the Recalculation module: source snapshots + reusable scans. */
+export const RECALCULATION_STATE: CacheDescriptor<RecalculationState> = {
+  redisName: 'recalculationState',
+  file: 'recalculation-state.json',
+  isEmpty: (v) => !v || Object.keys(v).length === 0,
+};
+
+/** Owned by the Recalculation module: priority changes awaiting promotion sync. */
+export const PENDING_PRIORITY_CHANGES: CacheDescriptor<PriorityChange[]> = {
+  redisName: 'pendingPriorityChanges',
+  file: 'pending-priority-changes.json',
+  isEmpty: (v) => !Array.isArray(v) || v.length === 0,
 };
 
 export const FILL_HISTORY: CacheDescriptor<unknown[]> = {

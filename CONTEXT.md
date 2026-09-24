@@ -53,6 +53,10 @@ _Avoid_: playlist sync, priority diff, backfill
 **Priority change**:
 One artist crossing the P1/P2 boundary during recalculation — a *promotion* (into P1/P2) or a *demotion* (out of P1/P2). Only boundary crossings drive promotion sync; movement within or below the boundary does not.
 
+**Pending priority changes**:
+The durable record of priority changes that promotion sync hasn't applied yet. Saved together with the recalculated roster and cleared only once promotion sync succeeds, so an abort or a sync failure defers the sync instead of losing it — the next recalculation or fill finishes it. Changes to the same artist accumulate and net out (promoted then demoted before a sync is no change).
+_Avoid_: sync queue, outbox
+
 **Album-unit removal**:
 The rule that promotion sync removes a demoted artist's tracks an album at a time: a whole album stays if any of its tracks belongs to a P1/P2 artist (it was added for that feature), otherwise the demoted artist's album group is removed entirely.
 

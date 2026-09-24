@@ -5,6 +5,7 @@
  *
  * Usage: npm run probe-popularity -- [numArtists=50] [numWeeks=1]
  */
+import fs from 'node:fs';
 import { filterByPriority } from '../domain/artists.js';
 import {
   generateFridayDates,
@@ -14,10 +15,9 @@ import {
 import { FileConfigStore } from '../lib/config.js';
 import { fetchDeezerPopularities } from '../lib/deezer-popularity.js';
 import { spotifyContext } from '../lib/spotify-context.js';
-import type { FoundRelease } from '../lib/types.js';
+import type { FoundRelease, TrustedArtistsFile } from '../lib/types.js';
 import { type Run, getArtistWindowReleases } from '../services/week-collection/engine.js';
 import { spotifyReleaseReads } from '../services/week-collection/spotify-reads.js';
-import { FileStorage } from '../services/playlist-filler/storage.js';
 
 // ── Args ───────────────────────────────────────────────────────────────────
 const numArtists = Number(process.argv[2] ?? 50) || 50;
@@ -25,10 +25,11 @@ const numWeeks = Number(process.argv[3] ?? 1) || 1;
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────
 const ctx = spotifyContext({ configStore: new FileConfigStore() });
-const storage = new FileStorage('.');
 const reads = spotifyReleaseReads(ctx);
 
-const trusted = await storage.loadTrustedArtists();
+const trusted: TrustedArtistsFile = JSON.parse(
+  fs.readFileSync('./trusted-artists.json', 'utf8'),
+);
 const roster = filterByPriority(trusted.artistCounts, [1, 2]).slice(0, numArtists);
 
 // ── Week window(s): most recent Friday <= today, going back numWeeks ─────────

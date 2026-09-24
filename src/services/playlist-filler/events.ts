@@ -39,6 +39,7 @@ export type PlaylistFillerEventMap = {
   rateLimitWait: [seconds: number, wakeTime: Date];
   batchComplete: [results: DateResult[], durationMinutes: number];
   recalculating: [];
+  /** Tier moves from one mid-fill recalculation, already sorted. */
   recalculated: [tierChanges: PriorityChange[]];
   pacerWait: [intervalMs: number];
   log: [message: string];
@@ -54,25 +55,4 @@ export interface ExternalPlaylistSource {
 export interface EditorialFilterConfig {
   minPopularity: number;
   minFollowers: number;
-}
-
-export interface ScoringConfig {
-  awWeight: number;
-  boawWeight: number;
-  featuredMultiplier: number;
-  priorityThresholds: { p1: number; p2: number; p3: number; p4: number };
-}
-
-export interface PlaylistFillerOptions {
-  freshMode?: boolean;
-  allWeeklyId?: string;
-  bestOfAllWeeklyId?: string;
-  useLikedSongs?: boolean;
-  editorialPlaylists?: Array<{ id: string; name: string }>;
-  externalPlaylistSources?: ExternalPlaylistSource[];
-  genreFilters?: import('../../domain/filters.js').GenreFilterLists;
-  editorialFilter?: EditorialFilterConfig;
-  /** User scoring config; threaded into the mid-fill recalc so it honors the
-   *  user's thresholds/weights instead of falling back to hardcoded defaults. */
-  scoring?: ScoringConfig;
 }

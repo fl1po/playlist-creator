@@ -79,7 +79,6 @@ export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
     };
 
     await tc.cache.save(AW_BREAKDOWN, result);
-    tc.emitData('awBreakdown', result);
     tc.emit('awBreakdown:complete', result);
 
     const avgTracks =

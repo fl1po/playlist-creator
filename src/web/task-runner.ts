@@ -50,21 +50,19 @@ export interface TaskContext<E extends BaseEvents = BaseEvents> {
   /**
    * Untyped broadcast — interop escape hatch for helpers that take a generic
    * `(type, data) => void` (e.g. `broadcastEvents`, `broadcastHandlers`,
-   * `broadcastApiCallbacks`, `syncIfNeeded`). For direct task emissions use
-   * `emit`, `log`, or `emitData`.
+   * `broadcastApiCallbacks`, the sync handlers). For direct task emissions
+   * use `emit` or `log`.
    */
   broadcast: (type: string, data: unknown) => void;
   /** Throws if the user requested abort. */
   checkAbort: () => void;
   /** Shared request pacer. */
   pacer: RequestPacer;
-  /** File-then-Redis durable cache, scoped to this user. */
-  cache: DurableCache;
   /**
-   * Emit data back to client for localStorage persistence.
-   * Sugar for `emit('data:save', { key, value })`.
+   * File-then-Redis durable cache, scoped to this user. Every save is also
+   * mirrored to the browser's localStorage.
    */
-  emitData: (key: string, value: unknown) => void;
+  cache: DurableCache;
   /** Typed broadcast — only declared event names + payloads compile. */
   emit: TypedEmit<E>;
   /** Sugar for `emit('log', { level, message })`. */
@@ -173,13 +171,17 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
             broadcast: userBroadcast,
             checkAbort,
             pacer,
+            // Mirror every save to the browser's localStorage under the
+            // dataset's name.
             cache: createDurableCache({
               userId: session.userId,
               dataDir: session.dataDir,
+              onSave: (descriptor, value) =>
+                userBroadcast('data:save', {
+                  key: descriptor.redisName,
+                  value,
+                }),
             }),
-            emitData: (key, value) => {
-              userBroadcast('data:save', { key, value });
-            },
             emit: userBroadcast as TypedEmit<E>,
             log: (level, message) => {
               userBroadcast('log', { level, message });

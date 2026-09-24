@@ -1133,9 +1133,24 @@ function setStatusText(text) {
   document.getElementById('statusDot').title = text;
 }
 
+async function logPriorityChanges(changes) {
+  if (!changes?.length) {
+    log('info', 'No priority changes detected');
+    return;
+  }
+  const label = (p) => p === null ? 'none' : `P${p}`;
+  log('info', `${changes.length} artist(s) changed priority:`);
+  for (const c of changes) log('info', `  ${c.artist}: ${label(c.from)} → ${label(c.to)}`);
+}
+
 function connect() {
-  const userId = Store.getUserId();
-  const url = userId ? `/api/events?userId=${encodeURIComponent(userId)}` : '/api/events';
+  // EventSource can't send the Bearer headers, so trade them for a signed
+  // stream ticket. Cookie sessions are identified by the cookie itself.
+  let url = '/api/events';
+  if (Store.getTokens()?.accessToken) {
+    const res = await api('GET', '/api/events/ticket');
+    if (res.ticket) url += `?ticket=${encodeURIComponent(res.ticket)}`;
+  }
   const es = new EventSource(url);
 
   let authProbedThisDisconnect = false;
@@ -1270,6 +1285,7 @@ function handleMessage({ type, data }) {
       break;
     }
     case 'fill:recalculated':
+      logPriorityChanges(data.changes);
       loadArtists();
       break;
     case 'fill:rateLimited':
@@ -1321,15 +1337,7 @@ function handleMessage({ type, data }) {
       if (statsVisible) loadStats();
       break;
     case 'recalc:changes':
-      if (data.changes && data.changes.length > 0) {
-        const label = (p) => p === null ? 'none' : `P${p}`;
-        log('info', `${data.changes.length} artist(s) changed priority:`);
-        for (const c of data.changes) {
-          log('info', `  ${c.artist}: ${label(c.from)} → ${label(c.to)}`);
-        }
-      } else {
-        log('info', 'No priority changes detected');
-      }
+      logPriorityChanges(data.changes);
       break;
     case 'recalc:topArtists':
       break;
@@ -1414,24 +1422,10 @@ function handleMessage({ type, data }) {
 
     // Auth
     case 'auth':
-      if (data.authenticated && data.credentials) {
-        // Store credentials in localStorage (Bearer auth mode)
-        Store.setTokens({ accessToken: data.credentials.accessToken, refreshToken: data.credentials.refreshToken });
-        Store.setUserId(data.credentials.userId);
-        if (authPopup && !authPopup.closed) authPopup.close();
-        authPopup = null;
-        location.reload();
-      } else if (data.authenticated && data.token) {
-        // Fallback: exchange token for cookie (legacy mode)
-        fetch(`/api/auth/complete?token=${encodeURIComponent(data.token)}`)
-          .finally(() => {
-            if (authPopup && !authPopup.closed) authPopup.close();
-            authPopup = null;
-            location.reload();
-          });
-      } else if (data.authenticated) {
-        if (authPopup && !authPopup.closed) authPopup.close();
-        authPopup = null;
+      if (data.authenticated) {
+        // This window's own login completes via the popup's postMessage (it
+        // must store the new tokens first); other tabs of the user just reload.
+        if (authPopup && !authPopup.closed) break;
         location.reload();
       } else {
         // Show inline banner instead of full overlay — auto-refresh on focus
@@ -1541,6 +1535,22 @@ async function refreshSession() {
 
 
 let authPopup = null;
+
+// The auth popup hands back a one-time token; exchange it for the Bearer
+// credentials over a normal request so they never touch the event stream.
+window.addEventListener('message', async (e) => {
+  if (!authPopup || e.source !== authPopup) return;
+  if (e.data?.type !== 'spotify-auth' || !e.data.token) return;
+  const res = await api('GET', `/api/auth/complete?token=${encodeURIComponent(e.data.token)}&format=json`);
+  if (res.userId && res.accessToken) {
+    Store.setTokens({ accessToken: res.accessToken, refreshToken: res.refreshToken });
+    Store.setUserId(res.userId);
+  }
+  if (!authPopup.closed) authPopup.close();
+  authPopup = null;
+  location.reload();
+});
+
 async function authenticate() {
   const status = document.getElementById('authStatus');
   const connectBtn = document.getElementById('authConnectBtn');
@@ -2982,8 +2992,10 @@ new ResizeObserver(([entry]) => {
 layoutPins();
 
 // ── Init ─────────────────────────────────────────────────────────
-connect();
+// After checkAuth: it may exchange a mobile-redirect auth_token for the
+// tokens the stream ticket is requested with.
 checkAuth().then(() => {
+  connect();
   const overlay = document.getElementById('authOverlay');
   if (overlay.classList.contains('hidden')) {
     loadArtists();

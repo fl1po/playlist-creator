@@ -91,28 +91,44 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
   const bearerTokenCache = new Map<string, string>();
   const bearerRefreshCache = new Map<string, string>();
 
-  function buildSpotifyClient(configStore: BridgedConfigStore): SpotifyClient {
+  // Everything here carries the user's own auth state (login URL, tokens), so
+  // it goes to that user's clients only — never the global broadcast.
+  function buildSpotifyClient(
+    configStore: BridgedConfigStore,
+    userId: string,
+  ): SpotifyClient {
     return createSpotifyClient({
       configStore,
       reauth: {
         type: 'custom',
         handler: async () => {
-          broadcast('log', {
+          broadcaster.broadcastTo(userId, 'log', {
             level: 'warn',
             message:
               'Token expired — opening Spotify login. Task paused, waiting...',
           });
           const url = auth.buildAuthUrl();
-          broadcast('auth', { authenticated: false, url });
+          broadcaster.broadcastTo(userId, 'auth', {
+            authenticated: false,
+            url,
+          });
           return auth.waitForAuth();
         },
       },
       onAuthFailed: (err) =>
-        broadcast('log', {
+        broadcaster.broadcastTo(userId, 'log', {
           level: 'error',
           message: `Auth failed: ${err.message}`,
         }),
     });
+  }
+
+  function pushTokens(userId: string) {
+    return (tokens: unknown) =>
+      broadcaster.broadcastTo(userId, 'data:save', {
+        key: 'tokens',
+        value: tokens,
+      });
   }
 
   function loadAppConfig(): AppConfig {
@@ -139,7 +155,7 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
       ? new RedisUserConfigStore(userId)
       : new UserConfigStore(path.join(dataDir, 'user-config.json'));
 
-    const client = buildSpotifyClient(configStore);
+    const client = buildSpotifyClient(configStore, userId);
 
     const session: UserSession = { userId, client, userConfigStore, dataDir };
     sessions.set(userId, session);
@@ -211,10 +227,10 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
       if (cachedAccess !== accessToken || cachedRefresh !== refreshToken) {
         const tokenStore = new InMemoryTokenStore(
           { accessToken, refreshToken },
-          (tokens) => broadcast('data:save', { key: 'tokens', value: tokens }),
+          pushTokens(userId),
         );
         const configStore = new BridgedConfigStore(appConfig, tokenStore);
-        existing.client = buildSpotifyClient(configStore);
+        existing.client = buildSpotifyClient(configStore, userId);
         bearerTokenCache.set(userId, accessToken);
         bearerRefreshCache.set(userId, refreshToken);
       }
@@ -223,14 +239,14 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
 
     const tokenStore = new InMemoryTokenStore(
       { accessToken, refreshToken },
-      (tokens) => broadcast('data:save', { key: 'tokens', value: tokens }),
+      pushTokens(userId),
     );
     const configStore = new BridgedConfigStore(appConfig, tokenStore);
     const userConfigStore: IUserConfigStore = isRedisConfigured()
       ? new RedisUserConfigStore(userId)
       : new UserConfigStore(path.join(usersDir, userId, 'user-config.json'));
 
-    const client = buildSpotifyClient(configStore);
+    const client = buildSpotifyClient(configStore, userId);
     bearerTokenCache.set(userId, accessToken);
     bearerRefreshCache.set(userId, refreshToken);
 

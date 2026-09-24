@@ -11,7 +11,7 @@ export interface Broadcaster {
     lastEventId?: string | null,
   ): void;
   removeClient(res: Response): void;
-  clearHistory(): void;
+  clearHistory(userId: string): void;
 }
 
 const MAX_LOG_HISTORY = 500;
@@ -149,8 +149,8 @@ export function createBroadcaster(): Broadcaster {
     clients.delete(res);
   }
 
-  function clearHistory() {
-    logHistory.clear();
+  function clearHistory(userId: string) {
+    logHistory.delete(userId);
   }
 
   return { broadcast, broadcastTo, addClient, removeClient, clearHistory };

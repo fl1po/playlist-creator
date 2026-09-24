@@ -56,6 +56,22 @@ export function getSessionUserId(
 }
 
 /**
+ * Signed identity for the SSE stream. EventSource can't send headers, so
+ * Bearer-mode clients fetch this once from an authenticated route and pass it
+ * as `?ticket=`. Same signature as the session cookie.
+ */
+export function createStreamTicket(userId: string, secret: string): string {
+  return sign(userId, secret);
+}
+
+export function verifyStreamTicket(
+  ticket: string,
+  secret: string,
+): string | null {
+  return verify(ticket, secret);
+}
+
+/**
  * Extract Bearer token from Authorization header.
  * Returns the raw access token or null.
  */

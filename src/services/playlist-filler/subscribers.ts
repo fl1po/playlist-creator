@@ -3,6 +3,7 @@ import {
   broadcastEvents,
 } from '../../lib/service-events.js';
 import type { ApiCallOptions } from '../../lib/types.js';
+import { describeChange } from '../recalculation/subscribers.js';
 import type { PlaylistFillerEventMap } from './events.js';
 
 // ── Console subscriber (CLI) ────────────────────────────────────────────────
@@ -89,20 +90,12 @@ export function consoleHandlers(): EventHandlers<PlaylistFillerEventMap> {
     onRecalculating: () =>
       console.log('Playlist changed. Recalculating artist priorities...\n'),
     onRecalculated: (changes) => {
-      if (!changes || changes.length === 0) {
+      if (changes.length === 0) {
         console.log('Priorities recalculated (no tier changes).\n');
         return;
       }
-      const sorted = [...changes].sort(
-        (a, b) =>
-          (a.to ?? 99) - (b.to ?? 99) || (a.from ?? 99) - (b.from ?? 99),
-      );
-      console.log(`Priorities recalculated (${sorted.length} tier changes):`);
-      for (const c of sorted) {
-        const from = c.from === null ? 'new' : `P${c.from}`;
-        const to = c.to === null ? 'none' : `P${c.to}`;
-        console.log(`  ${from} → ${to}: ${c.artist}`);
-      }
+      console.log(`Priorities recalculated (${changes.length} tier changes):`);
+      for (const c of changes) console.log(`  ${describeChange(c)}`);
       console.log('');
     },
     onBatchComplete: (results, minutes) => {
@@ -264,13 +257,7 @@ export function broadcastHandlers(
     },
     recalculated: {
       type: 'fill:recalculated',
-      pack: (tierChanges) => {
-        const sorted = [...tierChanges].sort(
-          (a, b) =>
-            (a.to ?? 99) - (b.to ?? 99) || (a.from ?? 99) - (b.from ?? 99),
-        );
-        return { changes: sorted };
-      },
+      pack: (changes) => ({ changes }),
     },
     batchComplete: {
       type: 'fill:complete',

@@ -44,6 +44,14 @@ const MAP: Array<{ key: string; file: string }> = [
   { key: `config:${userId}`, file: 'user-config.json' },
   { key: `trustedArtists:${userId}`, file: 'trusted-artists.json' },
   { key: `batchCache:${userId}`, file: 'batch-cache.json' },
+  {
+    key: `recalculationState:${userId}`,
+    file: 'recalculation-state.json',
+  },
+  {
+    key: `pendingPriorityChanges:${userId}`,
+    file: 'pending-priority-changes.json',
+  },
   { key: `fillHistory:${userId}`, file: 'fill-history.json' },
 ];
 

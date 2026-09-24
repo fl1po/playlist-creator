@@ -150,11 +150,23 @@ export interface CachedScanResult {
   totalTracks: number;
 }
 
-export interface BatchCache {
+/**
+ * What recalculation remembers between runs: the source snapshots it last
+ * scored against, and the scans it can reuse while a source is unchanged.
+ */
+export interface RecalculationState {
   allWeeklySnapshot?: string;
   bestOfAllWeeklySnapshot?: string;
   awScanCache?: CachedScanResult;
   boawScanCache?: CachedScanResult;
+}
+
+/**
+ * The fill's week progress. Caches written before recalculation got its own
+ * state still carry the `RecalculationState` fields; recalculation reads them
+ * once as a migration and never writes them here again.
+ */
+export interface BatchCache extends Partial<RecalculationState> {
   artistSearchProgress?: {
     date: string;
     artistsSearched: number;

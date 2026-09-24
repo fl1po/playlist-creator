@@ -23,12 +23,17 @@ import {
   PlaylistClearerService,
 } from '../services/playlist-clearer.js';
 import { createAuthManager, fetchSpotifyUserId } from './auth.js';
+import { bearerIdentity } from './bearer-identity.js';
 import { createBroadcaster } from './broadcast.js';
 import { createRouteContext } from './route-context.js';
 import { authRoutes } from './routes/auth.js';
 import { configRoutes } from './routes/config.js';
 import { queryRoutes } from './routes/queries.js';
-import { getSessionUserId } from './session.js';
+import {
+  createStreamTicket,
+  getSessionUserId,
+  verifyStreamTicket,
+} from './session.js';
 import { createTaskMutex } from './task-mutex.js';
 import { createTaskRunner } from './task-runner.js';
 import { awBreakdownTask } from './tasks/aw-breakdown.js';
@@ -63,6 +68,7 @@ const auth = createAuthManager({
     ctx.getOrCreateUserSession(userId, appConfig),
   getUserDataDir: (userId) => ctx.getUserDataDir(userId),
   broadcast,
+  broadcastTo: broadcaster.broadcastTo,
   mainPort: PORT,
 });
 
@@ -91,6 +97,20 @@ const publicDir = fs.existsSync(path.join(__dirname, '../../src/web/public'))
   : path.join(__dirname, 'public');
 app.use(express.static(publicDir));
 
+// Auth routes handle raw tokens themselves; everything else under /api must
+// prove a Bearer token belongs to the X-User-Id it claims.
+const verifyBearer = bearerIdentity({
+  loadAppConfig: () => appConfigStore.load(),
+  onTokensRefreshed: (userId, tokens) =>
+    broadcaster.broadcastTo(userId, 'data:save', {
+      key: 'tokens',
+      value: tokens,
+    }),
+});
+app.use('/api', (req, res, next) =>
+  req.path.startsWith('/auth') ? next() : verifyBearer(req, res, next),
+);
+
 app.get('/api/events', (req, res) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -98,16 +118,19 @@ app.get('/api/events', (req, res) => {
     Connection: 'keep-alive',
   });
   res.flushHeaders();
-  // Identify user from header, query param, or cookie
-  let userId: string | null = (req.headers['x-user-id'] as string) ?? null;
-  if (!userId) userId = (req.query.userId as string) ?? null;
-  if (!userId) {
-    try {
-      const appConfig = appConfigStore.load();
-      userId = getSessionUserId(req, appConfig.clientSecret);
-    } catch {
-      /* no config */
-    }
+  // Identify the user from a signed ticket (Bearer mode — EventSource can't
+  // send headers) or the session cookie. Never from an unsigned id: the
+  // stream carries that user's logs and refreshed tokens.
+  let userId: string | null = null;
+  try {
+    const { clientSecret } = appConfigStore.load();
+    const ticket = req.query.ticket;
+    userId =
+      typeof ticket === 'string'
+        ? verifyStreamTicket(ticket, clientSecret)
+        : getSessionUserId(req, clientSecret);
+  } catch {
+    /* no config */
   }
   broadcaster.addClient(
     res,
@@ -124,6 +147,17 @@ app.get('/api/events', (req, res) => {
   req.on('close', () => {
     clearInterval(keepAlive);
     broadcaster.removeClient(res);
+  });
+});
+
+app.get('/api/events/ticket', (req, res) => {
+  const session = ctx.requireSession(req, res);
+  if (!session) return;
+  res.json({
+    ticket: createStreamTicket(
+      session.userId,
+      ctx.loadAppConfig().clientSecret,
+    ),
   });
 });
 
@@ -286,24 +320,33 @@ app.post('/api/clear', async (req, res) => {
   }
 });
 
-app.post('/api/stop', (_req, res) => {
-  if (!taskMutex.currentTask) {
+app.post('/api/stop', (req, res) => {
+  const session = ctx.requireSession(req, res);
+  if (!session) return;
+  const task = taskMutex.currentTask;
+  if (!task) {
     res.status(400).json({ error: 'No task running' });
     return;
   }
+  if (taskMutex.currentTaskUserId !== session.userId) {
+    res.status(403).json({ error: 'Task belongs to another user' });
+    return;
+  }
   if (taskMutex.stop()) {
-    broadcast('log', {
+    broadcaster.broadcastTo(session.userId, 'log', {
       level: 'warn',
-      message: `Stopping ${taskMutex.currentTask}...`,
+      message: `Stopping ${task}...`,
     });
-    res.json({ ok: true, message: `Stopping ${taskMutex.currentTask}` });
+    res.json({ ok: true, message: `Stopping ${task}` });
   } else {
     res.json({ ok: true, message: 'Already stopping' });
   }
 });
 
-app.post('/api/clear-logs', (_req, res) => {
-  broadcaster.clearHistory();
+app.post('/api/clear-logs', (req, res) => {
+  const session = ctx.requireSession(req, res);
+  if (!session) return;
+  broadcaster.clearHistory(session.userId);
   res.json({ ok: true });
 });
 
