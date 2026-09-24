@@ -1,8 +1,6 @@
 import type { FoundRelease } from "../lib/types.js";
 import { acousticPattern, cleanPattern, instrumentalPattern, instrumentalTrackPattern, slowedPattern, spedUpPattern } from "./filters.js";
 
-// ── Deluxe detection ────────────────────────────────────────────────────────
-
 const deluxePatterns = [
   /\bdeluxe\b/i,
   /\bexpanded\b/i,
@@ -35,9 +33,12 @@ export function getBaseAlbumName(albumName: string): string {
     .trim();
 }
 
-// ── Variant filtering ───────────────────────────────────────────────────────
-
-/** Filter out instrumental/clean versions when the original/explicit exists. */
+/**
+ * Pick which variants to drop. Sped-up/slowed releases are always dropped;
+ * instrumental/clean/acoustic ones only when a release with the stripped base
+ * name exists in the same set. Returns the IDs to exclude (`filtered`) plus
+ * the reason for each, for collection decisions.
+ */
 export function filterVariants(
   releases: Map<string, FoundRelease>,
 ): { filtered: Set<string>; removed: Array<{ id: string; type: string; release: FoundRelease }> } {
@@ -85,15 +86,13 @@ export function filterVariants(
   return { filtered, removed };
 }
 
-/** Check if all tracks in a list are instrumental. */
+/** True when every track is an instrumental; an empty list is not. */
 export function isAllInstrumental(
   tracks: Array<{ name: string }>,
 ): boolean {
   if (tracks.length === 0) return false;
   return tracks.every((t) => instrumentalTrackPattern.test(t.name));
 }
-
-// ── Release grouping (pick best version) ────────────────────────────────────
 
 export interface RawRelease {
   id: string;
@@ -117,11 +116,8 @@ export function groupReleases(
   return groups;
 }
 
-// ── Popularity filtering ────────────────────────────────────────────────────
-
-// ── Date matching helpers ────────────────────────────────────────────────────
-
-/** Check if an imprecise release date could overlap with valid dates.
+/** Check if a release date could overlap with valid dates. Spotify returns
+ *  `YYYY-MM` or `YYYY` when release_date_precision is month/year.
  *  Day-precision → exact match. Month/year → any valid date shares that prefix. */
 export function releaseDateCouldMatch(releaseDate: string, validDates: string[]): boolean {
   if (releaseDate.length === 10) return validDates.includes(releaseDate);
@@ -139,8 +135,7 @@ export function releaseDateFallbackMatch(releaseDate: string, validDates: string
   return validDates.includes(`${releaseDate}-12-31`);
 }
 
-// ── Popularity filtering ────────────────────────────────────────────────────
-
+/** IDs below `threshold`. Releases with no known popularity are kept. */
 export function filterLowPopularity(
   releases: Map<string, FoundRelease>,
   popularities: Map<string, number>,

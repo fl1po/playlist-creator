@@ -15,8 +15,6 @@ export function dedup(trackIds: string[]): string[] {
   return [...new Set(trackIds)];
 }
 
-// ── Formatting helpers ──────────────────────────────────────────────────────
-
 /** Format milliseconds to human-readable hours/minutes (e.g. "2h 45m"). */
 export function formatHm(ms: number): string {
   const totalMinutes = Math.round(ms / 60000);
@@ -26,9 +24,7 @@ export function formatHm(ms: number): string {
   return `${hours}h ${minutes}m`;
 }
 
-// ── Date helpers ────────────────────────────────────────────────────────────
-
-/** Parse date string DD.MM.YY to Date object. */
+/** Parse DD.MM.YY (local time). Two-digit years pivot at 50: 00–49 → 20xx. */
 export function parseDate(dateStr: string): Date {
   const [day, month, year] = dateStr.split(".");
   const fullYear =
@@ -38,7 +34,7 @@ export function parseDate(dateStr: string): Date {
   return new Date(fullYear, Number.parseInt(month) - 1, Number.parseInt(day));
 }
 
-/** Format Date to YYYY-MM-DD. */
+/** Format Date to YYYY-MM-DD in local time (not toISOString's UTC). */
 export function formatDateISO(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");

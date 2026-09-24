@@ -13,7 +13,7 @@ import type { RouteContext } from '../route-context.js';
 export function queryRoutes(ctx: RouteContext): Router {
   const router = Router();
 
-  // Find artist (local JSON search)
+  // Searches the trusted artists roster, not Spotify.
   router.post('/find-artist', async (req, res) => {
     const session = ctx.requireSession(req, res);
     if (!session) return;
@@ -64,7 +64,6 @@ export function queryRoutes(ctx: RouteContext): Router {
     res.json({ ok: true, results });
   });
 
-  // List artists
   router.get('/artists', async (req, res) => {
     const session = ctx.requireSession(req, res);
     if (!session) return;
@@ -96,7 +95,6 @@ export function queryRoutes(ctx: RouteContext): Router {
     res.json({ ok: true, artists: filtered, stats: trusted.metadata?.stats });
   });
 
-  // Stats
   router.get('/stats', async (req, res) => {
     const session = ctx.requireSession(req, res);
     if (!session) return;
@@ -149,7 +147,6 @@ export function queryRoutes(ctx: RouteContext): Router {
     });
   });
 
-  // User playlists
   router.get('/user-playlists', async (req, res) => {
     const session = ctx.requireSession(req, res);
     if (!session) return;
@@ -168,7 +165,6 @@ export function queryRoutes(ctx: RouteContext): Router {
     }
   });
 
-  // Search playlists
   router.get('/search-playlists', async (req, res) => {
     const session = ctx.requireSession(req, res);
     if (!session) return;
@@ -201,7 +197,6 @@ export function queryRoutes(ctx: RouteContext): Router {
     }
   });
 
-  // Artist releases
   router.get('/artist-releases', async (req, res) => {
     const session = ctx.requireSession(req, res);
     if (!session) return;
@@ -243,7 +238,6 @@ export function queryRoutes(ctx: RouteContext): Router {
     }
   });
 
-  // Playlist info
   router.get('/playlist-info', async (req, res) => {
     const session = ctx.requireSession(req, res);
     if (!session) return;

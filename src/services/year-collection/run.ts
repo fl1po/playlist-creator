@@ -9,13 +9,14 @@
  *   2. Deezer expansion     ~10 req/s        — cheap, off Spotify entirely
  *   3. co-citation cut      free             — sheds ~58% of candidates
  *   4. resolve to Spotify   1/s              — only for survivors
- *   5. relevance cut        free             — down to the candidate limit
+ *   5. candidate genres     batched 50/call  — then the relevance cut, free,
+ *                                             down to the candidate limit
  *   6. artist albums        1/s              — the expensive step
  *   7. album details        20/call          — popularity and tracks together
  *   8. Deezer + Last.fm     10/s, 5/s        — off Spotify again
  *
- * Steps 1–2 and 6–8 dominate. Cutting at 3 and 5 is what turns ~12,000
- * Spotify calls into ~3,000.
+ * Steps 4 and 6 are the only per-artist Spotify calls, so they dominate.
+ * Cutting at 3 and 5 is what turns ~12,000 Spotify calls into ~3,000.
  */
 
 import { existsSync } from 'node:fs';
@@ -112,9 +113,7 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
   const deezer = new DeezerClient();
   const lastfm = new LastfmClient(lastfmKey);
 
-  // Every expensive phase writes here the moment it finishes, and the two
-  // longest loops flush as they go. Without it, losing the terminal at minute
-  // 110 of a 120-minute run costs the entire run.
+  // See checkpoint.ts for what gets persisted and when.
   const cpPath = opts.checkpointPath;
   const cp =
     (cpPath ? loadCheckpoint(cpPath, year) : null) ?? emptyCheckpoint(year);
@@ -303,7 +302,7 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
 
   // Untagged seeds have no cluster of their own and, being force-added rather
   // than discovered, no seed clusters either — they would all land in the
-  // reject bucket. Infer from the scene their Deezer neighbours occupy, which
+  // 'unknown' pool. Infer from the scene their Deezer neighbours occupy, which
   // costs nothing: those lists were fetched during expansion.
   const clusterByName = new Map<string, Cluster>();
   for (const candidate of kept) {

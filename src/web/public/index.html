@@ -1051,7 +1051,7 @@ const Store = {
 // ── State ────────────────────────────────────────────────────────
 let activeFilters = new Set([1, 2]);
 let busy = false;
-let wsConnected = false;
+let streamConnected = false;
 
 // ── Fill progress state ──────────────────────────────────────────
 let fillState = { totalDates: 0, currentDate: 0, totalArtists: 0, currentArtist: 0, dates: [] };
@@ -1156,7 +1156,7 @@ function connect() {
   let authProbedThisDisconnect = false;
 
   es.onopen = () => {
-    wsConnected = true;
+    streamConnected = true;
     authProbedThisDisconnect = false;
     document.getElementById('statusDot').className = 'status-dot connected';
     setStatusText('Connected');
@@ -1164,7 +1164,7 @@ function connect() {
   };
 
   es.onerror = () => {
-    wsConnected = false;
+    streamConnected = false;
     document.getElementById('statusDot').className = 'status-dot error';
     setStatusText('Disconnected');
     updateButtons();
@@ -1981,7 +1981,7 @@ function toggleFilter(p) {
 // ── Artist marks ─────────────────────────────────────────────────
 function markArtistRow(name, status) {
   if (status === 'searched') {
-    // Remove active from previous
+    // The previously active artist has finished searching.
     const prev = document.querySelector('tr.artist-active');
     if (prev) { prev.classList.remove('artist-active'); prev.classList.add('artist-searched'); }
   }
@@ -2024,10 +2024,10 @@ function hideProgress(prefix) {
 }
 
 function updateButtons() {
-  const disabled = busy || !wsConnected;
+  const disabled = busy || !streamConnected;
   document.getElementById('fillBtn').disabled = disabled;
   document.getElementById('recalcBtn').disabled = disabled;
-  document.getElementById('findArtistBtn').disabled = !wsConnected;
+  document.getElementById('findArtistBtn').disabled = !streamConnected;
   document.getElementById('clearBtn').disabled = disabled;
   document.getElementById('dedupScanBtn').disabled = disabled;
   document.getElementById('listeningTimeBtn').disabled = disabled;
@@ -2084,7 +2084,6 @@ function esc(s) {
 async function api(method, url, body) {
   try {
     const opts = { method, headers: {} };
-    // Add Bearer auth if we have tokens
     const tokens = Store.getTokens();
     if (tokens?.accessToken) {
       opts.headers['Authorization'] = `Bearer ${tokens.accessToken}`;
@@ -2293,10 +2292,10 @@ async function resetConfig() {
   if (!confirm('Reset all settings to defaults?')) return;
   const res = await api('GET', '/api/config');
   if (res.ok) {
-    // Load fresh defaults by re-fetching (server returns defaults if no file)
+    // GET /api/config returns the saved config merged with defaults, not the
+    // defaults alone, so this only discards unsaved edits in the modal.
+    // The raw fetch also skips the Bearer headers api() adds.
     const defaults = await (await fetch('/api/config')).json();
-    // We need defaults specifically, so we delete the file by saving defaults
-    // Actually, just populate with known defaults from the server response
     populateSettings(defaults.config);
   }
 }
@@ -2354,7 +2353,6 @@ function addTag(type) {
   const input = document.getElementById(`${type}Input`);
   const val = input.value.trim().toLowerCase();
   if (!val) return;
-  // Check duplicate
   const existing = document.querySelectorAll(`#${type}Tags .tag-chip`);
   for (const chip of existing) {
     if (chip.dataset.tag === val) return;

@@ -49,15 +49,20 @@ export class ArtistLookupService {
       return [];
     }
 
-    // Pre-compute rankings per priority group
+    // Rank the whole roster within each priority group (not just the matches),
+    // so a result can report e.g. "#3 of 40 in P1".
     const rankByPriority: Record<
       number,
       Array<{ name: string; score: number }>
     > = {};
-    for (const [n, a] of Object.entries(artists)) {
-      if (!a.priority) continue;
-      if (!rankByPriority[a.priority]) rankByPriority[a.priority] = [];
-      rankByPriority[a.priority].push({ name: n, score: a.score });
+    for (const [artistName, artist] of Object.entries(artists)) {
+      if (!artist.priority) continue;
+      if (!rankByPriority[artist.priority])
+        rankByPriority[artist.priority] = [];
+      rankByPriority[artist.priority].push({
+        name: artistName,
+        score: artist.score,
+      });
     }
     for (const p of Object.keys(rankByPriority)) {
       rankByPriority[Number(p)].sort((a, b) => b.score - a.score);

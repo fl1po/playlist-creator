@@ -12,8 +12,10 @@
  *   plan        everything above     → reviewable plan file + Markdown
  *   apply       plan                 → monthly playlists on Spotify
  *
- * The plan/apply split exists because fetching costs hours and scoring costs
- * seconds — re-scoring reads the cached plan rather than re-fetching.
+ * The collect/apply split exists because fetching costs hours: the plan is
+ * reviewed before anything is written to Spotify. Re-scoring (`--rescore`)
+ * rebuilds the plan from the collect checkpoint (checkpoint.ts) in seconds
+ * rather than re-fetching.
  */
 
 import type { Cluster } from './genre-map.js';

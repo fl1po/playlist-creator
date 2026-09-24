@@ -8,9 +8,10 @@
  * distinct seeds point at them — is the primary relevance signal.
  *
  * Deezer's graph reflects present-day co-listening, so it under-reaches
- * artists who mattered in the target year and then faded. `collaborators`
- * corrects for that using the featured credits on releases actually found in
- * that year, which is an era-anchored snapshot of who was in the scene.
+ * artists who mattered in the target year and then faded. `collaborators` is
+ * meant to correct for that using the featured credits on releases actually
+ * found in that year, an era-anchored snapshot of who was in the scene — but
+ * `collectYear` does not call it yet.
  */
 
 import type { DeezerClient } from '../../lib/deezer-client.js';
@@ -37,7 +38,7 @@ interface RawCandidate {
  * Returns candidates keyed by lowercased name — Spotify ids are not known
  * yet, since resolving ~4,300 names against Spotify at one request per second
  * would cost over an hour. Callers cut on co-citation first, then resolve only
- * the survivors (see `resolveToSpotify`).
+ * the survivors (the resolution step in `collectYear`, run.ts).
  */
 export async function expandFromSeeds(
   client: DeezerClient,

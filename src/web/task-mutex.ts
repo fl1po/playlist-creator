@@ -56,6 +56,8 @@ export function createTaskMutex(
       checkAbortFlag();
     },
 
+    // Only valid after setBusy. Captures the current task's flag, so a client
+    // leaked past setIdle keeps honouring that task's stop, not a later one's.
     createAbortableClient(baseClient: SpotifyClient): SpotifyClient {
       const flag = abortFlag as { aborted: boolean };
       return {

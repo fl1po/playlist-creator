@@ -64,7 +64,7 @@ export function createApiCall(
     try {
       callbacks?.onBeforeCall?.();
       if (pacer) await pacer.pace(client);
-      void client.api;
+      void client.api; // throws if aborted
       const result = await fn();
       pacer?.onSuccess();
       if (state.longSleepCount > 0) {
@@ -132,6 +132,8 @@ export function createApiCall(
 
         case 'rate_limit': {
           pacer?.onRateLimit();
+          // Persistent 429s past the short Retry-After waits mean an extended
+          // app-level ban: sleep for hours, longer on each consecutive ban.
           if (retryCount >= policy.rateLimit.maxRetries) {
             state.longSleepCount++;
             const sleepMs = policy.rateLimit.longSleepMs(state.longSleepCount);
@@ -140,6 +142,7 @@ export function createApiCall(
             callbacks?.onLongSleep?.(sleepHours, wakeTime);
             await abortableSleep(sleepMs, client);
             callbacks?.onLongSleepWake?.();
+            // The access token has likely expired during an hours-long sleep.
             await client.recreateApi();
             return apiCall(fn, description, 0);
           }

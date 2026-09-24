@@ -1,15 +1,16 @@
 /**
  * The plan file — the pipeline's single durable artifact.
  *
- * It serves three jobs at once, which is why fetching and applying are split:
+ * It serves two jobs, which is why fetching and applying are split:
  *
  * - **Review.** Every kept release with its scores, cluster and signals, plus
  *   every rejected one with the reason, so the judgement calls in this design
  *   are auditable rather than implicit.
- * - **Checkpoint.** Fetching costs hours; scoring costs seconds. Re-scoring
- *   with different weights reads this file instead of the network.
  * - **Apply input.** Track ids are captured here in album sequence, so
  *   `--apply` writes playlists without touching Spotify's read endpoints.
+ *
+ * Resuming and re-scoring (`--rescore`) read the separate collect checkpoint
+ * (checkpoint.ts), not this file.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -24,7 +25,7 @@ export interface PlannedRelease extends ScoredRelease {
   /** Track ids in album sequence. */
   trackIds: string[];
   trackNames: string[];
-  /** `YYYY-MM` bucket — the playlist this release belongs to. */
+  /** `YYYY.MM` bucket — also the name of the playlist it lands in. */
   month: string;
 }
 

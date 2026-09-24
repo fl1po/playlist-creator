@@ -143,7 +143,6 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
       expires: now + 60_000,
     });
 
-    // Create/update session in registry
     const session = deps.getOrCreateUserSession(user.id, appConfig);
     session.displayName = user.displayName;
     await session.client.recreateApi();

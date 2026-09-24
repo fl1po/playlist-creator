@@ -1,11 +1,12 @@
 /**
  * Minimal Last.fm API client for album-level acclaim lookups.
  *
- * Supplies the "engaged listener" half of the acclaim blend: unlike Spotify
+ * Supplies the critic signal of the acclaim blend: unlike Spotify
  * popularity, Last.fm playcount is cumulative all-time rather than weighted
  * toward recent streams, and its userbase skews album-oriented.
  *
- * Coverage is very uneven by scene — see `MIN_LISTENERS` in acclaim.ts. This
+ * Coverage is very uneven by scene — see `MIN_LASTFM_LISTENERS` in
+ * services/year-collection/acclaim.ts. This
  * client reports what it finds and leaves the sample-size judgement to callers.
  */
 
@@ -90,7 +91,8 @@ export class LastfmClient {
       if (!res.ok) return null;
 
       const data = (await res.json()) as T & { error?: number };
-      // A missing album is a legitimate answer, not a transport failure.
+      // API-level errors (e.g. NOT_FOUND for a missing album) are answers, not
+      // transport failures — don't retry them.
       if (data.error) return null;
       return data;
     }
@@ -99,7 +101,8 @@ export class LastfmClient {
 
   /**
    * Look up listener and playcount figures for one album.
-   * Returns null when Last.fm has no record of it.
+   * Returns null when Last.fm has no record of it, or the request still
+   * fails after retries.
    */
   async albumInfo(
     artist: string,

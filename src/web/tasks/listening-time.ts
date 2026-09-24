@@ -117,7 +117,7 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
       });
     });
 
-    // Prune stale entries and persist
+    // Drop snapshots of playlists that are no longer non-listened.
     const candidateIds = new Set(candidates.map((c) => c.id));
     for (const id of Object.keys(snapshots)) {
       if (!candidateIds.has(id)) delete snapshots[id];

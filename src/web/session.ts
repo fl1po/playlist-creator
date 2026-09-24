@@ -14,8 +14,8 @@ function verify(value: string, secret: string): string | null {
   if (dot < 1) return null;
   const userId = value.slice(0, dot);
   const expected = sign(userId, secret);
+  // timingSafeEqual throws on unequal lengths, so reject those first.
   if (value.length !== expected.length) return null;
-  // Timing-safe comparison
   if (!crypto.timingSafeEqual(Buffer.from(value), Buffer.from(expected)))
     return null;
   return userId;

@@ -222,8 +222,8 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
       const cachedRefresh = bearerRefreshCache.get(userId);
       const cachedAccess = bearerTokenCache.get(userId);
       // Rebuild the Spotify client whenever EITHER token differs from what
-      // we last installed — covers token rotation AND sessions that were
-      // created with a stale or empty refresh token before this fix.
+      // we last installed — covers token rotation AND a session first built
+      // with a stale refresh token.
       if (cachedAccess !== accessToken || cachedRefresh !== refreshToken) {
         const tokenStore = new InMemoryTokenStore(
           { accessToken, refreshToken },

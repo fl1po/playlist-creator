@@ -1,4 +1,4 @@
-// Genre filtering for non-trusted artists from editorial playlists
+// Genre gate for editorial-playlist artists not in the trusted roster.
 
 export const acceptedGenres = [
   "hip-hop", "rap", "r&b", "soul", "electronic", "house", "techno", "trap",
@@ -17,6 +17,10 @@ export interface GenreFilterLists {
   rejected: string[];
 }
 
+/**
+ * Substring match against the artist's genres: any rejected genre vetoes,
+ * then at least one accepted genre is required. No genres at all → rejected.
+ */
 export function isGenreAcceptable(
   genres: string[] | undefined,
   lists?: GenreFilterLists,
@@ -36,7 +40,8 @@ export function isGenreAcceptable(
   return false;
 }
 
-// Instrumental / clean / acoustic version detection patterns
+// Variant detection patterns (instrumental / clean / acoustic / sped up / slowed),
+// anchored to the end of a release name. instrumentalTrackPattern is for track names.
 export const instrumentalPattern =
   /[\s\-]*[\(\[]?\s*(instrumental|instrumentals|instrumental version)\s*[\)\]]?\s*$/i;
 export const cleanPattern =

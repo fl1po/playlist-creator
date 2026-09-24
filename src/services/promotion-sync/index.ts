@@ -22,7 +22,10 @@ import type {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-/** One artist crossing the P1/P2 boundary during recalculation. */
+/**
+ * One artist's tier move during recalculation. Recalculation reports every
+ * move; only P1/P2 boundary crossings are kept pending and acted on here.
+ */
 export interface PriorityChange {
   artist: string;
   from: number | null;
@@ -101,7 +104,7 @@ export interface PromotionSyncInput {
   awTrackIds: Set<string>;
   /** Authoritative (post-recalc) roster: the new P1/P2 set drives both phases. */
   trustedArtists: TrustedArtistsFile;
-  /** Release popularity floor — already the lenient backfill bar. */
+  /** Release popularity floor — already the stricter backfill bar (see `syncPending`). */
   minPopularity: number;
 }
 

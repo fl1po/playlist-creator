@@ -6,9 +6,9 @@
  * split: fetching is measured in hours, applying in minutes.
  *
  * Playlists are named `YYYY.MM`, deliberately *not* the `DD.MM.YY` weekly
- * convention. `non-listened-playlists.ts` and `fill-run.ts` both match
- * /^(\d{2})\.(\d{2})\.(\d{2})$/, and `parseDate` maps a two-digit year below
- * 50 to 20xx — so a playlist called `01.01.16` would be picked up as a weekly
+ * convention. `non-listened-playlists.ts` and `fill-run.ts` both treat any
+ * `DD.MM.YY`-shaped name as a weekly playlist, and `parseDate` maps a
+ * two-digit year below 50 to 20xx — so a playlist called `01.01.16` would be picked up as a weekly
  * and make fill try to generate every Friday since 2016.
  */
 
@@ -67,6 +67,8 @@ export async function applyPlan(
     let playlistId: string;
     let playlistUrl: string;
 
+    // A reused playlist is appended to, not reconciled: re-applying a plan
+    // over playlists it already filled duplicates every track.
     const found = byName.get(month);
     if (found) {
       playlistId = found.id;

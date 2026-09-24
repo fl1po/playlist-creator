@@ -46,7 +46,8 @@ export function createSpotifyClient(opts: SpotifyClientOptions): SpotifyClient {
       return reauth.handler();
     }
 
-    // CLI reauth: execSync
+    // CLI reauth blocks on the interactive `npm run auth` flow, which writes
+    // fresh tokens to the config store; reload them from there.
     try {
       execSync('npm run auth', { stdio: 'inherit' });
       config = configStore.load();
@@ -94,6 +95,7 @@ export function createSpotifyClient(opts: SpotifyClientOptions): SpotifyClient {
       );
     }
 
+    // Refresh token rejected (revoked/expired) — only a full reauth recovers.
     if (!response.ok) {
       const authSuccess = await runAuth();
       if (!authSuccess) {

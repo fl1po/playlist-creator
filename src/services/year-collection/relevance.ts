@@ -98,9 +98,9 @@ export function scoreCandidate(
 /**
  * Score a candidate pool and keep the strongest.
  *
- * Roster artists bypass the cut entirely: they are already known to matter,
- * and their releases are the spine of the result regardless of where the
- * graph happens to place them.
+ * Roster artists with a tier (P1–P4) bypass the cut entirely, so `kept` can
+ * exceed `limit`: they are already known to matter, and their releases are
+ * the spine of the result regardless of where the graph places them.
  */
 export function scoreAndCut(
   candidates: Candidate[],

@@ -35,7 +35,11 @@ function trackFriday(releaseDate: string | undefined, addedAt: string): string {
   return 'unknown';
 }
 
-/** Get all tracks from a playlist grouped by release week. */
+/**
+ * Get all tracks from a playlist grouped by release week — the Friday of the
+ * album's release date, falling back to the date added. Tracks with neither
+ * are folded into the latest week.
+ */
 export async function getPlaylistTracksGroupedByWeek(
   ctx: SpotifyContext,
   playlistId: string,
@@ -104,6 +108,7 @@ export async function getPlaylistTracksGroupedByWeek(
     .sort((a, b) => a.time - b.time)
     .map((f) => f.label);
 
+  // Undated tracks join the latest week rather than getting their own bucket.
   const unknownTracks = byFriday.get('unknown');
   if (unknownTracks?.length && sortedFridays.length > 0) {
     const lastFri = sortedFridays[sortedFridays.length - 1];
@@ -115,6 +120,7 @@ export async function getPlaylistTracksGroupedByWeek(
   return sortedFridays.map((dateLabel) => {
     const tracks = byFriday.get(dateLabel) ?? [];
 
+    // The week's addedAt is the most common add date among its tracks.
     const counts = addedAtCounts.get(dateLabel);
     let topAdded = 'unknown';
     let topCount = 0;
@@ -143,6 +149,7 @@ export async function getPlaylistTracksGroupedByWeek(
       if (!albumMeta.has(t.albumId))
         albumMeta.set(t.albumId, { artist: t.albumArtist, name: t.albumName });
     }
+    // An album with 3+ tracks in the week counts as listened-to as an album.
     const repeatAlbumIds = new Set<string>();
     const frequentEntries: { artist: string; album: string; count: number }[] =
       [];

@@ -39,13 +39,9 @@ export interface TaskContext<E extends BaseEvents = BaseEvents> {
   client: SpotifyClient;
   /** SpotifyContext with pacer and optional API callbacks. */
   ctx: SpotifyContext;
-  /** Parsed request body. */
   body: Record<string, unknown>;
-  /** User's config store. */
   userConfigStore: IUserConfigStore;
-  /** User's data directory path. */
   dataDir: string;
-  /** User ID. */
   userId: string;
   /**
    * Untyped broadcast — interop escape hatch for helpers that take a generic
@@ -56,7 +52,6 @@ export interface TaskContext<E extends BaseEvents = BaseEvents> {
   broadcast: (type: string, data: unknown) => void;
   /** Throws if the user requested abort. */
   checkAbort: () => void;
-  /** Shared request pacer. */
   pacer: RequestPacer;
   /**
    * File-then-Redis durable cache, scoped to this user. Every save is also
@@ -97,7 +92,6 @@ export interface TaskDefinition<E extends BaseEvents = BaseEvents> {
   apiCallbacks?: (
     broadcast: (type: string, data: unknown) => void,
   ) => ApiCallOptions;
-  /** The task body. */
   run: (tc: TaskContext<E>) => Promise<void>;
   /** Always runs after task (success, failure, or abort). */
   cleanup?: (tc: TaskContext<E>) => void | Promise<void>;

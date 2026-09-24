@@ -17,7 +17,7 @@ export interface SpotifyContext {
 
 /**
  * Create a SpotifyContext from an existing client.
- * Used by the web task-runner where the client is managed per-session.
+ * Used by the web layer, where the client is managed per-session.
  */
 export function createSpotifyContext(
   client: SpotifyClient,
@@ -35,8 +35,6 @@ export function createSpotifyContext(
     call: apiCall,
   };
 }
-
-// ── Convenience factory ───────────────────────────────────────────────────────
 
 export interface SpotifyContextConfig {
   configStore: ConfigStore;

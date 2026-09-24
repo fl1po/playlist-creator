@@ -1,5 +1,3 @@
-// ── Event system infrastructure ──────────────────────────────────────────────
-
 /** Record from event name to argument tuple. */
 export type EventMap = Record<string, unknown[]>;
 

@@ -68,7 +68,6 @@ function handleFile(file) {
   reader.onload = (e) => {
     try {
       fileData = JSON.parse(e.target.result);
-      // Detect what's in the file
       const parts = [];
       const cacheKeys = ['trustedArtists', 'batchCache', 'fillHistory', 'durationSnapshots', 'listeningTime', 'awBreakdown'];
       const caches = cacheKeys.filter(k => fileData[k]);

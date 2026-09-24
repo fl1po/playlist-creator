@@ -71,8 +71,8 @@ export function configRoutes(ctx: RouteContext): Router {
     }
 
     // No log broadcast here: this endpoint also backs implicit writes (the
-    // listening-budget input, pinned blocks, config migration). Only an explicit Save in the
-    // settings modal logs, and the client does that itself.
+    // listening-budget input, pinned blocks, config migration). Only an
+    // explicit Save in the settings modal logs, and the client does that itself.
     await session.userConfigStore.save(config);
     res.json({ ok: true });
   });

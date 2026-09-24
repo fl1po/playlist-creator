@@ -49,6 +49,7 @@ export interface FillRunOptions {
   handlers: EventHandlers<PlaylistFillerEventMap>;
   /** Promotion-sync progress/logging — caller composes from `consoleSyncHandlers()` or `broadcastSyncHandlers()`. */
   syncHandlers: SyncHandlers;
+  /** Ignore saved week progress: every week's artist search starts over. */
   fresh?: boolean;
 }
 
@@ -118,6 +119,8 @@ async function emitResumedIfAny(
     if (!progress || progress.artistsSearched <= 0) return;
     const trusted = await opts.recalculation.cache.load(TRUSTED_ARTISTS);
     if (!trusted) return;
+    // Week progress stores only a count; the roster is searched in P1/P2
+    // order, so the searched artists are its first `count` names.
     const p1p2 = filterByPriority(trusted.artistCounts, [1, 2]);
     const count = Math.min(progress.artistsSearched, p1p2.length);
     const names: string[] = [];
@@ -224,6 +227,7 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
     startDate = parseDate(sorted[0]);
     emitter.emit('log', `Earliest weekly playlist: ${sorted[0]}`);
   } else {
+    // No weekly playlists yet: start from Friday 23.05.25 (month is 0-based).
     startDate = new Date(2025, 4, 23);
   }
 
@@ -306,6 +310,7 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
         throw new Error('No trusted artists roster — run a recalculation');
       }
 
+      // A long fill can outlive the access token; refresh every 10 dates.
       if (i > 0 && (i + 1) % 10 === 0) {
         await ctx.client.refreshToken();
       }
@@ -335,7 +340,7 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
         const ok = await ctx.client.runAuth();
         if (ok) {
           await ctx.client.recreateApi();
-          i--;
+          i--; // retry the same date with the fresh token
           continue;
         }
         results.push({ date: targetDate, error: err.message } as DateResult);

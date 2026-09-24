@@ -4,11 +4,13 @@
  * A full run is roughly two hours, almost all of it spent waiting on Spotify's
  * one-request-per-second pacer. Without a checkpoint, losing the terminal at
  * minute 110 costs the whole run, so each expensive phase writes its output
- * here as soon as it completes, and the two longest loops — candidate
- * resolution and the album sweep — also write incrementally as they go.
+ * here as soon as it completes, and the long loops — candidate resolution,
+ * the album sweep, and the Deezer/Last.fm acclaim lookups — also write
+ * incrementally as they go.
  *
  * The file is deliberately separate from the plan: a plan is a reviewable
- * result, this is disposable machinery. `--fresh` deletes it.
+ * result, this is disposable machinery. `--fresh` deletes it; `--rescore`
+ * rebuilds the plan from it without refetching.
  */
 
 import { existsSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -22,7 +24,10 @@ import type { AlbumDetail, Rejection, YearRelease } from './releases.js';
 
 export const CHECKPOINT_VERSION = 1;
 
-/** How often the long loops flush, in items. */
+/**
+ * How often candidate resolution and the album sweep flush, in items. The
+ * acclaim lookups flush on their own fixed cadence (see acclaim.ts).
+ */
 export const FLUSH_EVERY = 25;
 
 export interface Checkpoint {
@@ -105,7 +110,7 @@ export function emptyCheckpoint(year: number): Checkpoint {
 /**
  * Counts failed calls per phase.
  *
- * `apiCall` returns `{success:false}` rather than throwing, and every caller
+ * `ctx.call` returns `{success:false}` rather than throwing, and every caller
  * in this pipeline treats that as "nothing found" — which is correct for a
  * genuinely empty result and catastrophic for a network outage. Counting the
  * difference is what lets the run refuse to pass off a degraded plan as whole.

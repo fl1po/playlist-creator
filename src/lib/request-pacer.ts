@@ -16,7 +16,7 @@ export class RequestPacer {
   private consecutiveSuccesses = 0;
   private mutex: Promise<void> = Promise.resolve();
 
-  /** Max backoff interval (30 seconds). */
+  /** Ceiling for the 429 backoff. */
   private static readonly MAX_INTERVAL_MS = 30_000;
 
   /** After this many consecutive successes, halve the penalty. */
@@ -33,7 +33,6 @@ export class RequestPacer {
    * Sleep is abortable via client.api getter (throws on abort).
    */
   async pace(client: SpotifyClient): Promise<void> {
-    // Chain onto the mutex so callers serialize
     const prev = this.mutex;
     let release!: () => void;
     this.mutex = new Promise<void>((r) => {

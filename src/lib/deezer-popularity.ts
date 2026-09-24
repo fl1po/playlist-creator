@@ -15,8 +15,8 @@ export interface DeezerPopularityOptions {
 }
 
 /**
- * Normalize a string for fuzzy comparison:
- * lowercase, strip feat/with info, strip edition suffixes, remove punctuation.
+ * Normalize a string for fuzzy comparison: lowercase, drop any parenthesized
+ * or bracketed part (edition suffixes, "(feat. X)"), remove punctuation.
  */
 function normalize(s: string): string {
   return s
@@ -28,9 +28,7 @@ function normalize(s: string): string {
     .trim();
 }
 
-/**
- * Check if two strings match after normalization.
- */
+/** Equal after normalization, or one contains the other. */
 function fuzzyMatch(a: string, b: string): boolean {
   const na = normalize(a);
   const nb = normalize(b);
@@ -81,7 +79,6 @@ export async function fetchDeezerPopularities(
       continue;
     }
 
-    // Fetch full album to get track ranks
     const album = await client.getAlbum(match.id);
     if (!album?.tracks?.data?.length) {
       done++;
@@ -89,7 +86,7 @@ export async function fetchDeezerPopularities(
       continue;
     }
 
-    // Use max track rank as the album's popularity signal
+    // Best track, not average: one breakout single makes a release popular.
     const maxRank = Math.max(...album.tracks.data.map((t) => t.rank));
     // Normalize: Deezer 0–1,000,000 → 0–100
     const normalized = Math.round(maxRank / 10_000);

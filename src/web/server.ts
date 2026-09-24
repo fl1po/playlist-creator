@@ -56,6 +56,7 @@ const appConfigStore = createAppConfigStore();
 const broadcaster = createBroadcaster();
 const broadcast = broadcaster.broadcast;
 
+// Server-wide: one task runs at a time across all users.
 const taskMutex = createTaskMutex((busy, task) => {
   broadcast('status', { busy, task });
 });

@@ -91,9 +91,9 @@ interface FixtureWorld {
   /** playlistId -> tracks, keyed by the same id used for both AW and weeklies. */
   playlistTracks?: Record<string, FixtureTrack[]>;
   /**
-   * Throw this when reading this playlist's items. Pagination's `runPagination`
-   * propagates read failures (unlike the write adapters below, which currently
-   * discard `ctx.call`'s result — see the note on `removeItemsFromPlaylist`).
+   * Throw this when reading this playlist's items — the simplest way to make
+   * the trailing promotion sync fail, since pagination's `runPagination`
+   * propagates read failures.
    */
   failReadingPlaylist?: { id: string; error: Error };
   /** The Friday's playlist exists but is still empty, so the fill processes it. */

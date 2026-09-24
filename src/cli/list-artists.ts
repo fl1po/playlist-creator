@@ -10,7 +10,6 @@ const data: TrustedArtistsFile = JSON.parse(
 const artists = data.artistCounts;
 const sl = secondaryLabel(new UserConfigStore().load());
 
-// Parse CLI args
 const args = process.argv.slice(2);
 const filterPriorities = new Set<number>();
 let sortBy: "score" | "alpha" = "score";

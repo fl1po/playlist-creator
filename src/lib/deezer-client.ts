@@ -56,7 +56,7 @@ export class DeezerClient {
   private lastRequestTime = 0;
   private mutex: Promise<void> = Promise.resolve();
 
-  /** Pace requests to stay within rate limits. */
+  /** Pace requests, serializing concurrent callers. */
   private async pace(): Promise<void> {
     const prev = this.mutex;
     let release!: () => void;
@@ -114,9 +114,10 @@ export class DeezerClient {
   /**
    * Resolve an artist name to a Deezer artist.
    *
-   * Requires an exact (case-insensitive) name match on one of the top hits —
-   * Deezer's search happily returns tribute acts and soundalikes, and a wrong
-   * resolution silently poisons the whole related-artist graph downstream.
+   * Requires an exact (case- and diacritic-insensitive) name match on one of
+   * the top hits — Deezer's search happily returns tribute acts and
+   * soundalikes, and a wrong resolution silently poisons the whole
+   * related-artist graph downstream.
    */
   async searchArtist(name: string): Promise<DeezerArtist | null> {
     const data = await this.fetch<{ data: DeezerArtist[] }>(

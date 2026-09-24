@@ -175,7 +175,6 @@ export async function authorizeSpotify(): Promise<void> {
   const authorizationUrl = `https://accounts.spotify.com/authorize?${authParams.toString()}`;
 
   const authPromise = new Promise<void>((resolve, reject) => {
-    // Create HTTP server to handle the callback
     const server = http.createServer(async (req, res) => {
       if (!req.url) {
         return res.end('No URL provided');
@@ -286,7 +285,8 @@ export async function handleSpotifyRequest<T>(
     const spotifyApi = createSpotifyApi();
     return await action(spotifyApi);
   } catch (error) {
-    // Skip JSON parsing errors as these are actually successful operations
+    // Some successful writes return an empty/non-JSON body that the SDK still
+    // tries to JSON-parse; that parse error means the call actually succeeded.
     const errorMessage = error instanceof Error ? error.message : String(error);
     if (
       errorMessage.includes('Unexpected token') ||
@@ -295,7 +295,6 @@ export async function handleSpotifyRequest<T>(
     ) {
       return undefined as T;
     }
-    // Rethrow other errors
     throw error;
   }
 }

@@ -276,7 +276,8 @@ test('release popularity gate uses the configured minPopularity threshold', asyn
     gate: { minPopularity, minFollowers: 100_000 },
   });
 
-  // Popularity 40 sits in the old hardcoded-10 gap: gated at 60, kept at 30.
+  // Regression: the gate once ignored config and used a hardcoded 10, which
+  // popularity 40 always cleared. It must honour the configured minimum.
   const gated = await collectWeek(
     input({ roster: [['Delta', P1]], editorial: editorial(60) }),
     ports(makeReads(), { 'alb-mid': 40 }),

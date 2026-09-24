@@ -9,10 +9,11 @@
  *    than with mainstream rap — see acclaim.ts.
  *
  * 2. `ancestorsOf` maps a post-2016 micro-genre back to the scenes it grew
- *    out of. This is a *fallback*, not a rewrite: the pipeline measures how
- *    many releases each profile genre actually yields for the target year and
- *    only consults this table for genres that come up starved. That keeps the
- *    mapping honest for years where a genre did exist.
+ *    out of. This is meant as a *fallback*, not a rewrite: measure how many
+ *    releases each profile genre actually yields for the target year and
+ *    consult this table only for genres that come up starved, which keeps the
+ *    mapping honest for years where a genre did exist. Not yet wired into
+ *    `collectYear` — nothing calls `ancestorsOf` today.
  */
 
 export type Cluster =

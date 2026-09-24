@@ -13,8 +13,6 @@ import {
   simulate,
 } from '../services/featured-simulation.js';
 
-// ── Parse multiplier ──────────────────────────────────────────────────────────
-
 const rawArg = process.argv[2];
 const multiplier = rawArg === undefined ? 0.5 : Number(rawArg);
 if (!Number.isFinite(multiplier) || multiplier < 0 || multiplier > 1) {
@@ -23,8 +21,6 @@ if (!Number.isFinite(multiplier) || multiplier < 0 || multiplier > 1) {
   );
   process.exit(1);
 }
-
-// ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 const ctx = spotifyContext({ configStore: new FileConfigStore() });
 const userConfig = new UserConfigStore().load();
@@ -37,8 +33,6 @@ const progressFor = (name: string) => ({
   onProgress: (fetched: number, total: number) =>
     process.stdout.write(`\r  ${name}: fetched ${fetched}/${total} tracks`),
 });
-
-// ── Scan (live) ───────────────────────────────────────────────────────────────
 
 console.log('Scanning All Weekly...');
 const awScan = await getPlaylistTracksWithPositions(
@@ -61,8 +55,6 @@ const boawScan = userConfig.sourcePlaylists.useLikedSongs
 console.log(
   `\n  ${boawScan.artistData.size} artists in ${boawScan.totalTracks} tracks\n`,
 );
-
-// ── Simulate ──────────────────────────────────────────────────────────────────
 
 const result = simulate(
   awScan,
@@ -97,8 +89,6 @@ const reportCtx: ReportContext = {
 };
 
 const report = renderReport(result, reportCtx);
-
-// ── Output ────────────────────────────────────────────────────────────────────
 
 console.log(`\n${report}`);
 

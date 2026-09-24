@@ -2,7 +2,7 @@ import type { DateResult } from '../../lib/types.js';
 import type { PriorityChange } from '../promotion-sync/index.js';
 
 export type PlaylistFillerEventMap = {
-  /** Emitted at the start of a run when batch cache has prior progress.
+  /** Emitted at the start of a run when saved week progress exists.
    *  `resumedArtistNames` are the artists already searched in the previous run. */
   resumed: [resumeDate: string | undefined, resumedArtistNames: string[]];
   start: [datesToProcess: string[]];

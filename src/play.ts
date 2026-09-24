@@ -435,7 +435,6 @@ const adjustVolume: tool<{
     const { adjustment, deviceId } = args;
 
     try {
-      // First get the current playback state to find current volume
       const playback = await handleSpotifyRequest(async (spotifyApi) => {
         return await spotifyApi.player.getPlaybackState();
       });

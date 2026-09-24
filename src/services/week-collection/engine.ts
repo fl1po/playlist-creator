@@ -16,7 +16,7 @@ import type {
 } from './index.js';
 
 /**
- * The shared release-discovery + track-collection engine behind `ReleaseReads`.
+ * The shared release-discovery + track-collection engine, built on `ReleaseReads`.
  *
  * Two consumers drive it: `collectWeek` (one Friday's window, editorial,
  * checkpoints) and `syncPriorityChanges` (per-playlist promotion backfill). The
@@ -56,6 +56,9 @@ export async function getArtistWindowReleases(
   const inWindow: Array<RawRelease & { markets: number }> = [];
 
   for (const album of albums) {
+    // Spotify reports some release dates at month/year precision. When such a
+    // date could fall in the window, fetch the album for a day-precise date;
+    // failing that, apply the end-of-period fallback match.
     let releaseDate = album.release_date;
     if (releaseDate.length === 10) {
       if (!validDates.includes(releaseDate)) continue;

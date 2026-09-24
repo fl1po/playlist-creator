@@ -25,11 +25,13 @@ export async function invalidateNonListenedCache(
 }
 
 /**
- * Get non-listened weekly playlists.
+ * Get non-listened weekly playlists, oldest first.
  *
- * Returns cached result when available. Otherwise iterates weekly playlists
- * from newest to oldest, stopping at the first with AW overlap. Result is
- * cached to disk so subsequent calls are instant.
+ * Returns the cached listing when available. Otherwise walks weekly playlists
+ * from newest to oldest, stopping at the first with AW overlap — anything
+ * older is assumed listened. The listing goes to the durable cache (disk +
+ * Redis) until `invalidateNonListenedCache`; `awTrackIds` is always read
+ * fresh.
  */
 export async function getNonListenedPlaylists(
   ctx: SpotifyContext,

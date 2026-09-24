@@ -62,8 +62,10 @@ const TRUSTED = './trusted-artists.json';
 const ctx = spotifyContext({ configStore: new FileConfigStore() });
 const path = planPath(DATA_DIR, year);
 
-/** Terminal progress that overwrites a single line. */
+// Label of the in-place progress line currently on screen; `log` breaks the
+// line before printing so messages don't overwrite it.
 let lastLabel = '';
+/** Terminal progress that overwrites a single line. */
 function progress(label: string, done: number, total: number): void {
   if (label !== lastLabel) {
     if (lastLabel) process.stdout.write('\n');

@@ -3,6 +3,7 @@ import type { SpotifyContext } from '../../lib/spotify-context.js';
 import type { AlbumDetails, RawAlbum, ReleaseReads } from './index.js';
 
 const PAGE = 50;
+/** `artistAlbums` stops after the page at this offset: 3 pages, 150 releases. */
 const MAX_OFFSET = 100;
 
 /**
@@ -98,6 +99,8 @@ export function spotifyReleaseReads(ctx: SpotifyContext): ReleaseReads {
       return getPlaylistAlbums(ctx, playlistId);
     },
 
+    // First page only: external playlist sources are matched against the
+    // user's first 50 playlists.
     async userPlaylists(userId) {
       const result = await ctx.call(
         () => ctx.api.playlists.getUsersPlaylists(userId, PAGE, 0),

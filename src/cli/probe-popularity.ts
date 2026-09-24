@@ -19,11 +19,9 @@ import type { FoundRelease, TrustedArtistsFile } from '../lib/types.js';
 import { type Run, getArtistWindowReleases } from '../services/week-collection/engine.js';
 import { spotifyReleaseReads } from '../services/week-collection/spotify-reads.js';
 
-// ── Args ───────────────────────────────────────────────────────────────────
 const numArtists = Number(process.argv[2] ?? 50) || 50;
 const numWeeks = Number(process.argv[3] ?? 1) || 1;
 
-// ── Bootstrap ──────────────────────────────────────────────────────────────
 const ctx = spotifyContext({ configStore: new FileConfigStore() });
 const reads = spotifyReleaseReads(ctx);
 
@@ -32,7 +30,7 @@ const trusted: TrustedArtistsFile = JSON.parse(
 );
 const roster = filterByPriority(trusted.artistCounts, [1, 2]).slice(0, numArtists);
 
-// ── Week window(s): most recent Friday <= today, going back numWeeks ─────────
+// Most recent Friday <= today, going back numWeeks.
 const fridays = generateFridayDates(new Date(2025, 0, 1), new Date());
 const weeks = fridays.slice(-numWeeks);
 const validDates = [...new Set(weeks.flatMap((w) => getValidDates(parseDate(w))))];
@@ -42,7 +40,6 @@ console.log(
   `Artists: first ${roster.length} P1/P2   Week(s): ${weeks.join(', ')}\n`,
 );
 
-// ── Collect releases in window ───────────────────────────────────────────────
 const run: Run = { reads, decisions: [], albumsByArtist: new Map() };
 const found = new Map<string, FoundRelease>();
 
@@ -71,7 +68,6 @@ for (let i = 0; i < roster.length; i++) {
 }
 console.log(`\n\nFound ${found.size} releases. Fetching Deezer popularity...\n`);
 
-// ── Deezer popularity ────────────────────────────────────────────────────────
 const notFound: string[] = [];
 const pops = await fetchDeezerPopularities(found, {
   onNotFound: (a, r) => notFound.push(`${a} — ${r}`),
@@ -80,7 +76,6 @@ const pops = await fetchDeezerPopularities(found, {
 });
 console.log('\n');
 
-// ── Report ───────────────────────────────────────────────────────────────────
 const rows = [...found.values()]
   .map((r) => ({ r, pop: pops.get(r.id) }))
   .filter((x) => x.pop !== undefined)

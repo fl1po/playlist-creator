@@ -207,8 +207,9 @@ function normalize(s: string): string {
 
 /**
  * Percentile of each value within its own list: the fraction of entries
- * strictly below it, so the weakest scores 0 and the strongest approaches 1.
- * Ties share a percentile rather than being ordered arbitrarily.
+ * strictly below it, normalized so the weakest scores 0 and the strongest 1
+ * (a lone value also scores 1). Ties share a percentile rather than being
+ * ordered arbitrarily.
  */
 function percentiles(values: number[]): Map<number, number> {
   const sorted = [...values].sort((a, b) => a - b);

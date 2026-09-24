@@ -198,7 +198,7 @@ export interface WeekCollectionInput {
 
 export interface WeekCollection {
   week: string;
-  /** Final play order: popularity-ranked releases, albums before singles. */
+  /** Final play order: releases ranked by popularity; ties keep albums before singles. */
   tracks: string[];
   /** Surviving releases in collection order, with contributed track counts. */
   releases: Array<FoundRelease & { tracksAdded: number }>;
@@ -432,6 +432,8 @@ async function mergeEditorial(
     if (match) playlists.unshift({ id: match.id, name: match.name });
   }
 
+  // Artist|title keys catch the same release under a different album id
+  // (regional duplicates) that the id check alone would let through.
   const releaseKeys = new Set(
     [...foundReleases.values()].map(
       (r) => `${r.artistName.toLowerCase()}|${r.name.toLowerCase().trim()}`,

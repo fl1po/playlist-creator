@@ -28,10 +28,10 @@ export class HttpError extends Error {
 /**
  * Classify a caught error into a structured kind.
  *
- * Priority: instanceof checks → statusCode property → string-matching fallback.
+ * Priority: known error classes (RateLimitError, HttpError) → message
+ * string-matching fallback for errors from the SDK or network layer.
  */
 export function classifyError(e: Error): ClassifiedError {
-  // 1. Known error types
   if (e instanceof RateLimitError) {
     return {
       kind: 'rate_limit',
@@ -49,7 +49,6 @@ export function classifyError(e: Error): ClassifiedError {
     return { kind: 'unknown', statusCode: code, original: e };
   }
 
-  // 2. String-matching fallback for errors from the Spotify SDK or network layer
   const msg = e.message?.toLowerCase() ?? '';
 
   if (

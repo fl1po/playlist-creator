@@ -43,7 +43,7 @@ export class FileConfigStore implements ConfigStore {
   }
 }
 
-/** Default singleton for scripts that only need one config file. */
+/** Convenience factory for scripts that only need one config file. */
 export function createFileConfigStore(configPath?: string): FileConfigStore {
   return new FileConfigStore(configPath);
 }

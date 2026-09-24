@@ -115,6 +115,7 @@ async function runPagination<TAcc>(
       totalKnown = true;
     }
 
+    // Tolerate fetchers that return a bare array rather than a paging object.
     const items = (page.items ?? (result.data as unknown[])) as unknown[];
     engine.onPage(acc, items, { offset, total, pageIndex });
 
@@ -137,7 +138,6 @@ async function runPagination<TAcc>(
 export async function paginate<T>(
   ctx: SpotifyContext,
   source: {
-    // `any` to accommodate Spotify SDK's literal-number union for limit/offset
     fetch: (limit: SpotifyInt, offset: SpotifyInt) => Promise<unknown>;
     description: string;
   },
@@ -170,7 +170,6 @@ export async function paginate<T>(
 export async function paginateReduce<TAcc>(
   ctx: SpotifyContext,
   source: {
-    // `any` to accommodate Spotify SDK's literal-number union for limit/offset
     fetch: (limit: SpotifyInt, offset: SpotifyInt) => Promise<unknown>;
     description: string;
   },

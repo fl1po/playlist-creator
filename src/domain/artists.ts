@@ -8,8 +8,8 @@ import type { ArtistData } from '../lib/types.js';
  */
 export const DEFAULT_FEATURED_MULTIPLIER = 0.5;
 
-// ── Recency bonuses ─────────────────────────────────────────────────────────
-
+// Source playlists are append-only, so a higher latestPosition / totalTracks
+// means the artist was heard more recently.
 export function calculateRecencyBonusAW(
   latestPosition: number,
   totalTracks: number,
@@ -34,8 +34,6 @@ export function calculateRecencyBonusBoAW(
   if (percentage >= 0.15) return 2;
   return 1;
 }
-
-// ── Scoring ─────────────────────────────────────────────────────────────────
 
 export interface ScoringWeights {
   awWeight: number;
@@ -78,8 +76,7 @@ export function determinePriority(
   return null;
 }
 
-// ── Filtering ───────────────────────────────────────────────────────────────
-
+/** Artists whose priority is in `priorities`, highest score first. */
 export function filterByPriority(
   artists: Record<string, ArtistData>,
   priorities: number[],
@@ -89,8 +86,6 @@ export function filterByPriority(
     .filter(([_, data]) => data.priority !== null && prioSet.has(data.priority))
     .sort((a, b) => b[1].score - a[1].score);
 }
-
-// ── Full artist score calculation ───────────────────────────────────────────
 
 /** Per-source scan data with the primary/featured role split preserved. */
 export interface ArtistSourceScan {

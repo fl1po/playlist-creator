@@ -109,8 +109,9 @@ test('a 25-track "single" is treated as a mislabeled compilation', () => {
 });
 
 test('prefers the deluxe edition, inverting the weekly-fill rule', () => {
-  // Weekly fill takes only bonus tracks because the base was added on release
-  // week. Nothing was added here, so the superset is the complete record.
+  // A week collection keeps only a deluxe release's bonus tracks because the
+  // base album was collected on its own release week. A year collection has
+  // no such history, so the superset is the complete record.
   const { releases, rejected } = qualify([
     album({ name: 'Still Brazy', totalTracks: 12, id: 'base' }),
     album({ name: 'Still Brazy (Deluxe)', totalTracks: 17, id: 'deluxe' }),
@@ -256,8 +257,8 @@ test('buckets releases by month, defaulting year-only dates to January', () => {
 });
 
 test('month names avoid the DD.MM.YY pattern the weekly system matches', () => {
-  // A playlist called 01.01.16 would be read as a weekly by fill-run and
-  // non-listened-playlists, which both match /^(\d{2})\.(\d{2})\.(\d{2})$/.
+  // A playlist called 01.01.16 would be read as a weekly playlist by fill-run
+  // and non-listened-playlists, which both match exact DD.MM.YY names.
   const weeklyPattern = /^(\d{2})\.(\d{2})\.(\d{2})$/;
   for (let month = 1; month <= 12; month++) {
     const name = monthOf(`2016-${String(month).padStart(2, '0')}-01`, 2016);

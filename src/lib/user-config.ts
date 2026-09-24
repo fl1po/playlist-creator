@@ -37,12 +37,13 @@ export interface UserConfig {
     minPopularity: number;
     minFollowers: number;
   };
+  /** Listening hours per week; the listening-time view uses it to estimate backlog catch-up. */
   weeklyListeningBudget: number;
   /** Dashboard blocks pinned to the top of the page, by element id. */
   pinnedBlocks: string[];
 }
 
-// ── Defaults (current hardcoded values) ──────────────────────────────────────
+// ── Defaults ──────────────────────────────────────────────────────────────
 
 export const DEFAULT_USER_CONFIG: UserConfig = {
   sourcePlaylists: {
@@ -176,7 +177,7 @@ export function mergeConfigWithDefaults(
   };
 }
 
-// ── File-based store ────────────────────────────────────────���───────────────
+// ── File-based store ────────────────────────────────────────────────────────
 
 export class UserConfigStore implements IUserConfigStore {
   private path: string;

@@ -24,7 +24,6 @@ export class PlaylistClearerService {
   }
 
   async clear(playlistName: string): Promise<{ cleared: number }> {
-    // Find playlist
     const playlists: Array<{ id: string; name: string; trackCount: number }> =
       [];
     let offset = 0;
@@ -55,9 +54,8 @@ export class PlaylistClearerService {
 
     this.emitter.emit('playlistFound', target.name, target.trackCount);
 
-    // Get all track URIs
     const uris: Array<{ uri: string }> = [];
-    let to = 0;
+    let itemOffset = 0;
 
     while (true) {
       const result = await this.ctx.call(
@@ -67,7 +65,7 @@ export class PlaylistClearerService {
             undefined,
             undefined,
             50,
-            to,
+            itemOffset,
           ),
         `playlist items ${target.id}`,
       );
@@ -79,10 +77,11 @@ export class PlaylistClearerService {
         }
       }
       if (result.data.items.length < 50) break;
-      to += 50;
+      itemOffset += 50;
     }
 
-    // Remove in batches via SDK (through ctx.call for proper retry/abort handling)
+    // Spotify caps removals at 100 items per request; going through ctx.call
+    // (not the raw SDK) keeps retry/abort handling.
     for (let i = 0; i < uris.length; i += 100) {
       const batch = uris.slice(i, i + 100);
       await this.ctx.call(

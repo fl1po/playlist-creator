@@ -82,6 +82,8 @@ export function scoreRoster(
         '3': `${t.p3}-${t.p2 - 1}`,
         '4': `${t.p4}-${t.p3 - 1}`,
       },
+      // Descriptive only — mirrors calculateRecencyBonusAW/BoAW in
+      // domain/artists.ts; keep the two in sync.
       recencyBonusRules: {
         note: 'Based on latest (most recent) track position. Higher % = more recent = higher bonus.',
         allWeekly: {
