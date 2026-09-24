@@ -170,6 +170,7 @@ function fixtureCtx(world: FixtureWorld): SpotifyContext & {
       async runAuth() {
         return true;
       },
+      setTokens() {},
     },
     async call(fn) {
       try {

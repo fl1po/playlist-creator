@@ -38,22 +38,35 @@ export function createSpotifyClient(opts: SpotifyClientOptions): SpotifyClient {
 
   let api = buildApi();
 
+  function reloadFromStore(): void {
+    config = configStore.load();
+    accessToken = config.accessToken ?? '';
+    refreshTokenValue = config.refreshToken ?? '';
+    api = buildApi();
+  }
+
   async function runAuth(attempt = 1): Promise<boolean> {
     const maxAttempts = 3;
     opts.onAuthRequired?.(attempt, maxAttempts);
 
+    // The handler resolves once new tokens are in the config store (the web
+    // login installs them via setTokens); reload so later calls use them.
     if (reauth.type === 'custom') {
-      return reauth.handler();
+      const ok = await reauth.handler();
+      if (ok) {
+        reloadFromStore();
+        opts.onAuthSuccess?.();
+      } else {
+        opts.onAuthFailed?.(new Error('Re-authentication did not complete'));
+      }
+      return ok;
     }
 
     // CLI reauth blocks on the interactive `npm run auth` flow, which writes
     // fresh tokens to the config store; reload them from there.
     try {
       execSync('npm run auth', { stdio: 'inherit' });
-      config = configStore.load();
-      accessToken = config.accessToken ?? '';
-      refreshTokenValue = config.refreshToken ?? '';
-      api = buildApi();
+      reloadFromStore();
       opts.onAuthSuccess?.();
       return true;
     } catch (e) {
@@ -126,6 +139,15 @@ export function createSpotifyClient(opts: SpotifyClientOptions): SpotifyClient {
     return api;
   }
 
+  function setTokens(tokens: { accessToken: string; refreshToken: string }) {
+    accessToken = tokens.accessToken;
+    refreshTokenValue = tokens.refreshToken;
+    config.accessToken = accessToken;
+    config.refreshToken = refreshTokenValue;
+    configStore.save(config);
+    api = buildApi();
+  }
+
   return {
     get api() {
       return api;
@@ -133,5 +155,6 @@ export function createSpotifyClient(opts: SpotifyClientOptions): SpotifyClient {
     refreshToken,
     recreateApi,
     runAuth,
+    setTokens,
   };
 }

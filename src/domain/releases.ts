@@ -23,11 +23,11 @@ export function getBaseAlbumName(albumName: string): string {
       "",
     )
     .replace(
-      /\s*-\s*(deluxe|expanded|bonus|complete|ultimate|super|platinum).*$/gi,
+      /\s*-\s*(?:\d+(?:st|nd|rd|th)\s+)?(deluxe|expanded|bonus|complete|ultimate|super|platinum|anniversary).*$/gi,
       "",
     )
     .replace(
-      /\s+(deluxe|expanded|bonus|complete|ultimate|super|platinum)\s*(edition|version)?$/gi,
+      /\s+(?:\d+(?:st|nd|rd|th)\s+)?(deluxe|expanded|bonus|complete|ultimate|super|platinum|anniversary)\s*(edition|version)?$/gi,
       "",
     )
     .trim();

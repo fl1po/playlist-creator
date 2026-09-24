@@ -11,7 +11,7 @@ export type PlaylistFillerEventMap = {
   playlistCreated: [date: string, playlistId: string];
   playlistReused: [date: string, playlistId: string];
   artistSearchProgress: [searched: number, total: number, artistName: string];
-  artistSearchPause: [searched: number, total: number];
+  weekProgressSaved: [searched: number, total: number];
   releaseFound: [
     artist: string,
     release: string,

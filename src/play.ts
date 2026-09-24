@@ -439,7 +439,27 @@ const adjustVolume: tool<{
         return await spotifyApi.player.getPlaybackState();
       });
 
-      if (!playback?.device) {
+      // Base the adjustment on the target device's own volume, which differs
+      // from the active device's when `deviceId` names another device.
+      let device = playback?.device;
+      if (deviceId && device?.id !== deviceId) {
+        const { devices } = await handleSpotifyRequest(async (spotifyApi) => {
+          return await spotifyApi.player.getAvailableDevices();
+        });
+        device = devices.find((d) => d.id === deviceId);
+        if (!device) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Device ${deviceId} not found among available devices.`,
+              },
+            ],
+          };
+        }
+      }
+
+      if (!device) {
         return {
           content: [
             {
@@ -450,7 +470,7 @@ const adjustVolume: tool<{
         };
       }
 
-      const currentVolume = playback.device.volume_percent;
+      const currentVolume = device.volume_percent;
       if (currentVolume === null || currentVolume === undefined) {
         return {
           content: [

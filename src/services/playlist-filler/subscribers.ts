@@ -53,8 +53,8 @@ export function consoleHandlers(): EventHandlers<PlaylistFillerEventMap> {
       console.log(`  Reusing empty playlist: ${date}`),
     onArtistSearchProgress: (searched, total) =>
       console.log(`  ... searched ${searched}/${total} artists`),
-    onArtistSearchPause: () =>
-      console.log(`  ... pausing 30s to reset rate limit window`),
+    onWeekProgressSaved: (searched, total) =>
+      console.log(`  ... week progress saved (${searched}/${total} artists)`),
     onReleaseFound: (artist, release, type, source) => {
       if (source) console.log(`    Found (${source}): ${artist} - ${release}`);
       else console.log(`  Found: ${artist} - ${release} (${type})`);
@@ -213,9 +213,9 @@ export function broadcastHandlers(
         return { searched, total, artist: artistName };
       },
     },
-    artistSearchPause: {
+    weekProgressSaved: {
       log: (searched, total) =>
-        `Pausing 30s to reset rate limit window (${searched}/${total} artists)`,
+        `Week progress saved (${searched}/${total} artists)`,
     },
     releaseFound: {
       type: 'fill:releaseFound',

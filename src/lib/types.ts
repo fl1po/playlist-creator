@@ -49,6 +49,8 @@ export interface SpotifyClient {
   refreshToken(): Promise<string>;
   recreateApi(): Promise<SpotifyApi>;
   runAuth(attempt?: number): Promise<boolean>;
+  /** Install tokens obtained out-of-band (e.g. a web login) and persist them. */
+  setTokens(tokens: { accessToken: string; refreshToken: string }): void;
 }
 
 // ── Pagination ──────────────────────────────────────────────────────────────

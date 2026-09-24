@@ -167,8 +167,11 @@ export async function syncPriorityChanges(
     playlists: unprocessedPlaylists.length,
   });
 
+  // Lowercased like demotedNames: roster and Spotify capitalisation can differ.
   const p1p2Set = new Set(
-    filterByPriority(trustedArtists.artistCounts, [1, 2]).map(([name]) => name),
+    filterByPriority(trustedArtists.artistCounts, [1, 2]).map(([name]) =>
+      name.toLowerCase(),
+    ),
   );
 
   // ── Removal phase ──────────────────────────────────────────────────────────
@@ -197,7 +200,7 @@ export async function syncPriorityChanges(
         );
         if (!groupDemoted) continue;
         const groupP1P2 = group.some((t) =>
-          t.artistNames.some((n) => p1p2Set.has(n)),
+          t.artistNames.some((n) => p1p2Set.has(n.toLowerCase())),
         );
         if (groupP1P2) {
           decisions.push({

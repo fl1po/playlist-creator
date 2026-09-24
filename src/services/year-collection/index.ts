@@ -14,8 +14,8 @@
  *
  * The collect/apply split exists because fetching costs hours: the plan is
  * reviewed before anything is written to Spotify. Re-scoring (`--rescore`)
- * rebuilds the plan from the collect checkpoint (checkpoint.ts) in seconds
- * rather than re-fetching.
+ * rebuilds the plan from the collect checkpoint (checkpoint.ts), re-fetching
+ * only what earlier runs failed on or missed.
  */
 
 import type { Cluster } from './genre-map.js';

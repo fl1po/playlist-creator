@@ -32,7 +32,7 @@ const searchSpotify: tool<{
       .min(1)
       .max(50)
       .optional()
-      .describe('Maximum number of results to return (10-50)'),
+      .describe('Maximum number of results to return (1-50)'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
     const { query, type, limit } = args;
@@ -425,7 +425,7 @@ const getUsersSavedTracks: tool<{
     const formattedTracks = savedTracks.items
       .map((item, i) => {
         const track = item.track;
-        if (!track) return `${i + 1}. [Removed track]`;
+        if (!track) return `${offset + i + 1}. [Removed track]`;
 
         if (isTrack(track)) {
           const artists = track.artists.map((a) => a.name).join(', ');
@@ -434,7 +434,7 @@ const getUsersSavedTracks: tool<{
           return `${offset + i + 1}. "${track.name}" by ${artists} (${duration}) - ID: ${track.id} - Added: ${addedDate}`;
         }
 
-        return `${i + 1}. Unknown item`;
+        return `${offset + i + 1}. Unknown item`;
       })
       .join('\n');
 

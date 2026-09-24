@@ -1133,7 +1133,7 @@ function setStatusText(text) {
   document.getElementById('statusDot').title = text;
 }
 
-async function logPriorityChanges(changes) {
+function logPriorityChanges(changes) {
   if (!changes?.length) {
     log('info', 'No priority changes detected');
     return;
@@ -1143,7 +1143,7 @@ async function logPriorityChanges(changes) {
   for (const c of changes) log('info', `  ${c.artist}: ${label(c.from)} → ${label(c.to)}`);
 }
 
-function connect() {
+async function connect() {
   // EventSource can't send the Bearer headers, so trade them for a signed
   // stream ticket. Cookie sessions are identified by the cookie itself.
   let url = '/api/events';
@@ -2292,11 +2292,9 @@ async function resetConfig() {
   if (!confirm('Reset all settings to defaults?')) return;
   const res = await api('GET', '/api/config');
   if (res.ok) {
-    // GET /api/config returns the saved config merged with defaults, not the
-    // defaults alone, so this only discards unsaved edits in the modal.
-    // The raw fetch also skips the Bearer headers api() adds.
-    const defaults = await (await fetch('/api/config')).json();
-    populateSettings(defaults.config);
+    // Source playlists identify the user's data rather than tune it, and Save
+    // rejects a config without them — keep the current ones.
+    populateSettings({ ...res.defaults, sourcePlaylists: res.config.sourcePlaylists });
   }
 }
 

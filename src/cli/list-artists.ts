@@ -8,14 +8,16 @@ const data: TrustedArtistsFile = JSON.parse(
   fs.readFileSync(TRUSTED_ARTISTS_PATH, "utf8"),
 );
 const artists = data.artistCounts;
-const sl = secondaryLabel(new UserConfigStore().load());
+const userConfig = new UserConfigStore().load();
+const sl = secondaryLabel(userConfig);
+const t = userConfig.scoring.priorityThresholds;
 
 const args = process.argv.slice(2);
 const filterPriorities = new Set<number>();
 let sortBy: "score" | "alpha" = "score";
 
 for (const arg of args) {
-  if (/^p[1-3]$/i.test(arg)) {
+  if (/^p[1-4]$/i.test(arg)) {
     filterPriorities.add(Number.parseInt(arg[1]));
   } else if (arg === "--alpha") {
     sortBy = "alpha";
@@ -44,14 +46,15 @@ for (const [name, d] of filtered) {
 }
 
 const priorityLabels: Record<number, string> = {
-  1: "P1 (score >= 60)",
-  2: "P2 (score 25-59)",
-  3: "P3 (score 10-24)",
+  1: `P1 (score >= ${t.p1})`,
+  2: `P2 (score ${t.p2}-${t.p1 - 1})`,
+  3: `P3 (score ${t.p3}-${t.p2 - 1})`,
+  4: `P4 (score ${t.p4}-${t.p3 - 1})`,
 };
 
 let totalShown = 0;
 
-for (const p of [1, 2, 3]) {
+for (const p of [1, 2, 3, 4]) {
   if (!grouped.has(p)) continue;
   const list = grouped.get(p)!;
   console.log(`\n=== ${priorityLabels[p]} — ${list.length} artists ===\n`);

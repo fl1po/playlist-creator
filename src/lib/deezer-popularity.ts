@@ -22,7 +22,7 @@ function normalize(s: string): string {
   return s
     .toLowerCase()
     .replace(/\s*[\(\[].*?[\)\]]\s*/g, '') // remove (Deluxe), [feat. X], etc.
-    .replace(/['']/g, "'")
+    .replace(/[‘’]/g, "'")
     .replace(/[^\w\s']/g, '')
     .replace(/\s+/g, ' ')
     .trim();

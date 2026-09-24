@@ -7,10 +7,11 @@
  * playlists without touching a read endpoint.
  *
  * Collection is checkpointed, so an interrupted run resumes where it stopped
- * rather than starting over. The same checkpoint makes `--rescore` cheap:
- * changing scoring constants and rebuilding the plan costs seconds, because
- * every network phase reads from the checkpoint and only the pure scoring
- * runs again.
+ * rather than starting over, re-fetching only what an earlier run failed on.
+ * The same checkpoint makes `--rescore` cheap: changing scoring constants and
+ * rebuilding the plan costs seconds, because every network phase reads from
+ * the checkpoint and only the pure scoring (plus any earlier failures and
+ * Deezer/Last.fm misses) runs again.
  *
  * A run that lost calls mid-flight would otherwise produce a plan that looks
  * complete, so writing one requires `--allow-degraded`.
@@ -49,7 +50,7 @@ if (!Number.isFinite(year)) {
     `Usage: pnpm year-playlist <year> [options]
 
   --apply            create the playlists from an existing plan
-  --rescore          rebuild the plan from checkpointed data (seconds, no refetch)
+  --rescore          rebuild the plan from checkpointed data (refetches only earlier failures)
   --fresh            discard both the plan and the checkpoint, refetch everything
   --allow-degraded   write the plan even if calls were lost mid-run`,
   );

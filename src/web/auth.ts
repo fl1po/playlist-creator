@@ -13,7 +13,9 @@ export interface AuthDeps {
   ) => {
     userId: string;
     displayName?: string;
-    client: { recreateApi(): Promise<unknown> };
+    client: {
+      setTokens(tokens: { accessToken: string; refreshToken: string }): void;
+    };
   };
   getUserDataDir: (userId: string) => string;
   broadcast: (type: string, data: unknown) => void;
@@ -145,7 +147,13 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
 
     const session = deps.getOrCreateUserSession(user.id, appConfig);
     session.displayName = user.displayName;
-    await session.client.recreateApi();
+    // Install the new tokens directly rather than via recreateApi(): if a task
+    // is waiting on reauth, the client still holds the rejected refresh token,
+    // and refreshing with it would trigger a second, nested reauth.
+    session.client.setTokens({
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token,
+    });
 
     return { userId: user.id, displayName: user.displayName };
   }

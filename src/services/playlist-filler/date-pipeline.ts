@@ -50,7 +50,7 @@ function emitProgress(emitter: Emitter, e: WeekProgressEvent): void {
       emitter.emit('releaseFound', e.artist, e.release, e.type, e.source);
       break;
     case 'checkpoint':
-      emitter.emit('artistSearchPause', e.searched, e.total);
+      emitter.emit('weekProgressSaved', e.searched, e.total);
       break;
     case 'popularity':
       emitter.emit('log', `Checking popularity: ${e.done}/${e.total}`);

@@ -145,8 +145,8 @@ export function renderSummary(plan: YearPlan): string {
   lines.push(
     `after co-citation >= ${plan.config.coCitationThreshold}      ${s.candidatesAfterCoCitation}`,
   );
-  lines.push(`after relevance cut        ${s.candidatesScored}`);
-  lines.push(`artists searched           ${s.artistsSearched}`);
+  lines.push(`candidates scored          ${s.candidatesScored}`);
+  lines.push(`after relevance cut        ${s.artistsSearched} (searched)`);
   lines.push(`releases qualified         ${s.releasesQualified}`);
   lines.push(`after acclaim floor        ${s.releasesAfterFloor}`);
   lines.push(`tracks                     ${s.trackTotal}`);

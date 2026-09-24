@@ -74,6 +74,7 @@ export function createTaskMutex(
           return baseClient.recreateApi();
         },
         runAuth: baseClient.runAuth,
+        setTokens: baseClient.setTokens,
       };
     },
   };

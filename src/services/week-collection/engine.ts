@@ -176,15 +176,6 @@ export async function collectTracks(
         release.artistSpotifyId,
         baseName,
       );
-      if (originalTrackKeys.size > 0) {
-        run.decisions.push({
-          kind: 'deluxe-stripped',
-          release: release.name,
-          baseName,
-          originalTrackCount: originalTrackKeys.size,
-          bonusTracks: 0,
-        });
-      }
     }
 
     // Title-track-only: single promotion disguised as an album.

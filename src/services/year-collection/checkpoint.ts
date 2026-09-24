@@ -8,9 +8,12 @@
  * the album sweep, and the Deezer/Last.fm acclaim lookups — also write
  * incrementally as they go.
  *
+ * Failed calls are not baked in: a resume re-fetches what an earlier run
+ * failed on, so re-running after a degraded run repairs it.
+ *
  * The file is deliberately separate from the plan: a plan is a reviewable
  * result, this is disposable machinery. `--fresh` deletes it; `--rescore`
- * rebuilds the plan from it without refetching.
+ * rebuilds the plan from it, refetching only earlier failures and misses.
  */
 
 import { existsSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -49,11 +52,15 @@ export interface Checkpoint {
     /** Survivors consumed so far, so a resume skips them. */
     doneCount: number;
     resolved: Candidate[];
+    /** Survivor indices whose search failed, retried on resume. */
+    failedIndices?: number[];
   };
   albums?: {
     doneArtistIds: string[];
     releases: Array<YearRelease & { cluster: Cluster }>;
     rejections: Rejection[];
+    /** Artists whose catalog fetch failed; left out of `doneArtistIds`. */
+    failedArtistIds?: string[];
   };
   details?: Array<[string, AlbumDetail]>;
   deezerAcclaim?: Array<[string, number]>;
@@ -139,6 +146,15 @@ export class FailureLog {
       attempt: (n = 1) => this.attempt(phase, n),
       fail: (n = 1) => this.record(phase, n),
     };
+  }
+
+  /**
+   * Forget a phase's failures before re-fetching what it missed: every failed
+   * item is retried and re-recorded if it fails again. Retries also count as
+   * attempts, which dilutes the rate slightly — immaterial at these volumes.
+   */
+  clearFailures(phase: string): void {
+    delete this.checkpoint.failures[phase];
   }
 
   get failures(): Record<string, number> {

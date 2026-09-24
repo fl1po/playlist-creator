@@ -44,7 +44,8 @@ export function classifyError(e: Error): ClassifiedError {
   if (e instanceof HttpError) {
     const code = e.statusCode;
     if (code === 401) return { kind: 'auth', statusCode: code, original: e };
-    if (code >= 502 && code <= 504)
+    // Spotify's 500s are usually transient, so they're retried like 502–504.
+    if (code === 500 || (code >= 502 && code <= 504))
       return { kind: 'server', statusCode: code, original: e };
     return { kind: 'unknown', statusCode: code, original: e };
   }

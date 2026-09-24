@@ -242,6 +242,18 @@ test('a Deezer outage still registers as degradation', () => {
   assert.equal(degradedPhases(log).length, 1);
 });
 
+test('a resumed run that repairs its failures passes the degradation gate', () => {
+  const log = new FailureLog(emptyCheckpoint(2016));
+  log.attempt('album details', 500);
+  log.record('album details', 40);
+  assert.equal(degradedPhases(log).length, 1);
+
+  // The resume re-fetches all 40, and they succeed this time.
+  log.clearFailures('album details');
+  log.attempt('album details', 40);
+  assert.deepEqual(degradedPhases(log), []);
+});
+
 test('a clean run reports nothing degraded', () => {
   const log = new FailureLog(emptyCheckpoint(2016));
   log.attempt('album details', 500);

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { DEFAULT_USER_CONFIG } from '../../lib/user-config.js';
 import type { RouteContext } from '../route-context.js';
 
 export function configRoutes(ctx: RouteContext): Router {
@@ -12,7 +13,7 @@ export function configRoutes(ctx: RouteContext): Router {
       session.userConfigStore.load(),
       session.userConfigStore.exists(),
     ]);
-    res.json({ ok: true, config, configured });
+    res.json({ ok: true, config, configured, defaults: DEFAULT_USER_CONFIG });
   });
 
   router.put('/config', async (req, res) => {

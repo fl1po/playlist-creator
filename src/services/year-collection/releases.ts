@@ -65,12 +65,14 @@ export interface Rejection {
  * Fetched whole rather than filtered server-side: the endpoint has no date
  * filter, and the full list is what lets `exclusionReason` spot reissues by
  * finding an earlier release under the same base name.
+ *
+ * `complete` is false when a page failed and the list is truncated.
  */
 export async function fetchArtistAlbums(
   ctx: SpotifyContext,
   artistId: string,
   report?: PhaseReporter,
-): Promise<RawAlbum[]> {
+): Promise<{ albums: RawAlbum[]; complete: boolean }> {
   const albums: RawAlbum[] = [];
   let offset = 0;
 
@@ -93,7 +95,7 @@ export async function fetchArtistAlbums(
       // Breaking here truncates the artist's catalog, so the year may look
       // empty when it is not. That is invisible downstream — hence the count.
       report?.fail();
-      break;
+      return { albums, complete: false };
     }
 
     for (const album of result.data.items) {
@@ -111,7 +113,7 @@ export async function fetchArtistAlbums(
     offset += PAGE;
   }
 
-  return albums;
+  return { albums, complete: true };
 }
 
 export interface AlbumDetail {

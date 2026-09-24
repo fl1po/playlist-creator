@@ -469,14 +469,15 @@ test('deluxe release: only tracks absent from the base album qualify', async () 
   assert.deepEqual(week.tracks, ['d3']);
   assert.equal(week.skippedCount, 2);
   const deluxe = week.decisions.filter((d) => d.kind === 'deluxe-stripped');
-  assert.equal(deluxe.length, 2);
-  assert.deepEqual(deluxe[1], {
-    kind: 'deluxe-stripped',
-    release: 'Best Album (Deluxe)',
-    baseName: 'Best Album',
-    originalTrackCount: 2,
-    bonusTracks: 1,
-  });
+  assert.deepEqual(deluxe, [
+    {
+      kind: 'deluxe-stripped',
+      release: 'Best Album (Deluxe)',
+      baseName: 'Best Album',
+      originalTrackCount: 2,
+      bonusTracks: 1,
+    },
+  ]);
 });
 
 test('title-track-only: single promotion contributes only the title track', async () => {

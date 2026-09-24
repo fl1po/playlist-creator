@@ -135,6 +135,23 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
   if (cp.rosterProfiles) {
     rosterProfiles = new Map(cp.rosterProfiles);
     log(`  reused ${rosterProfiles.size} roster profiles from checkpoint`);
+    const missing = roster
+      .map((a) => a.spotifyId)
+      .filter((id) => !rosterProfiles.has(id));
+    if (missing.length) {
+      failures.clearFailures('roster genres');
+      const fetched = await fetchArtistProfiles(
+        ctx,
+        missing,
+        (done, total) => progress('roster genres', done, total),
+        failures.for('roster genres'),
+      );
+      for (const [id, artistProfile] of fetched) {
+        rosterProfiles.set(id, artistProfile);
+      }
+      cp.rosterProfiles = [...rosterProfiles];
+      flush();
+    }
   } else {
     rosterProfiles = await fetchArtistProfiles(
       ctx,
@@ -213,12 +230,11 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
     log(`  resuming resolution at ${startAt}/${survivors.length}`);
   }
   const report = failures.for('resolve candidates');
+  const failedIndices: number[] = [];
 
-  for (let i = startAt; i < survivors.length; i++) {
-    opts.checkAbort?.();
+  /** Resolve survivor `i` into `candidates`; false if the search call failed. */
+  const resolveSurvivor = async (i: number): Promise<boolean> => {
     const survivor = survivors[i];
-    progress('resolve candidates', i + 1, survivors.length);
-
     const known = rosterByName.get(survivor.name.toLowerCase().trim());
     if (known) {
       candidates.push({
@@ -229,41 +245,67 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
         rosterTier: known.priority ?? undefined,
         profile: rosterProfiles.get(known.spotifyId),
       });
-    } else {
-      report.attempt();
-      const search = await ctx.call(
-        () => ctx.api.search(survivor.name, ['artist'], undefined, 5),
-        `search artist "${survivor.name}"`,
-      );
-      if (!search.success) {
-        if (search.authError) throw search.error;
-        report.fail();
-      } else {
-        const target = survivor.name.toLowerCase().trim();
-        const match = search.data.artists?.items.find(
-          (a: { name: string }) => a.name.toLowerCase().trim() === target,
-        );
-        if (match) {
-          candidates.push({
-            spotifyId: match.id,
-            name: match.name,
-            coCitations: survivor.coCitations,
-            seedClusters: survivor.seedClusters,
-          });
-        }
-      }
+      return true;
     }
+
+    report.attempt();
+    const search = await ctx.call(
+      () => ctx.api.search(survivor.name, ['artist'], undefined, 5),
+      `search artist "${survivor.name}"`,
+    );
+    if (!search.success) {
+      if (search.authError) throw search.error;
+      report.fail();
+      return false;
+    }
+    const target = survivor.name.toLowerCase().trim();
+    const match = search.data.artists?.items.find(
+      (a: { name: string }) => a.name.toLowerCase().trim() === target,
+    );
+    if (match) {
+      candidates.push({
+        spotifyId: match.id,
+        name: match.name,
+        coCitations: survivor.coCitations,
+        seedClusters: survivor.seedClusters,
+      });
+    }
+    return true;
+  };
+
+  const retry = cp.resolution?.failedIndices ?? [];
+  if (retry.length) {
+    log(`  retrying ${retry.length} failed artist searches`);
+    failures.clearFailures('resolve candidates');
+    for (const i of retry) {
+      opts.checkAbort?.();
+      if (!(await resolveSurvivor(i))) failedIndices.push(i);
+    }
+  }
+
+  for (let i = startAt; i < survivors.length; i++) {
+    opts.checkAbort?.();
+    progress('resolve candidates', i + 1, survivors.length);
+    if (!(await resolveSurvivor(i))) failedIndices.push(i);
 
     if ((i + 1) % FLUSH_EVERY === 0) {
       // Snapshot, never alias: `candidates` keeps growing after this phase
       // ends — the roster force-add below pushes into the same array — and a
       // later flush would otherwise rewrite this phase's record with it.
-      cp.resolution = { doneCount: i + 1, resolved: [...candidates] };
+      cp.resolution = {
+        doneCount: i + 1,
+        resolved: [...candidates],
+        failedIndices: [...failedIndices],
+      };
       flush();
     }
   }
   const resolved = candidates.length;
-  cp.resolution = { doneCount: survivors.length, resolved: [...candidates] };
+  cp.resolution = {
+    doneCount: survivors.length,
+    resolved: [...candidates],
+    failedIndices,
+  };
   flush();
 
   // Every roster artist belongs in the pool, whether or not the graph found
@@ -285,6 +327,7 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
   // ── 5. Genres for discovered artists, then the relevance cut ──────────────
   const missing = candidates.filter((c) => !c.profile).map((c) => c.spotifyId);
   if (missing.length) {
+    failures.clearFailures('candidate genres');
     const fetched = await fetchArtistProfiles(
       ctx,
       missing,
@@ -338,6 +381,12 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
   if (doneArtists.size) {
     log(`  resuming album sweep, ${doneArtists.size} artists already done`);
   }
+  // Failed artists stay out of `doneArtists`, so the sweep below retries them.
+  const failedArtists = new Set(cp.albums?.failedArtistIds ?? []);
+  if (failedArtists.size) {
+    log(`  retrying ${failedArtists.size} artists whose catalog fetch failed`);
+    failures.clearFailures('artist releases');
+  }
   const albumReport = failures.for('artist releases');
 
   for (const [i, candidate] of kept.entries()) {
@@ -345,11 +394,18 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
     progress('artist releases', i + 1, kept.length);
     if (doneArtists.has(candidate.spotifyId)) continue;
 
-    const albums = await fetchArtistAlbums(
+    const { albums, complete } = await fetchArtistAlbums(
       ctx,
       candidate.spotifyId,
       albumReport,
     );
+    // A truncated catalog can hide the year's releases or misjudge reissues;
+    // record nothing for the artist until a later run fetches it whole.
+    if (!complete) {
+      failedArtists.add(candidate.spotifyId);
+      continue;
+    }
+    failedArtists.delete(candidate.spotifyId);
     const selected = selectYearReleases(
       albums,
       year,
@@ -370,11 +426,17 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
         doneArtistIds: [...doneArtists],
         releases,
         rejections,
+        failedArtistIds: [...failedArtists],
       };
       flush();
     }
   }
-  cp.albums = { doneArtistIds: [...doneArtists], releases, rejections };
+  cp.albums = {
+    doneArtistIds: [...doneArtists],
+    releases,
+    rejections,
+    failedArtistIds: [...failedArtists],
+  };
   flush();
   log(`Qualified ${releases.length} releases from ${kept.length} artists`);
 
@@ -383,6 +445,20 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
   if (cp.details) {
     details = new Map(cp.details);
     log(`  reused ${details.size} album details from checkpoint`);
+    // Earlier failed batches, plus releases from artists retried above.
+    const missing = releases.map((r) => r.id).filter((id) => !details.has(id));
+    if (missing.length) {
+      failures.clearFailures('album details');
+      const fetched = await fetchAlbumDetails(
+        ctx,
+        missing,
+        (done, total) => progress('album details', done, total),
+        failures.for('album details'),
+      );
+      for (const [id, detail] of fetched) details.set(id, detail);
+      cp.details = [...details];
+      flush();
+    }
   } else {
     details = await fetchAlbumDetails(
       ctx,

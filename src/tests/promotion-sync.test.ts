@@ -267,6 +267,39 @@ test('removal: a demoted artist album is removed, a P1/P2-featured album stays',
   });
 });
 
+test('removal: the P1/P2 check ignores capitalisation differences between roster and Spotify', async () => {
+  const catalog: Catalog = {
+    artists: [],
+    playlists: [
+      {
+        id: 'pl1',
+        name: WEEK,
+        tracks: [
+          {
+            id: 'b1',
+            name: 'B1',
+            artistNames: ['Alpha', 'BETA'],
+            albumId: 'albB',
+          },
+        ],
+      },
+    ],
+  };
+  const writes = recordingWrites();
+
+  const result = await syncPriorityChanges(
+    [{ artist: 'Alpha', from: 1, to: null }],
+    input({
+      unprocessedPlaylists: playlistList(catalog),
+      trustedArtists: trusted({ Beta: ac(1, 100, 'art-beta') }),
+    }),
+    ports(fixtureReads(catalog), writes),
+  );
+
+  assert.equal(writes.removed.size, 0);
+  assert.deepEqual(kinds(result.decisions), ['demotion-kept']);
+});
+
 // ── Addition phase ───────────────────────────────────────────────────────────
 
 test('addition: backfills the in-window release, excluding AW and existing tracks', async () => {
