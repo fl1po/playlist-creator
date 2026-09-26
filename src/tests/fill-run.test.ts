@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { formatDdMmYy } from '../domain/tracks.js';
+import { formatDateISO, formatDdMmYy } from '../domain/tracks.js';
 import {
   PENDING_PRIORITY_CHANGES,
   RECALCULATION_STATE,
@@ -12,10 +12,16 @@ import {
 import { type DurableCache, createDurableCache } from '../lib/durable-cache.js';
 import type { EventHandlers } from '../lib/service-events.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
-import type { BatchCache, TrustedArtistsFile } from '../lib/types.js';
+import type {
+  BatchCache,
+  SimplePlaylist,
+  TrustedArtistsFile,
+} from '../lib/types.js';
 import { DEFAULT_USER_CONFIG, type UserConfig } from '../lib/user-config.js';
+import { fillPorts } from '../services/playlist-filler/adapters.js';
 import type { PlaylistFillerEventMap } from '../services/playlist-filler/events.js';
 import {
+  type FillPorts,
   type FillRunOptions,
   runFill,
 } from '../services/playlist-filler/fill-run.js';
@@ -25,8 +31,20 @@ import type {
   ProgressFile,
 } from '../services/playlist-filler/storage.js';
 import type { SyncHandlers } from '../services/promotion-sync/subscribers.js';
-import { spotifyRecalculationPorts } from '../services/recalculation/adapters.js';
-import type { SourceReads } from '../services/recalculation/index.js';
+import type {
+  RecalculationPorts,
+  SourceReads,
+} from '../services/recalculation/index.js';
+import {
+  fixedPopularitySource,
+  memoryCheckpoints,
+} from '../services/week-collection/adapters.js';
+import { memoryWeeklyPlaylistStore } from '../services/weekly-playlists/adapters.js';
+import {
+  type Catalog,
+  fixtureReads,
+  recordingWrites,
+} from './fixtures/release-catalog.js';
 
 // ── Fixture: a single weekly Friday ─────────────────────────────────────────
 // Most tests drive `runFill` through its "everything is already filled"
@@ -229,18 +247,20 @@ function world(
 ) {
   const dataDir = tmpDataDir(t);
   const cache = createDurableCache({ userId: 'user-1', dataDir, redis: null });
-  const ports = spotifyRecalculationPorts(ctx, { userId: 'user-1', dataDir });
+  const storage = memoryStorage();
+  const ports = fillPorts(ctx, { userId: 'user-1', dataDir, storage });
+  if (sources) ports.recalculation = { ...ports.recalculation, sources };
   return {
     cache,
+    storage,
     options(overrides: Partial<FillRunOptions> = {}): FillRunOptions {
       return {
         ctx,
+        userId: 'user-1',
         userConfig: USER_CONFIG,
-        storage: memoryStorage(),
-        recalculation: {
-          cache,
-          ports: sources ? { ...ports, sources } : ports,
-        },
+        storage,
+        cache,
+        ports,
         handlers: {} as EventHandlers<PlaylistFillerEventMap>,
         syncHandlers: recordingSyncHandlers(),
         fresh: true,
@@ -283,21 +303,19 @@ async function seedPending(cache: DurableCache) {
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 test('nothing pending: progress is written, sync never runs', async (t) => {
-  const storage = memoryStorage();
   const w = world(t, fixtureCtx({ userId: 'user-1' }));
-  const result = await runFill(w.options({ storage }));
+  const result = await runFill(w.options());
 
   assert.deepEqual(result.priorityChanges, []);
   assert.equal(result.syncedPlaylists, null);
-  assert.equal(storage.progress?.total, 0);
+  assert.equal(w.storage.progress?.total, 0);
 });
 
 test('a zero-track run never appends a fill-history entry', async (t) => {
-  const storage = memoryStorage();
   const w = world(t, fixtureCtx({ userId: 'user-1' }));
-  await runFill(w.options({ storage }));
+  await runFill(w.options());
 
-  assert.deepEqual(storage.history, []);
+  assert.deepEqual(w.storage.history, []);
 });
 
 test('the trailing sync applies pending changes and clears them', async (t) => {
@@ -393,15 +411,336 @@ test('a fill aborted after a mid-fill recalculation leaves the sync for the next
   const next = await runFill({
     ...first.options(),
     ctx,
-    recalculation: {
-      cache: first.cache,
-      ports: spotifyRecalculationPorts(ctx, {
-        userId: 'user-1',
-        dataDir: tmpDataDir(t),
-      }),
-    },
+    ports: fillPorts(ctx, {
+      userId: 'user-1',
+      dataDir: tmpDataDir(t),
+      storage: first.storage,
+    }),
   });
 
   assert.equal(next.syncedPlaylists, 1);
   assert.deepEqual(ctx.removed['pl-filled'], ['spotify:track:demoted-track']);
+});
+
+// ── Fixture: in-memory fill ports ────────────────────────────────────────────
+// The per-date loop end to end: week collection over the catalog fixture, the
+// weekly playlist write into a memory store, and recalculation ports whose
+// sources never change, so the roster is whatever the cache holds.
+
+const THIS_FRIDAY = FILLED_FRIDAY;
+const LAST_FRIDAY = formatDdMmYy(
+  new Date(mostRecentFriday(new Date()).getTime() - 7 * 86_400_000),
+);
+const IN_WINDOW = formatDateISO(mostRecentFriday(new Date()));
+
+/** One P1 artist with one in-window, one-track album. */
+function alphaCatalog(): Catalog {
+  return {
+    artists: [
+      {
+        id: 'art-a',
+        name: 'Alpha',
+        albums: [
+          {
+            id: 'alb-x',
+            name: 'X',
+            type: 'album',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 't1', name: 'One', key: 'alpha::one' }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+const ALPHA_P1 = trusted({ Alpha: { priority: 1, score: 100 } });
+
+function unchangedRecalculation(
+  catalog: Catalog,
+  calls: string[],
+): RecalculationPorts {
+  return {
+    sources: {
+      async snapshots() {
+        return { aw: 'aw-1', boaw: 'boaw-1' };
+      },
+      async scan() {
+        calls.push('scan');
+        return { artistData: new Map(), totalTracks: 0 };
+      },
+    },
+    unprocessed: {
+      async find() {
+        return { playlists: [], awTrackIds: new Set() };
+      },
+      async invalidate() {
+        calls.push('invalidate');
+      },
+    },
+    sync: {
+      reads: fixtureReads(catalog),
+      popularity: fixedPopularitySource({}),
+      writes: recordingWrites(),
+    },
+  };
+}
+
+function memoryPorts(catalog: Catalog, weeklies: SimplePlaylist[]) {
+  const calls: string[] = [];
+  const weekly = memoryWeeklyPlaylistStore(weeklies, calls);
+  const checkpoints = memoryCheckpoints();
+  const reads = fixtureReads(catalog);
+  const ports: FillPorts = {
+    week: {
+      reads,
+      popularity: fixedPopularitySource({ 'alb-x': 70, 'alb-y': 70 }),
+      checkpoints,
+    },
+    weekly,
+    history: {
+      async playlistTrackIds() {
+        return [];
+      },
+    },
+    recalculation: unchangedRecalculation(catalog, calls),
+  };
+  return { ports, reads, weekly, checkpoints, calls };
+}
+
+/** A roster the mid-fill recalculation will keep: both sources unchanged. */
+async function seedRoster(cache: DurableCache, roster: TrustedArtistsFile) {
+  await cache.save(TRUSTED_ARTISTS, roster);
+  await cache.save(RECALCULATION_STATE, {
+    allWeeklySnapshot: 'aw-1',
+    bestOfAllWeeklySnapshot: 'boaw-1',
+  });
+}
+
+function memoryWorld(t: { after: (fn: () => void) => void }, ports: FillPorts) {
+  const dataDir = tmpDataDir(t);
+  const cache = createDurableCache({ userId: 'user-1', dataDir, redis: null });
+  const storage = memoryStorage();
+  return {
+    cache,
+    storage,
+    options(overrides: Partial<FillRunOptions> = {}): FillRunOptions {
+      return {
+        ctx: fixtureCtx({ userId: 'user-1' }),
+        userId: 'user-1',
+        userConfig: USER_CONFIG,
+        storage,
+        cache,
+        ports,
+        handlers: {} as EventHandlers<PlaylistFillerEventMap>,
+        syncHandlers: recordingSyncHandlers(),
+        ...overrides,
+      };
+    },
+  };
+}
+
+// ── Per-date loop ────────────────────────────────────────────────────────────
+
+test('a fill collects one unfilled Friday and writes it to a new weekly playlist', async (t) => {
+  const { ports, weekly } = memoryPorts(alphaCatalog(), [
+    { id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 },
+  ]);
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+  const created: string[] = [];
+
+  const result = await runFill(
+    w.options({
+      handlers: {
+        onPlaylistCreated: (date) => created.push(date),
+      } as EventHandlers<PlaylistFillerEventMap>,
+    }),
+  );
+
+  assert.deepEqual(created, [THIS_FRIDAY]);
+  assert.deepEqual(
+    weekly.created.map((p) => p.name),
+    [THIS_FRIDAY],
+  );
+  assert.deepEqual(weekly.added.get(weekly.created[0].id), ['t1']);
+  assert.equal(result.results.length, 1);
+  assert.equal(result.results[0].date, THIS_FRIDAY);
+  assert.equal(result.results[0].tracksAdded, 1);
+  assert.equal(w.storage.history.length, 1);
+});
+
+test("a failed track write is recorded as the date's error, not as success", async (t) => {
+  const { ports, weekly } = memoryPorts(alphaCatalog(), [
+    { id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 },
+  ]);
+  weekly.failAddWith = new Error('rate limited');
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+  const errors: string[] = [];
+
+  const result = await runFill(
+    w.options({
+      handlers: {
+        onDateError: (date, err) => errors.push(`${date}: ${err.message}`),
+      } as EventHandlers<PlaylistFillerEventMap>,
+    }),
+  );
+
+  assert.deepEqual(errors, [`${THIS_FRIDAY}: rate limited`]);
+  assert.equal(result.results[0].error, 'rate limited');
+  assert.deepEqual(w.storage.history, []);
+});
+
+test('an empty weekly playlist for the Friday is reused, never recreated', async (t) => {
+  const { ports, weekly } = memoryPorts(alphaCatalog(), [
+    { id: 'pl-empty', name: THIS_FRIDAY, trackCount: 0 },
+  ]);
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+  const reused: string[] = [];
+
+  const result = await runFill(
+    w.options({
+      handlers: {
+        onPlaylistReused: (_date, id) => reused.push(id),
+      } as EventHandlers<PlaylistFillerEventMap>,
+    }),
+  );
+
+  assert.deepEqual(reused, ['pl-empty']);
+  assert.deepEqual(weekly.created, []);
+  assert.deepEqual(weekly.added.get('pl-empty'), ['t1']);
+  assert.equal(result.results[0].playlistId, 'pl-empty');
+});
+
+test('a filled Friday is not among the dates the fill processes', async (t) => {
+  const { ports, weekly, calls } = memoryPorts(alphaCatalog(), [
+    { id: 'pl-done', name: THIS_FRIDAY, trackCount: 5 },
+  ]);
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+
+  const result = await runFill(w.options());
+
+  assert.deepEqual(result.results, []);
+  assert.deepEqual(weekly.created, []);
+  assert.deepEqual(calls, []);
+});
+
+test('the unprocessed listing is invalidated before the tracks are written', async (t) => {
+  const { ports, calls } = memoryPorts(alphaCatalog(), [
+    { id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 },
+  ]);
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+
+  await runFill(w.options());
+
+  assert.deepEqual(calls, [`create ${THIS_FRIDAY}`, 'invalidate', 'add pl-1']);
+});
+
+// ── Resume ───────────────────────────────────────────────────────────────────
+
+/** Alpha (album) and Beta (single), both P1; Alpha outscores Beta. */
+function alphaBetaCatalog(): Catalog {
+  const catalog = alphaCatalog();
+  catalog.artists.push({
+    id: 'art-b',
+    name: 'Beta',
+    albums: [
+      {
+        id: 'alb-y',
+        name: 'Y',
+        type: 'single',
+        release_date: IN_WINDOW,
+        tracks: [{ id: 't2', name: 'Two', key: 'beta::two' }],
+      },
+    ],
+  });
+  return catalog;
+}
+
+const ALPHA_BETA_P1 = trusted({
+  Alpha: { priority: 1, score: 100 },
+  Beta: { priority: 1, score: 90 },
+});
+
+test('a fill resumes a checkpointed week: searched artists are skipped and reported', async (t) => {
+  const { ports, reads, weekly, checkpoints } = memoryPorts(
+    alphaBetaCatalog(),
+    [{ id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 }],
+  );
+  checkpoints.current = {
+    week: THIS_FRIDAY,
+    artistsSearched: 1,
+    foundReleases: {},
+  };
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_BETA_P1);
+  const resumed: Array<[string | undefined, string[]]> = [];
+
+  await runFill(
+    w.options({
+      handlers: {
+        onResumed: (date, names) => resumed.push([date, names]),
+      } as EventHandlers<PlaylistFillerEventMap>,
+    }),
+  );
+
+  assert.deepEqual(resumed, [[THIS_FRIDAY, ['Alpha']]]);
+  assert.deepEqual(reads.searchCalls, ['Beta']);
+  assert.deepEqual(weekly.added.get('pl-1'), ['t2']);
+});
+
+test('a checkpointed week keeps the roster it started with: no mid-search recalculation', async (t) => {
+  const { ports, calls, weekly, checkpoints } = memoryPorts(
+    alphaBetaCatalog(),
+    [{ id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 }],
+  );
+  checkpoints.current = {
+    week: THIS_FRIDAY,
+    artistsSearched: 1,
+    foundReleases: {},
+  };
+  const w = memoryWorld(t, ports);
+  // Both sources changed since the roster was scored: a re-score is due.
+  await w.cache.save(TRUSTED_ARTISTS, ALPHA_BETA_P1);
+  await w.cache.save(RECALCULATION_STATE, {
+    allWeeklySnapshot: 'aw-0',
+    bestOfAllWeeklySnapshot: 'boaw-0',
+  });
+
+  await runFill(w.options());
+
+  assert.ok(!calls.includes('scan'), 'the sources were re-scanned mid-search');
+  assert.deepEqual(weekly.added.get('pl-1'), ['t2']);
+});
+
+test('--fresh drops the checkpoint: every artist is searched again', async (t) => {
+  const { ports, reads, weekly, checkpoints } = memoryPorts(
+    alphaBetaCatalog(),
+    [{ id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 }],
+  );
+  checkpoints.current = {
+    week: THIS_FRIDAY,
+    artistsSearched: 1,
+    foundReleases: {},
+  };
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_BETA_P1);
+  const resumed: unknown[] = [];
+
+  await runFill(
+    w.options({
+      fresh: true,
+      handlers: {
+        onResumed: (...args) => resumed.push(args),
+      } as EventHandlers<PlaylistFillerEventMap>,
+    }),
+  );
+
+  assert.deepEqual(resumed, []);
+  assert.deepEqual(reads.searchCalls, ['Alpha', 'Beta']);
+  assert.deepEqual(weekly.added.get('pl-1'), ['t1', 't2']);
 });

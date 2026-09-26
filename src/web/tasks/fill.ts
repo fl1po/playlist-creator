@@ -1,4 +1,4 @@
-import { invalidateNonListenedCache } from '../../services/non-listened-playlists.js';
+import { fillPorts } from '../../services/playlist-filler/adapters.js';
 import { runFill } from '../../services/playlist-filler/fill-run.js';
 import { DurableFillStorage } from '../../services/playlist-filler/storage.js';
 import {
@@ -6,7 +6,6 @@ import {
   broadcastHandlers,
 } from '../../services/playlist-filler/subscribers.js';
 import { broadcastSyncHandlers } from '../../services/promotion-sync/subscribers.js';
-import { spotifyRecalculationPorts } from '../../services/recalculation/adapters.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -44,17 +43,18 @@ export const fillTask: TaskDefinition<FillEvents> = {
       checkAbort: tc.checkAbort,
     });
 
+    const storage = new DurableFillStorage(tc.cache, tc.dataDir);
     await runFill({
       ctx: tc.ctx,
+      userId: tc.userId,
       userConfig,
-      storage: new DurableFillStorage(tc.cache, tc.dataDir),
-      recalculation: {
-        cache: tc.cache,
-        ports: spotifyRecalculationPorts(tc.ctx, {
-          userId: tc.userId,
-          dataDir: tc.dataDir,
-        }),
-      },
+      storage,
+      cache: tc.cache,
+      ports: fillPorts(tc.ctx, {
+        userId: tc.userId,
+        dataDir: tc.dataDir,
+        storage,
+      }),
       handlers,
       syncHandlers: broadcastSyncHandlers(tc.broadcast),
       fresh: freshMode,
@@ -66,8 +66,9 @@ export const fillTask: TaskDefinition<FillEvents> = {
     else tc.emit('fill:error', { date: 'batch', message: String(error) });
   },
 
-  async cleanup(tc) {
+  // The unprocessed-playlists listing is invalidated by the Weekly playlists
+  // module before each write, so nothing is left to drop here.
+  async cleanup() {
     searchedArtists.clear();
-    await invalidateNonListenedCache(tc.dataDir, tc.userId);
   },
 };

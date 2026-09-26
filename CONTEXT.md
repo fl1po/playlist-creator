@@ -27,7 +27,7 @@ The scored artist roster produced by recalculation (`trusted-artists.json`). Sou
 ### Filling
 
 **Fill**:
-The operation that builds weekly playlists for every unprocessed Friday — one week collection per date, plus the playlist writes. Always ends with a promotion sync if any of the fill's own mid-fill recalculations crossed a P1/P2 boundary; a fill isn't finished until that trailing sync has run, regardless of whether it was started from the CLI or the web UI.
+The operation that builds weekly playlists for every unfilled Friday — one week collection per date, plus the playlist writes. Always ends with a promotion sync if any of the fill's own mid-fill recalculations crossed a P1/P2 boundary; a fill isn't finished until that trailing sync has run, regardless of whether it was started from the CLI or the web UI.
 _Avoid_: batch run, sync
 
 **Week collection**:
@@ -35,7 +35,11 @@ The act and result of gathering one Friday's qualifying releases and their track
 _Avoid_: date pipeline, release collection (the old module name)
 
 **Weekly playlist**:
-A date-named (`DD.MM.YY`) Spotify playlist holding one Friday's week collection.
+A date-named (`DD.MM.YY`) Spotify playlist holding one Friday's week collection. It is *filled* once it holds tracks; an empty one is reused by the next fill, never recreated.
+
+**Unfilled Friday**:
+A Friday since the earliest weekly playlist (or the default start) that has no filled weekly playlist yet. What a fill iterates over.
+_Avoid_: unprocessed Friday, missing date
 
 **Week progress**:
 The resumable checkpoint of a partially-searched week, persisted so an aborted fill resumes mid-week instead of re-searching every artist.
@@ -85,6 +89,7 @@ A pattern (user + name pattern + date format) for discovering another user's dat
 
 - **"Weekly"** is overloaded: *All Weekly* is the listening-history source; a *weekly playlist* is an output. Never shorten either to just "weekly".
 - **"Fill" vs "week collection"**: fill is the multi-week operation; week collection is one Friday's gathering. The code historically blurred these inside `date-pipeline.ts`.
+- **"Unprocessed"** belongs to promotion sync: an *unprocessed weekly playlist* is published but not yet listened to. A Friday the fill still has to build is an *unfilled Friday*, never "unprocessed".
 
 ## Example dialogue
 

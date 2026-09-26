@@ -1,12 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { PlaylistTrackWithArtists } from '../lib/pagination.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
-import type {
-  AlbumTrack,
-  ArtistData,
-  TrustedArtistsFile,
-} from '../lib/types.js';
+import type { ArtistData, TrustedArtistsFile } from '../lib/types.js';
 import { spotifyPlaylistWrites } from '../services/promotion-sync/adapters.js';
 import {
   type PlaylistWrites,
@@ -18,136 +13,11 @@ import {
   syncPriorityChanges,
 } from '../services/promotion-sync/index.js';
 import { fixedPopularitySource } from '../services/week-collection/adapters.js';
-
-// ── Fixture catalog ──────────────────────────────────────────────────────────
-
-interface FixtureAlbum {
-  id: string;
-  name: string;
-  type: string;
-  release_date: string;
-  markets?: number;
-  explicit?: boolean;
-  tracks: AlbumTrack[];
-}
-
-interface FixtureArtist {
-  id: string;
-  name: string;
-  albums: FixtureAlbum[];
-}
-
-interface FixturePlaylistTrack {
-  id: string;
-  name: string;
-  artistNames: string[];
-  albumId?: string;
-}
-
-interface FixturePlaylist {
-  id: string;
-  name: string;
-  tracks: FixturePlaylistTrack[];
-}
-
-interface Catalog {
-  artists: FixtureArtist[];
-  playlists?: FixturePlaylist[];
-}
-
-function fixtureReads(catalog: Catalog): PromotionReads {
-  const findAlbum = (albumId: string) => {
-    for (const artist of catalog.artists) {
-      const album = artist.albums.find((a) => a.id === albumId);
-      if (album) return { artist, album };
-    }
-    return null;
-  };
-  const playlist = (id: string) =>
-    catalog.playlists?.find((p) => p.id === id) ?? null;
-
-  return {
-    async searchArtist(name) {
-      const artist = catalog.artists.find(
-        (a) => a.name.toLowerCase() === name.toLowerCase(),
-      );
-      return artist ? { id: artist.id, name: artist.name } : null;
-    },
-    async artistAlbums(artistId) {
-      const artist = catalog.artists.find((a) => a.id === artistId);
-      return (artist?.albums ?? []).map((a) => ({
-        id: a.id,
-        name: a.name,
-        type: a.type,
-        release_date: a.release_date,
-        markets: a.markets ?? 0,
-      }));
-    },
-    async albumDetails(albumId) {
-      const hit = findAlbum(albumId);
-      if (!hit) return null;
-      return {
-        id: hit.album.id,
-        name: hit.album.name,
-        type: hit.album.type,
-        release_date: hit.album.release_date,
-        explicit: hit.album.explicit ?? false,
-        markets: hit.album.markets ?? 0,
-        artists: [{ id: hit.artist.id, name: hit.artist.name }],
-      };
-    },
-    async albumTracks(albumId) {
-      return findAlbum(albumId)?.album.tracks ?? [];
-    },
-    async playlistAlbums() {
-      return new Map();
-    },
-    async userPlaylists() {
-      return [];
-    },
-    async artistProfile() {
-      return null;
-    },
-    async playlistTracksWithArtists(playlistId) {
-      const pl = playlist(playlistId);
-      return (pl?.tracks ?? []).map(
-        (t): PlaylistTrackWithArtists => ({
-          uri: `spotify:track:${t.id}`,
-          id: t.id,
-          name: t.name,
-          artistNames: t.artistNames,
-          albumId: t.albumId ?? '',
-        }),
-      );
-    },
-    async playlistTrackIds(playlistId) {
-      return (playlist(playlistId)?.tracks ?? []).map((t) => t.id);
-    },
-  };
-}
-
-interface RecordingWrites extends PlaylistWrites {
-  added: Map<string, string[]>;
-  removed: Map<string, string[]>;
-}
-
-function recordingWrites(): RecordingWrites {
-  const added = new Map<string, string[]>();
-  const removed = new Map<string, string[]>();
-  return {
-    added,
-    removed,
-    async addTracks(playlistId, trackIds) {
-      added.set(playlistId, [...(added.get(playlistId) ?? []), ...trackIds]);
-    },
-    async removeTracks(playlistId, trackIds) {
-      removed.set(playlistId, [
-        ...(removed.get(playlistId) ?? []),
-        ...trackIds,
-      ]);
-    },
-  };
-}
+import {
+  type Catalog,
+  fixtureReads,
+  recordingWrites,
+} from './fixtures/release-catalog.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

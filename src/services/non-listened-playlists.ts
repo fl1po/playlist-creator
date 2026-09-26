@@ -7,6 +7,7 @@ import {
 } from '../lib/pagination.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
 import type { SimplePlaylist } from '../lib/types.js';
+import { isWeeklyPlaylistName } from './weekly-playlists/index.js';
 
 interface NonListenedCache {
   playlists: SimplePlaylist[];
@@ -55,9 +56,8 @@ export async function getNonListenedPlaylists(
   const allPlaylists = await getAllUserPlaylists(ctx, userId);
   emit(`Found ${allPlaylists.length} user playlists`);
 
-  const weeklyPattern = /^(\d{2})\.(\d{2})\.(\d{2})$/;
   const weeklies = allPlaylists
-    .filter((pl) => pl.trackCount > 0 && weeklyPattern.test(pl.name))
+    .filter((pl) => pl.trackCount > 0 && isWeeklyPlaylistName(pl.name))
     .sort((a, b) => parseDate(b.name).getTime() - parseDate(a.name).getTime());
 
   emit(`Found ${weeklies.length} weekly playlists, scanning from newest...`);

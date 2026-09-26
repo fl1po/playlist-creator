@@ -1,105 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type {
-  AlbumTrack,
-  PlaylistAlbumInfo,
-  TrustedArtistsFile,
-} from '../lib/types.js';
+import type { TrustedArtistsFile } from '../lib/types.js';
 import {
   fixedPopularitySource,
   memoryCheckpoints,
 } from '../services/week-collection/adapters.js';
 import {
-  type ArtistProfile,
   type CollectionDecision,
   type ReleaseReads,
   type WeekCollectionInput,
   type WeekCollectionPorts,
   collectWeek,
 } from '../services/week-collection/index.js';
-
-// ── Fixture catalog ──────────────────────────────────────────────────────────
-
-interface FixtureAlbum {
-  id: string;
-  name: string;
-  type: string;
-  release_date: string;
-  markets?: number;
-  explicit?: boolean;
-  tracks: AlbumTrack[];
-}
-
-interface FixtureArtist {
-  id: string;
-  name: string;
-  albums: FixtureAlbum[];
-}
-
-interface Catalog {
-  artists: FixtureArtist[];
-  playlistAlbums?: Record<string, PlaylistAlbumInfo[]>;
-  profiles?: Record<string, ArtistProfile>;
-}
-
-function fixtureReads(catalog: Catalog): ReleaseReads & {
-  searchCalls: string[];
-} {
-  const findAlbum = (albumId: string) => {
-    for (const artist of catalog.artists) {
-      const album = artist.albums.find((a) => a.id === albumId);
-      if (album) return { artist, album };
-    }
-    return null;
-  };
-
-  return {
-    searchCalls: [],
-    async searchArtist(name) {
-      this.searchCalls.push(name);
-      const artist = catalog.artists.find(
-        (a) => a.name.toLowerCase() === name.toLowerCase(),
-      );
-      return artist ? { id: artist.id, name: artist.name } : null;
-    },
-    async artistAlbums(artistId) {
-      const artist = catalog.artists.find((a) => a.id === artistId);
-      return (artist?.albums ?? []).map((a) => ({
-        id: a.id,
-        name: a.name,
-        type: a.type,
-        release_date: a.release_date,
-        markets: a.markets ?? 0,
-      }));
-    },
-    async albumDetails(albumId) {
-      const hit = findAlbum(albumId);
-      if (!hit) return null;
-      return {
-        id: hit.album.id,
-        name: hit.album.name,
-        type: hit.album.type,
-        release_date: hit.album.release_date,
-        explicit: hit.album.explicit ?? false,
-        markets: hit.album.markets ?? 0,
-        artists: [{ id: hit.artist.id, name: hit.artist.name }],
-      };
-    },
-    async albumTracks(albumId) {
-      return findAlbum(albumId)?.album.tracks ?? [];
-    },
-    async playlistAlbums(playlistId) {
-      const infos = catalog.playlistAlbums?.[playlistId] ?? [];
-      return new Map(infos.map((i) => [i.id, i]));
-    },
-    async userPlaylists() {
-      return [];
-    },
-    async artistProfile(artistId) {
-      return catalog.profiles?.[artistId] ?? null;
-    },
-  };
-}
+import { fixtureReads } from './fixtures/release-catalog.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

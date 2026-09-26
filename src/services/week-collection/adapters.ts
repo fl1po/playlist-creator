@@ -1,6 +1,4 @@
 import { fetchDeezerPopularities } from '../../lib/deezer-popularity.js';
-import type { BatchCache } from '../../lib/types.js';
-import type { FillStorage } from '../playlist-filler/storage.js';
 import type {
   CheckpointStore,
   PopularitySource,
@@ -25,41 +23,6 @@ export function fixedPopularitySource(
   return {
     async lookup() {
       return new Map(Object.entries(scores));
-    },
-  };
-}
-
-/**
- * Production CheckpointStore: week progress lives in
- * `BatchCache.artistSearchProgress`, persisted through FillStorage (file or
- * Redis-mirrored). The fill owns the batch cache; this holds the fill's live
- * copy so its other fields survive every save.
- */
-export function batchCacheCheckpoints(
-  storage: FillStorage,
-  cache: BatchCache,
-): CheckpointStore {
-  return {
-    async load(week) {
-      const p = cache.artistSearchProgress;
-      if (!p || p.date !== week) return null;
-      return {
-        week: p.date,
-        artistsSearched: p.artistsSearched,
-        foundReleases: p.foundReleases,
-      };
-    },
-    async save(progress) {
-      cache.artistSearchProgress = {
-        date: progress.week,
-        artistsSearched: progress.artistsSearched,
-        foundReleases: progress.foundReleases,
-      };
-      await storage.saveBatchCache(cache);
-    },
-    async clear() {
-      cache.artistSearchProgress = undefined;
-      await storage.saveBatchCache(cache);
     },
   };
 }

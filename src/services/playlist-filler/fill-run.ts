@@ -1,50 +1,69 @@
 import { filterByPriority } from '../../domain/artists.js';
-import { generateFridayDates, parseDate } from '../../domain/tracks.js';
 import { abortableSleep } from '../../lib/abort.js';
 import { isAuthError } from '../../lib/api-wrapper.js';
 import { TRUSTED_ARTISTS } from '../../lib/cache-files.js';
-import {
-  getAllPlaylistTracks,
-  getAllUserPlaylists,
-} from '../../lib/pagination.js';
+import type { DurableCache } from '../../lib/durable-cache.js';
 import {
   type EventHandlers,
   ServiceEmitter,
 } from '../../lib/service-events.js';
 import type { SpotifyContext } from '../../lib/spotify-context.js';
-import type {
-  BatchCache,
-  DateResult,
-  TrustedArtistsFile,
-} from '../../lib/types.js';
+import type { DateResult, TrustedArtistsFile } from '../../lib/types.js';
 import type { UserConfig } from '../../lib/user-config.js';
-import type { PriorityChange } from '../promotion-sync/index.js';
+import type {
+  PriorityChange,
+  PromotionReads,
+} from '../promotion-sync/index.js';
 import type { SyncHandlers } from '../promotion-sync/subscribers.js';
 import {
   type RecalculationDeps,
+  type RecalculationPorts,
   recalculate,
   syncPending,
 } from '../recalculation/index.js';
 import { syncProgressTo } from '../recalculation/subscribers.js';
 import {
-  batchCacheCheckpoints,
-  deezerPopularitySource,
-} from '../week-collection/adapters.js';
-import { spotifyReleaseReads } from '../week-collection/spotify-reads.js';
+  type CollectionDecision,
+  type WeekCollection,
+  type WeekCollectionPorts,
+  type WeekProgressEvent,
+  collectWeek,
+} from '../week-collection/index.js';
 import {
-  type DatePipelineConfig,
-  type DatePipelineDeps,
-  processDate,
-} from './date-pipeline.js';
+  type WeeklyPlaylistStore,
+  type WeeklyWrite,
+  weeklyPlaylists,
+} from '../weekly-playlists/index.js';
 import type { PlaylistFillerEventMap } from './events.js';
 import type { FillHistoryEntry, FillStorage, ProgressFile } from './storage.js';
 
+// ── Ports (the seam) ─────────────────────────────────────────────────────────
+
+/**
+ * Everything a fill reads or writes outside its own storage. The production
+ * set comes from `fillPorts()`; tests pass fixtures.
+ */
+export interface FillPorts {
+  /** Week collection: release reads, popularity, week-progress checkpoints. */
+  week: WeekCollectionPorts;
+  /** Weekly playlist listing, creation and track writes. */
+  weekly: WeeklyPlaylistStore;
+  /** The listening history (All Weekly) read, for dedup. */
+  history: Pick<PromotionReads, 'playlistTrackIds'>;
+  /** Mid-fill recalculation and the trailing promotion sync. */
+  recalculation: RecalculationPorts;
+}
+
 export interface FillRunOptions {
+  /** Kept for token refresh, re-auth and abort-aware sleeps. */
   ctx: SpotifyContext;
+  userId: string;
   userConfig: UserConfig;
+  /** The fill's own persistence: progress file and fill history. */
   storage: FillStorage;
-  /** Roster + recalculation: re-scored between weeks, synced at the end. */
-  recalculation: RecalculationDeps;
+  /** Holds the roster, recalculation state and pending priority changes. */
+  cache: DurableCache;
+  ports: FillPorts;
   /** Event handlers — caller composes from `consoleHandlers()` or `broadcastHandlers()`. */
   handlers: EventHandlers<PlaylistFillerEventMap>;
   /** Promotion-sync progress/logging — caller composes from `consoleSyncHandlers()` or `broadcastSyncHandlers()`. */
@@ -61,6 +80,125 @@ export interface FillResult {
   /** Set when the trailing promotion sync reconciled playlists. */
   syncedPlaylists: number | null;
 }
+
+type Emitter = ServiceEmitter<PlaylistFillerEventMap>;
+
+// ── Event translation (until the run event stream replaces the event map) ────
+
+/** Map week-collection liveness onto the existing event map. */
+function emitProgress(emitter: Emitter, e: WeekProgressEvent): void {
+  switch (e.phase) {
+    case 'resumed':
+      emitter.emit(
+        'log',
+        `Resuming from cache: ${e.searched}/${e.total} artists searched, ${e.found} releases found`,
+      );
+      break;
+    case 'searching':
+      emitter.emit('artistSearchProgress', e.searched, e.total, e.artist);
+      break;
+    case 'release-found':
+      emitter.emit('releaseFound', e.artist, e.release, e.type, e.source);
+      break;
+    case 'checkpoint':
+      emitter.emit('weekProgressSaved', e.searched, e.total);
+      break;
+    case 'popularity':
+      emitter.emit('log', `Checking popularity: ${e.done}/${e.total}`);
+      break;
+    default:
+      break;
+  }
+}
+
+/** Map collection decisions onto the existing event map. */
+function emitDecision(emitter: Emitter, d: CollectionDecision): void {
+  switch (d.kind) {
+    case 'release-found':
+      // Logged live during search/editorial via emitProgress; skip here so the
+      // end-of-date decision replay doesn't double-log each find.
+      break;
+    case 'variant-picked':
+      emitter.emit('variantPicked', d.release, d.variantCount, d.explicit);
+      break;
+    case 'variant-stripped':
+      emitter.emit('filtered', d.reason, d.artist, d.release);
+      break;
+    case 'low-popularity':
+      emitter.emit(
+        'filtered',
+        'low popularity',
+        d.artist,
+        d.release,
+        `${d.popularity}`,
+      );
+      break;
+    case 'deluxe-stripped':
+      emitter.emit(
+        'deluxeDetected',
+        d.release,
+        d.baseName,
+        d.originalTrackCount,
+        d.bonusTracks,
+      );
+      break;
+    case 'title-track-only':
+      emitter.emit(
+        'titleTrackOnly',
+        d.release,
+        d.track,
+        d.oldTracks,
+        d.otherTracks,
+      );
+      break;
+    case 'single-skipped':
+      emitter.emit('singleSkipped', d.release);
+      break;
+  }
+}
+
+function emitWrite(emitter: Emitter, w: WeeklyWrite): void {
+  switch (w.outcome) {
+    case 'created':
+      emitter.emit('playlistCreated', w.date, w.playlistId);
+      break;
+    case 'reused':
+      emitter.emit('playlistReused', w.date, w.playlistId);
+      break;
+    case 'skipped':
+      emitter.emit('dateSkipped', w.date, 'already has tracks', w.tracksAdded);
+      break;
+  }
+}
+
+function toDateResult(week: WeekCollection, w: WeeklyWrite): DateResult {
+  if (w.outcome === 'skipped') {
+    return {
+      date: w.date,
+      playlistId: w.playlistId,
+      playlistUrl: w.playlistUrl,
+      tracksAdded: w.tracksAdded,
+      albumsCount: 0,
+      singlesCount: 0,
+      skippedCount: 0,
+      releases: [],
+      skipped: true,
+      reason: 'already has tracks',
+    };
+  }
+  return {
+    date: w.date,
+    playlistId: w.playlistId,
+    playlistUrl: w.playlistUrl,
+    tracksAdded: week.tracks.length,
+    albumsCount: week.releases.filter((a) => a.type === 'album').length,
+    singlesCount: week.releases.filter((a) => a.type === 'single').length,
+    skippedCount: week.skippedCount,
+    releases: week.releases,
+  };
+}
+
+// ── Progress file, history, resume hint ──────────────────────────────────────
 
 /** Write the per-run progress file. */
 async function writeProgressFile(
@@ -107,27 +245,35 @@ async function maybeAppendFillHistory(
   await storage.appendFillHistory(entry);
 }
 
-/** Emit 'resumed' (if applicable) so subscribers can restore UI/log state. */
+/**
+ * Emit 'resumed' if one of the unfilled Fridays has saved week progress, so
+ * subscribers can restore UI/log state. Never fails the fill.
+ */
 async function emitResumedIfAny(
   opts: FillRunOptions,
-  emitter: ServiceEmitter<PlaylistFillerEventMap>,
+  dates: string[],
+  emitter: Emitter,
 ): Promise<void> {
   if (opts.fresh) return;
   try {
-    const cache = await opts.storage.loadBatchCache();
-    const progress = cache.artistSearchProgress;
-    if (!progress || progress.artistsSearched <= 0) return;
-    const trusted = await opts.recalculation.cache.load(TRUSTED_ARTISTS);
-    if (!trusted) return;
-    // Week progress stores only a count; the roster is searched in P1/P2
-    // order, so the searched artists are its first `count` names.
-    const p1p2 = filterByPriority(trusted.artistCounts, [1, 2]);
-    const count = Math.min(progress.artistsSearched, p1p2.length);
-    const names: string[] = [];
-    for (let i = 0; i < count; i++) names.push(p1p2[i][0]);
-    emitter.emit('resumed', progress.date, names);
+    for (const date of dates) {
+      const progress = await opts.ports.week.checkpoints.load(date);
+      if (!progress || progress.artistsSearched <= 0) continue;
+      const trusted = await opts.cache.load(TRUSTED_ARTISTS);
+      if (!trusted) return;
+      // Week progress stores only a count; the roster is searched in P1/P2
+      // order, so the searched artists are its first `count` names.
+      const p1p2 = filterByPriority(trusted.artistCounts, [1, 2]);
+      const count = Math.min(progress.artistsSearched, p1p2.length);
+      emitter.emit(
+        'resumed',
+        date,
+        p1p2.slice(0, count).map(([name]) => name),
+      );
+      return;
+    }
   } catch {
-    /* no cache yet */
+    /* no progress yet */
   }
 }
 
@@ -140,6 +286,7 @@ async function emitResumedIfAny(
  */
 async function finishFill(
   opts: FillRunOptions,
+  recalculation: RecalculationDeps,
   results: DateResult[],
   priorityChanges: PriorityChange[],
   durationMinutes: number,
@@ -154,7 +301,7 @@ async function finishFill(
   try {
     const synced = await syncPending(
       opts.userConfig,
-      opts.recalculation,
+      recalculation,
       syncProgressTo(syncHandlers),
     );
     if (synced) {
@@ -175,123 +322,83 @@ async function finishFill(
   return { results, durationMinutes, priorityChanges, syncedPlaylists };
 }
 
+// ── Interface ────────────────────────────────────────────────────────────────
+
 export async function runFill(opts: FillRunOptions): Promise<FillResult> {
-  const { ctx, storage } = opts;
+  const { ctx, userId, userConfig, cache, ports } = opts;
   const emitter = new ServiceEmitter<PlaylistFillerEventMap>(opts.handlers);
-
-  await emitResumedIfAny(opts, emitter);
-
-  const { sourcePlaylists } = opts.userConfig;
-  const dpConfig: DatePipelineConfig = {
-    editorialPlaylists: opts.userConfig.editorialPlaylists,
-    externalPlaylistSources: opts.userConfig.externalPlaylistSources,
-    editorialFilter: opts.userConfig.editorialFilter,
-    genreFilters: opts.userConfig.genreFilters,
+  const recalculation: RecalculationDeps = {
+    cache,
+    ports: ports.recalculation,
   };
+  const weekly = weeklyPlaylists({
+    store: ports.weekly,
+    userId,
+    invalidateUnprocessed: () => ports.recalculation.unprocessed.invalidate(),
+  });
 
-  // ── User profile ─────────────────────────────────────────────────────────
-  const meResult = await ctx.call(
-    () => ctx.api.currentUser.profile(),
-    'get user profile',
-  );
-  if (!meResult.success) {
-    if (meResult.authError) {
-      await ctx.client.runAuth();
-      throw new Error('Auth error getting profile. Re-run after auth.');
-    }
-    throw new Error('Failed to get user profile');
-  }
-  const userId = meResult.data.id;
-
-  // ── Existing playlists / date discovery ──────────────────────────────────
+  // ── Unfilled Fridays ─────────────────────────────────────────────────────
   emitter.emit('log', 'Loading playlists to determine date range...');
-  const existingPlaylists = await getAllUserPlaylists(ctx, userId);
-  emitter.emit('log', `Found ${existingPlaylists.length} user playlists`);
-
-  const weeklyPattern = /^(\d{2}\.\d{2}\.\d{2})$/;
-  const filledDates = new Set<string>();
-  const allWeeklyDates = new Set<string>();
-  for (const playlist of existingPlaylists) {
-    const match = playlist.name.match(weeklyPattern);
-    if (match) {
-      allWeeklyDates.add(match[1]);
-      if (playlist.trackCount > 0) filledDates.add(match[1]);
-    }
-  }
-
-  let startDate: Date;
-  if (allWeeklyDates.size > 0) {
-    const sorted = [...allWeeklyDates].sort((a, b) => {
-      return parseDate(a).getTime() - parseDate(b).getTime();
-    });
-    startDate = parseDate(sorted[0]);
-    emitter.emit('log', `Earliest weekly playlist: ${sorted[0]}`);
-  } else {
-    // No weekly playlists yet: start from Friday 23.05.25 (month is 0-based).
-    startDate = new Date(2025, 4, 23);
-  }
-
-  const today = new Date();
-  const allFridays = generateFridayDates(startDate, today);
-  const datesToProcess = allFridays.filter((d) => !filledDates.has(d));
-
+  const datesToProcess = await weekly.unfilledFridays(new Date());
   if (datesToProcess.length === 0) {
     emitter.emit('log', 'All weekly playlists are already filled.');
-    return finishFill(opts, [], [], 0);
+    return finishFill(opts, recalculation, [], [], 0);
   }
-
+  emitter.emit(
+    'log',
+    `Unfilled Fridays: ${datesToProcess.length} (${datesToProcess[0]} … ${datesToProcess[datesToProcess.length - 1]})`,
+  );
+  await emitResumedIfAny(opts, datesToProcess, emitter);
   emitter.emit('start', datesToProcess);
 
-  // ── Load cache ───────────────────────────────────────────────────────────
-  let cache: BatchCache = {};
-  if (!opts.fresh) cache = await storage.loadBatchCache();
-
-  const dpDeps: DatePipelineDeps = {
-    ctx,
-    emitter,
-    ports: {
-      reads: spotifyReleaseReads(ctx),
-      popularity: deezerPopularitySource(() => {
-        void ctx.api; // throws if aborted
-      }),
-      checkpoints: batchCacheCheckpoints(storage, cache),
-    },
-    config: dpConfig,
-  };
-
-  // ── Load All Weekly tracks for dedup ─────────────────────────────────────
+  // ── Listening history for dedup ──────────────────────────────────────────
   emitter.emit('log', 'Loading All Weekly tracks for duplicate checking...');
-  const allWeeklyTracks = new Set(
-    await getAllPlaylistTracks(ctx, sourcePlaylists.allWeeklyId),
+  const listeningHistory = new Set(
+    await ports.history.playlistTrackIds(
+      userConfig.sourcePlaylists.allWeeklyId,
+    ),
   );
-  emitter.emit('log', `Loaded ${allWeeklyTracks.size} tracks from All Weekly`);
+  emitter.emit('log', `Loaded ${listeningHistory.size} tracks from All Weekly`);
 
-  // ── Load trusted artists ─────────────────────────────────────────────────
+  // ── Trusted artists ──────────────────────────────────────────────────────
   let trustedArtists: TrustedArtistsFile | null =
-    await opts.recalculation.cache.load(TRUSTED_ARTISTS);
+    await cache.load(TRUSTED_ARTISTS);
   let p1p2Artists = trustedArtists
     ? filterByPriority(trustedArtists.artistCounts, [1, 2])
     : [];
   emitter.emit('log', `P1+P2 artists: ${p1p2Artists.length}`);
 
-  // ── Per-date batch loop ──────────────────────────────────────────────────
+  const editorial = {
+    playlists: userConfig.editorialPlaylists,
+    externalSources: userConfig.externalPlaylistSources,
+    gate: userConfig.editorialFilter,
+    genreFilters: userConfig.genreFilters,
+  };
+
+  // ── Per-date loop ────────────────────────────────────────────────────────
   const results: DateResult[] = [];
   const priorityChanges: PriorityChange[] = [];
   const startTime = Date.now();
+  // `fresh` drops saved progress once per date, not on an auth retry of it.
+  const cleared = new Set<string>();
 
   for (let i = 0; i < datesToProcess.length; i++) {
     const targetDate = datesToProcess[i];
     emitter.emit('dateStart', targetDate, i, datesToProcess.length);
 
     try {
+      if (opts.fresh && !cleared.has(targetDate)) {
+        await ports.week.checkpoints.clear(targetDate);
+        cleared.add(targetDate);
+      }
+
       // Re-score between weeks, never half-way through one: an in-flight
       // artist search must keep the roster it started with. A change skipped
       // here still registers on the next date.
-      const progress = cache.artistSearchProgress;
-      const midSearch =
-        progress?.date === targetDate && progress.artistsSearched > 0;
+      const progress = await ports.week.checkpoints.load(targetDate);
+      const midSearch = progress !== null && progress.artistsSearched > 0;
       if (!midSearch) {
-        const recalc = await recalculate(opts.userConfig, opts.recalculation, {
+        const recalc = await recalculate(userConfig, recalculation, {
           onProgress: (e) => {
             if (e.phase === 'recalculating') emitter.emit('recalculating');
           },
@@ -315,15 +422,22 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
         await ctx.client.refreshToken();
       }
 
-      const result = await processDate(
-        dpDeps,
-        targetDate,
-        p1p2Artists,
-        allWeeklyTracks,
-        userId,
-        existingPlaylists,
-        trustedArtists,
+      const week = await collectWeek(
+        {
+          week: targetDate,
+          roster: p1p2Artists,
+          trustedArtists,
+          listeningHistory,
+          editorial,
+        },
+        ports.week,
+        (e) => emitProgress(emitter, e),
       );
+      for (const d of week.decisions) emitDecision(emitter, d);
+
+      const written = await weekly.write(targetDate, week.tracks);
+      emitWrite(emitter, written);
+      const result = toDateResult(week, written);
       results.push(result);
       emitter.emit('dateCompleted', result);
 
@@ -347,12 +461,21 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
         break;
       }
       results.push({ date: targetDate, error: err.message } as DateResult);
-      await abortableSleep(60000, ctx.client);
+      // Back off before the next date; there's nothing to wait for after the last.
+      if (i < datesToProcess.length - 1) {
+        await abortableSleep(60000, ctx.client);
+      }
     }
   }
 
   const durationMinutes = Math.round((Date.now() - startTime) / 1000 / 60);
   emitter.emit('batchComplete', results, durationMinutes);
 
-  return finishFill(opts, results, priorityChanges, durationMinutes);
+  return finishFill(
+    opts,
+    recalculation,
+    results,
+    priorityChanges,
+    durationMinutes,
+  );
 }
