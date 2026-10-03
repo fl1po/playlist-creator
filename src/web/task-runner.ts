@@ -141,7 +141,7 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
             session.client,
           );
           const userBroadcast = (type: string, data: unknown) =>
-            broadcaster.broadcastTo(session.userId, type, data);
+            broadcaster.broadcastTo(session.userId, type, data, def.name);
           const apiCallbacks = def.apiCallbacks?.(userBroadcast);
           const ctx = createSpotifyContext(
             abortableClient,

@@ -2,7 +2,12 @@ import type { Response } from 'express';
 
 export interface Broadcaster {
   broadcast(type: string, data: unknown): void;
-  broadcastTo(userId: string, type: string, data: unknown): void;
+  /**
+   * `task` names the process that produced the message (e.g. "fill"); it rides
+   * on the envelope so the client can filter the log by process. Omit it for
+   * messages no process owns (auth, config).
+   */
+  broadcastTo(userId: string, type: string, data: unknown, task?: string): void;
   addClient(
     res: Response,
     userId: string | null,
@@ -85,7 +90,12 @@ export function createBroadcaster(): Broadcaster {
   }
 
   /** Broadcast to a specific user's clients only */
-  function broadcastTo(userId: string, type: string, data: unknown) {
+  function broadcastTo(
+    userId: string,
+    type: string,
+    data: unknown,
+    task?: string,
+  ) {
     // Every message is stamped, not just `log` ones: the client renders log
     // lines out of task events too, and on replay those must show when the
     // event happened rather than when the client re-rendered it.
@@ -93,6 +103,7 @@ export function createBroadcaster(): Broadcaster {
       type,
       data: stampLog(type, data),
       ts: Date.now(),
+      task,
     });
     // Every message is numbered so a reconnecting client can tell the server
     // where it left off; only the durable ones are kept for replay.

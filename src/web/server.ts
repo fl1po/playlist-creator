@@ -288,7 +288,7 @@ app.post('/api/clear', async (req, res) => {
   }
 
   const userBroadcast = (type: string, data: unknown) =>
-    broadcaster.broadcastTo(session.userId, type, data);
+    broadcaster.broadcastTo(session.userId, type, data, 'clear');
 
   userBroadcast('log', {
     level: 'info',
@@ -334,10 +334,12 @@ app.post('/api/stop', (req, res) => {
     return;
   }
   if (taskMutex.stop()) {
-    broadcaster.broadcastTo(session.userId, 'log', {
-      level: 'warn',
-      message: `Stopping ${task}...`,
-    });
+    broadcaster.broadcastTo(
+      session.userId,
+      'log',
+      { level: 'warn', message: `Stopping ${task}...` },
+      task,
+    );
     res.json({ ok: true, message: `Stopping ${task}` });
   } else {
     res.json({ ok: true, message: 'Already stopping' });

@@ -124,6 +124,23 @@ test('replayed events keep the timestamp of when they happened', async () => {
   );
 });
 
+test('events carry the process that sent them, live and on replay', () => {
+  const b = createBroadcaster();
+  const live = fakeClient();
+  b.addClient(live.res, 'u1', null, NO_ARTISTS);
+  b.broadcastTo('u1', 'fill:start', { dates: ['31.07.26'] }, 'fill');
+  b.broadcastTo('u1', 'log', { level: 'info', message: 'signed in' });
+
+  const fresh = fakeClient();
+  b.addClient(fresh.res, 'u1', null, NO_ARTISTS);
+
+  for (const client of [live, fresh]) {
+    const msgs = client.messages() as { type: string; task?: string }[];
+    assert.equal(msgs.find((m) => m.type === 'fill:start')?.task, 'fill');
+    assert.equal(msgs.find((m) => m.type === 'log')?.task, undefined);
+  }
+});
+
 test('history is scoped per user', () => {
   const b = createBroadcaster();
   b.broadcastTo('u1', 'log', { level: 'info', message: 'mine' });

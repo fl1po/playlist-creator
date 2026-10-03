@@ -1126,6 +1126,9 @@ function updateFillProgress() {
 // Timestamp of the SSE event currently being dispatched; log() falls back to
 // it so event-derived lines carry the event's time, not the render time.
 let currentEventTs = null;
+// Name of the process (e.g. "fill") that sent the event being handled; log()
+// tags its lines with it so the panel can be filtered by process.
+let currentEventTask = null;
 
 // The label is hidden on narrow screens, so mirror it onto the dot's tooltip.
 function setStatusText(text) {
@@ -1186,10 +1189,12 @@ async function connect() {
     // running, log() adopts the event's own so replayed history keeps the
     // time the work happened.
     currentEventTs = msg.ts ?? null;
+    currentEventTask = msg.task ?? null;
     try {
       handleMessage(msg);
     } finally {
       currentEventTs = null;
+      currentEventTask = null;
     }
   };
 }
@@ -1454,14 +1459,14 @@ async function startFill() {
   // Backend is the source of truth — do NOT push local caches; the server reads
   // its own files (falling back to Redis) so stale browser data can't clobber it.
   const res = await api('POST', '/api/fill', { fresh });
-  if (!res.ok) log('error', res.error || 'Failed to start fill');
+  if (!res.ok) log('error', res.error || 'Failed to start fill', undefined, 'fill');
 }
 
 async function startRecalc() {
   shouldScrollToLog = true;
   const force = document.getElementById('recalcForce').checked;
   const res = await api('POST', '/api/recalculate', { force });
-  if (!res.ok) log('error', res.error || 'Failed to start recalculation');
+  if (!res.ok) log('error', res.error || 'Failed to start recalculation', undefined, 'recalculate');
 }
 
 async function stopTask() {
@@ -1727,7 +1732,7 @@ async function clearPlaylist() {
   if (!confirm(`Clear all tracks from "${name}"?`)) return;
   shouldScrollToLog = true;
   const res = await api('POST', '/api/clear', { name });
-  if (!res.ok) log('error', res.error || 'Failed to clear');
+  if (!res.ok) log('error', res.error || 'Failed to clear', undefined, 'clear');
 }
 
 // ── Dedup ────────────────────────────────────────────────────────
@@ -1738,7 +1743,7 @@ async function dedupScan() {
   document.getElementById('dedupRemoveBtn').disabled = true;
   shouldScrollToLog = true;
   const res = await api('POST', '/api/dedup-scan');
-  if (!res.ok) log('error', res.error || 'Failed to start dedup scan');
+  if (!res.ok) log('error', res.error || 'Failed to start dedup scan', undefined, 'dedup-scan');
 }
 
 async function dedupRemove() {
@@ -1747,7 +1752,7 @@ async function dedupRemove() {
   shouldScrollToLog = true;
   const payload = dedupScanResult.playlists.map(p => ({ id: p.id, uris: p.trackUris }));
   const res = await api('POST', '/api/dedup-remove', { playlists: payload });
-  if (!res.ok) log('error', res.error || 'Failed to start dedup removal');
+  if (!res.ok) log('error', res.error || 'Failed to start dedup removal', undefined, 'dedup-remove');
 }
 
 // ── Listening Time ────────────────────────────────────────────────
@@ -1860,7 +1865,7 @@ async function calcListeningTime() {
   const force = document.getElementById('ltForceRecalc').checked;
   // No client caches — the server reuses its own snapshots (file ?? Redis).
   const res = await api('POST', '/api/listening-time', { force });
-  if (!res.ok) log('error', res.error || 'Failed to start listening time calculation');
+  if (!res.ok) log('error', res.error || 'Failed to start listening time calculation', undefined, 'listening-time');
 }
 
 // ── AW Breakdown ─────────────────────────────────────────────────
@@ -1918,7 +1923,7 @@ async function calcAwBreakdown() {
   const force = document.getElementById('awForceRecalc').checked;
   // No client caches — the server reuses its own cache (file ?? Redis).
   const res = await api('POST', '/api/aw-breakdown', { force });
-  if (!res.ok) log('error', res.error || 'Failed to start AW breakdown calculation');
+  if (!res.ok) log('error', res.error || 'Failed to start AW breakdown calculation', undefined, 'aw-breakdown');
 }
 
 async function loadArtists() {
@@ -2039,10 +2044,12 @@ function updateButtons() {
 }
 
 let shouldScrollToLog = false;
-function log(level, message, ts) {
+function log(level, message, ts, task) {
   const panel = document.getElementById('logPanel');
   const entry = document.createElement('div');
   entry.className = `log-entry ${level}`;
+  // Lines no process owns (auth, config, local notices) fall under "system".
+  entry.dataset.task = task ?? currentEventTask ?? 'system';
   // Replayed history can be days old — mark anything not from today with its
   // date so the bare time isn't misread as "just now".
   const d = new Date(ts ?? currentEventTs ?? Date.now());
