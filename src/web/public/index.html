@@ -71,10 +71,10 @@
   }
   button:hover { background: #1ed760; }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
-  button.secondary {
+  button.secondary, .log-header select {
     background: #333; color: #e0e0e0;
   }
-  button.secondary:hover { background: #444; }
+  button.secondary:hover, .log-header select:hover { background: #444; }
   button.secondary.active { background: #1DB954; color: #000; }
   button.danger { background: #e74c3c; }
 
@@ -205,6 +205,11 @@
   .log-entry.debug { color: #777; }
   /* Debug lines (e.g. per-playlist scan progress) are hidden until toggled on. */
   #logPanel:not(.show-debug) .log-entry.debug { display: none; }
+  .log-entry.filtered-out { display: none; }
+  .log-header select {
+    border: none; border-radius: 20px;
+    padding: 4px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
   .log-header {
     display: flex; justify-content: space-between; align-items: center;
     margin-bottom: 8px;
@@ -817,6 +822,9 @@
     <div class="log-header">
       <h2>Live Log</h2>
       <div style="display:flex;align-items:center;gap:8px;">
+        <select id="logTaskFilter" onchange="applyLogFilter()" title="Show only lines from one process">
+          <option value="">All processes</option>
+        </select>
         <label class="toggle"><input type="checkbox" id="logShowDebug" onchange="document.getElementById('logPanel').classList.toggle('show-debug', this.checked)"> Debug</label>
         <label class="toggle"><input type="checkbox" id="logAutoScroll" checked> Auto-scroll</label>
         <button class="secondary" onclick="clearLog()">Clear</button>
@@ -1051,6 +1059,7 @@ const Store = {
 // ── State ────────────────────────────────────────────────────────
 let activeFilters = new Set([1, 2]);
 let busy = false;
+let runningTask = null;
 let streamConnected = false;
 
 // ── Fill progress state ──────────────────────────────────────────
@@ -1203,6 +1212,7 @@ function handleMessage({ type, data }) {
   switch (type) {
     case 'status':
       busy = data.busy;
+      runningTask = data.task ?? null;
       updateButtons();
       if (data.task) setStatusText(`Running: ${data.task}`);
       else setStatusText('Connected');
@@ -1474,7 +1484,7 @@ async function stopTask() {
   btn.disabled = true;
   btn.textContent = 'Stopping...';
   const res = await api('POST', '/api/stop');
-  if (!res.ok) log('error', res.error || 'Failed to stop');
+  if (!res.ok) log('error', res.error || 'Failed to stop', undefined, runningTask ?? undefined);
 }
 
 let tokenExpired = false;
@@ -2050,6 +2060,8 @@ function log(level, message, ts, task) {
   entry.className = `log-entry ${level}`;
   // Lines no process owns (auth, config, local notices) fall under "system".
   entry.dataset.task = task ?? currentEventTask ?? 'system';
+  addLogFilterOption(entry.dataset.task);
+  applyLogFilterTo(entry);
   // Replayed history can be days old — mark anything not from today with its
   // date so the bare time isn't misread as "just now".
   const d = new Date(ts ?? currentEventTs ?? Date.now());
@@ -2077,8 +2089,28 @@ function log(level, message, ts, task) {
   }
 }
 
+function addLogFilterOption(task) {
+  const select = document.getElementById('logTaskFilter');
+  if ([...select.options].some(o => o.value === task)) return;
+  select.add(new Option(task, task));
+}
+
+function applyLogFilterTo(entry) {
+  const filter = document.getElementById('logTaskFilter').value;
+  entry.classList.toggle('filtered-out', filter !== '' && entry.dataset.task !== filter);
+}
+
+function applyLogFilter() {
+  const panel = document.getElementById('logPanel');
+  for (const entry of panel.children) applyLogFilterTo(entry);
+  if (document.getElementById('logAutoScroll').checked) {
+    panel.scrollTop = panel.scrollHeight;
+  }
+}
+
 function clearLog() {
   document.getElementById('logPanel').innerHTML = '';
+  document.getElementById('logTaskFilter').length = 1;
   api('POST', '/api/clear-logs');
 }
 
