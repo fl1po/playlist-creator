@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { parseDate } from '../domain/tracks.js';
 import { LISTENING_TIME, NON_LISTENED } from '../lib/cache-files.js';
 import { createDurableCache } from '../lib/durable-cache.js';
@@ -11,6 +12,20 @@ import { isWeeklyPlaylistName } from './weekly-playlists/index.js';
 
 interface NonListenedCache {
   playlists: SimplePlaylist[];
+  /** All Weekly's contents when the listing was taken; see `fingerprint`. */
+  awFingerprint?: string;
+}
+
+/**
+ * Order-independent digest of All Weekly's track ids. Only the user writes to
+ * All Weekly (listening a playlist adds its picks there), so a changed
+ * fingerprint means the listing may now include a listened playlist.
+ */
+function fingerprint(awTrackIds: Set<string>): string {
+  return crypto
+    .createHash('sha1')
+    .update([...awTrackIds].sort().join(','))
+    .digest('hex');
 }
 
 /**
@@ -28,11 +43,11 @@ export async function invalidateNonListenedCache(
 /**
  * Get non-listened weekly playlists, oldest first.
  *
- * Returns the cached listing when available. Otherwise walks weekly playlists
- * from newest to oldest, stopping at the first with AW overlap — anything
- * older is assumed listened. The listing goes to the durable cache (disk +
- * Redis) until `invalidateNonListenedCache`; `awTrackIds` is always read
- * fresh.
+ * Returns the cached listing while All Weekly is unchanged since it was taken.
+ * Otherwise walks weekly playlists from newest to oldest, stopping at the
+ * first with AW overlap — anything older is assumed listened. The listing goes
+ * to the durable cache (disk + Redis) until All Weekly changes or
+ * `invalidateNonListenedCache`; `awTrackIds` is always read fresh.
  */
 export async function getNonListenedPlaylists(
   ctx: SpotifyContext,
@@ -46,12 +61,15 @@ export async function getNonListenedPlaylists(
 
   const awTrackIds = new Set(await getAllPlaylistTracks(ctx, allWeeklyId));
   emit(`Loaded ${awTrackIds.size} tracks from All Weekly`);
+  const awFingerprint = fingerprint(awTrackIds);
 
   const cached = (await cache.load(NON_LISTENED)) as NonListenedCache | null;
-  if (cached?.playlists != null) {
+  if (cached?.playlists != null && cached.awFingerprint === awFingerprint) {
     emit(`Using cached non-listened playlists (${cached.playlists.length})`);
     return { playlists: cached.playlists, awTrackIds };
   }
+  if (cached?.playlists != null)
+    emit('All Weekly changed since the last scan — rescanning');
 
   const allPlaylists = await getAllUserPlaylists(ctx, userId);
   emit(`Found ${allPlaylists.length} user playlists`);
@@ -82,7 +100,7 @@ export async function getNonListenedPlaylists(
   nonListened.reverse();
   emit(`Result: ${nonListened.length} non-listened playlists`);
 
-  await cache.save(NON_LISTENED, { playlists: nonListened });
+  await cache.save(NON_LISTENED, { playlists: nonListened, awFingerprint });
 
   return { playlists: nonListened, awTrackIds };
 }
