@@ -2,8 +2,6 @@ import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
 import type { ArtistData, TrustedArtistsFile } from '../lib/types.js';
 
-// ── Events ──────────────────────────────────────────────────────────────────
-
 export type ArtistLookupEventMap = {
   result: [result: ArtistLookupResult];
   notFound: [query: string];
@@ -18,8 +16,6 @@ export interface ArtistLookupResult {
   priorityRank: number | null;
   priorityGroupSize: number | null;
 }
-
-// ── Service ─────────────────────────────────────────────────────────────────
 
 export class ArtistLookupService {
   private ctx: SpotifyContext;

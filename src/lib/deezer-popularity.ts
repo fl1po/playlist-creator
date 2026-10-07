@@ -21,7 +21,7 @@ export interface DeezerPopularityOptions {
 function normalize(s: string): string {
   return s
     .toLowerCase()
-    .replace(/\s*[\(\[].*?[\)\]]\s*/g, '') // remove (Deluxe), [feat. X], etc.
+    .replace(/\s*[\(\[].*?[\)\]]\s*/g, '')
     .replace(/[‘’]/g, "'")
     .replace(/[^\w\s']/g, '')
     .replace(/\s+/g, ' ')
@@ -88,7 +88,6 @@ export async function fetchDeezerPopularities(
 
     // Best track, not average: one breakout single makes a release popular.
     const maxRank = Math.max(...album.tracks.data.map((t) => t.rank));
-    // Normalize: Deezer 0–1,000,000 → 0–100
     const normalized = Math.round(maxRank / 10_000);
     popularities.set(id, normalized);
 

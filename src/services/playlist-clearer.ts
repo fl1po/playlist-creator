@@ -1,15 +1,12 @@
 import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
 import type { SpotifyContext } from '../lib/spotify-context.js';
-
-// ── Events ──────────────────────────────────────────────────────────────────
+import type { ApiResult } from '../lib/types.js';
 
 export type PlaylistClearerEventMap = {
   playlistFound: [name: string, trackCount: number];
   playlistNotFound: [name: string];
   cleared: [name: string, trackCount: number];
 };
-
-// ── Service ─────────────────────────────────────────────────────────────────
 
 export class PlaylistClearerService {
   private ctx: SpotifyContext;
@@ -23,6 +20,11 @@ export class PlaylistClearerService {
     this.emitter = new ServiceEmitter(events);
   }
 
+  /**
+   * Removes every track from the user's playlist named `playlistName`.
+   * Throws if any read or removal fails rather than reporting a partial clear;
+   * the error says how many tracks were already removed.
+   */
   async clear(playlistName: string): Promise<{ cleared: number }> {
     const playlists: Array<{ id: string; name: string; trackCount: number }> =
       [];
@@ -33,7 +35,7 @@ export class PlaylistClearerService {
         () => this.ctx.api.currentUser.playlists.playlists(50, offset),
         'user playlists',
       );
-      if (!result.success) break;
+      if (!result.success) throw failure('list playlists', result);
 
       for (const p of result.data.items) {
         playlists.push({
@@ -69,12 +71,14 @@ export class PlaylistClearerService {
           ),
         `playlist items ${target.id}`,
       );
-      if (!result.success) break;
+      if (!result.success) {
+        throw failure(`read tracks of "${target.name}"`, result);
+      }
 
       for (const item of result.data.items) {
-        if (item.track) {
-          uris.push({ uri: `spotify:track:${item.track.id}` });
-        }
+        // The item's own URI also covers episodes and local files, which
+        // have no usable track id.
+        if (item.track?.uri) uris.push({ uri: item.track.uri });
       }
       if (result.data.items.length < 50) break;
       itemOffset += 50;
@@ -84,16 +88,28 @@ export class PlaylistClearerService {
     // (not the raw SDK) keeps retry/abort handling.
     for (let i = 0; i < uris.length; i += 100) {
       const batch = uris.slice(i, i + 100);
-      await this.ctx.call(
+      const result = await this.ctx.call(
         () =>
           this.ctx.api.playlists.removeItemsFromPlaylist(target.id, {
             tracks: batch,
           }),
         `remove tracks from ${target.name}`,
       );
+      if (!result.success) {
+        throw failure(
+          `remove tracks from "${target.name}" (${i} of ${uris.length} removed)`,
+          result,
+        );
+      }
     }
 
     this.emitter.emit('cleared', playlistName, uris.length);
     return { cleared: uris.length };
   }
+}
+
+function failure(action: string, result: ApiResult<unknown>): Error {
+  const reason =
+    !result.success && result.error ? `: ${result.error.message}` : '';
+  return new Error(`Failed to ${action}${reason}`);
 }

@@ -573,10 +573,7 @@ app.get('/api/album/:id', async (req, res) => {
 
   try {
     const album = await session.client.api.albums.get(req.params.id);
-    // Split each track's artists into primary vs featured using the album's own
-    // credits — same convention as /api/playback. Any track artist credited on the
-    // album is primary; the rest are featured. Fall back to the first artist when
-    // there's no overlap (compilations / "Various Artists").
+    // Same primary/featured split as /api/playback.
     const albumArtistIds = new Set((album.artists ?? []).map((a) => a.id));
     const mapTrack = (t: (typeof album.tracks.items)[number]) => {
       let primary = t.artists.filter((a) => albumArtistIds.has(a.id));

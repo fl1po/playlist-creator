@@ -21,7 +21,6 @@ export interface BaseEvents extends BroadcastEventMap {
   'data:save': { key: string; value: unknown };
 }
 
-/** Typed broadcast emitter. */
 export type TypedEmit<E extends BroadcastEventMap> = <
   K extends keyof E & string,
 >(
@@ -153,7 +152,11 @@ export function createTaskRunner(deps: TaskRunnerDeps) {
 
           let userConfigPromise: Promise<UserConfig> | undefined;
           let mePromise: Promise<UserProfile> | undefined;
-          const checkAbort = () => taskMutex.checkAbort();
+          // Bound to this task's own flag: work leaking past setIdle must keep
+          // honouring this task's stop, never a later task's.
+          const checkAbort = () => {
+            if (abort.aborted) throw new Error('Stopped by user');
+          };
 
           const tc: TaskContext<E> = {
             client: abortableClient,

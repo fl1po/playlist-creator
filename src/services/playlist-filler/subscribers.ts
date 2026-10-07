@@ -269,9 +269,9 @@ export function broadcastHandlers(
     log: { log: (msg) => msg },
   });
 
-  // 'resumed' restores per-artist search state on the web UI.
-  // Implemented out-of-band (not via broadcastEvents) because it mutates
-  // the searchedArtists set as a side-effect of the event itself.
+  // 'resumed' restores per-artist search state on the web UI. Hand-written
+  // rather than a broadcastEvents entry: it sends two messages (the full
+  // searched set, then a log line) and sends nothing when no artists resumed.
   return {
     ...base,
     onResumed: (resumeDate, resumedArtistNames) => {

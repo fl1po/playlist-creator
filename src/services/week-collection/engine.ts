@@ -282,7 +282,12 @@ async function getOriginalAlbumTrackKeys(
   return trackKeys;
 }
 
-/** Track keys from up to 3 of the artist's albums released before a date. */
+/**
+ * Track keys from up to 3 of the artist's albums released before a date.
+ * Cached per artist, ignoring `beforeDate`: every release in one
+ * `collectTracks` call shares a single week's window, so the first date asked
+ * stands for the rest.
+ */
 async function getArtistPreviousTrackKeys(
   run: Run,
   artistId: string,

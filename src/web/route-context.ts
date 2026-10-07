@@ -112,7 +112,7 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
             authenticated: false,
             url,
           });
-          return auth.waitForAuth();
+          return auth.waitForAuth(userId);
         },
       },
       onAuthFailed: (err) =>
@@ -174,7 +174,8 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
       return null;
     }
 
-    // Try Bearer token auth first (stateless mode)
+    // Bearer (stateless) mode trusts X-User-Id only because the bearerIdentity
+    // middleware has already proved the token belongs to that user.
     const bearerToken = getBearerToken(req);
     if (bearerToken) {
       const userId = req.headers['x-user-id'] as string | undefined;

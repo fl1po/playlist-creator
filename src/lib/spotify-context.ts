@@ -44,10 +44,7 @@ export interface SpotifyContextConfig {
   paceRate?: number;
 }
 
-/**
- * One-step creation of a SpotifyContext.
- * Creates client, pacer, and wires everything together.
- */
+/** Build a client, a pacer (default 1 req/s) and the retrying call wrapper in one step. */
 export function spotifyContext(config: SpotifyContextConfig): SpotifyContext {
   const client = createSpotifyClient({
     configStore: config.configStore,

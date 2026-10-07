@@ -50,8 +50,9 @@ export interface ArtistProfile {
  * Error contract: every method throws on auth failure (the caller re-auths
  * and retries the week). `searchArtist`, `albumDetails` and `artistProfile`
  * return null on other failures so collection degrades instead of aborting;
- * `userPlaylists` returns []. The paginated reads may throw on persistent
- * failures.
+ * `userPlaylists` returns [] and `artistAlbums` returns the pages fetched
+ * before the failure. `albumTracks` and `playlistAlbums` may throw on
+ * persistent failures.
  */
 export interface ReleaseReads {
   searchArtist(name: string): Promise<{ id: string; name: string } | null>;
@@ -202,7 +203,7 @@ export interface WeekCollection {
   tracks: string[];
   /** Surviving releases in collection order, with contributed track counts. */
   releases: Array<FoundRelease & { tracksAdded: number }>;
-  /** Complete chronological audit trail. Tests assert on this. */
+  /** Complete chronological audit trail. */
   decisions: CollectionDecision[];
   /** Tracks considered but excluded by any dedup/gate rule. */
   skippedCount: number;

@@ -27,11 +27,7 @@ export class RequestPacer {
     this.currentIntervalMs = this.baseIntervalMs;
   }
 
-  /**
-   * Wait until enough time has passed since the last request.
-   * Serialized: concurrent callers queue up.
-   * Sleep is abortable via client.api getter (throws on abort).
-   */
+  /** Wait for this caller's turn. The sleep aborts via the client.api getter. */
   async pace(client: SpotifyClient): Promise<void> {
     const prev = this.mutex;
     let release!: () => void;

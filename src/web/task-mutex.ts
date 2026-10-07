@@ -3,10 +3,10 @@ import type { SpotifyClient } from '../lib/types.js';
 export interface TaskMutex {
   readonly currentTask: string | null;
   readonly currentTaskUserId: string | null;
+  /** Returns the new task's abort flag, or null if a task is already running. */
   setBusy(task: string, userId: string): { aborted: boolean } | null;
   setIdle(): void;
   stop(): boolean;
-  checkAbort(): void;
   createAbortableClient(baseClient: SpotifyClient): SpotifyClient;
 }
 
@@ -16,10 +16,6 @@ export function createTaskMutex(
   let currentTask: string | null = null;
   let currentTaskUserId: string | null = null;
   let abortFlag: { aborted: boolean } | null = null;
-
-  function checkAbortFlag() {
-    if (abortFlag?.aborted) throw new Error('Stopped by user');
-  }
 
   return {
     get currentTask() {
@@ -50,10 +46,6 @@ export function createTaskMutex(
       if (abortFlag.aborted) return false;
       abortFlag.aborted = true;
       return true;
-    },
-
-    checkAbort() {
-      checkAbortFlag();
     },
 
     // Only valid after setBusy. Captures the current task's flag, so a client

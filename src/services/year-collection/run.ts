@@ -309,7 +309,7 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
   flush();
 
   // Every roster artist belongs in the pool, whether or not the graph found
-  // them: Q2 made the roster a boost, and Q16 credits all four tiers.
+  // them: the roster is a relevance boost, credited across all four tiers.
   const inPool = new Set(candidates.map((c) => c.spotifyId));
   for (const artist of roster) {
     if (inPool.has(artist.spotifyId)) continue;
@@ -388,7 +388,19 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
     failures.clearFailures('artist releases');
   }
   const albumReport = failures.for('artist releases');
+  const saveAlbums = () => {
+    cp.albums = {
+      doneArtistIds: [...doneArtists],
+      releases,
+      rejections,
+      failedArtistIds: [...failedArtists],
+    };
+    flush();
+  };
 
+  // Counted per fetch, not per loop index: skipped and failed artists would
+  // otherwise let the save point slip past for long stretches.
+  let fetchedSinceSave = 0;
   for (const [i, candidate] of kept.entries()) {
     opts.checkAbort?.();
     progress('artist releases', i + 1, kept.length);
@@ -399,6 +411,10 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
       candidate.spotifyId,
       albumReport,
     );
+    if (++fetchedSinceSave >= FLUSH_EVERY) {
+      saveAlbums();
+      fetchedSinceSave = 0;
+    }
     // A truncated catalog can hide the year's releases or misjudge reissues;
     // record nothing for the artist until a later run fetches it whole.
     if (!complete) {
@@ -421,23 +437,8 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
     }
 
     doneArtists.add(candidate.spotifyId);
-    if ((i + 1) % FLUSH_EVERY === 0) {
-      cp.albums = {
-        doneArtistIds: [...doneArtists],
-        releases,
-        rejections,
-        failedArtistIds: [...failedArtists],
-      };
-      flush();
-    }
   }
-  cp.albums = {
-    doneArtistIds: [...doneArtists],
-    releases,
-    rejections,
-    failedArtistIds: [...failedArtists],
-  };
-  flush();
+  saveAlbums();
   log(`Qualified ${releases.length} releases from ${kept.length} artists`);
 
   // ── 7. Album details: popularity and track listing in one pass ────────────

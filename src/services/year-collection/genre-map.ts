@@ -126,7 +126,8 @@ export function clusterOf(genre: string): Cluster {
 /**
  * Post-2016 micro-genres → the scenes they descend from.
  *
- * Consulted only when a genre is measured to starve in the target year.
+ * Meant to be consulted only when a genre is measured to starve in the
+ * target year.
  * Each entry names music that actually existed then and that the modern
  * genre grew out of, so a taste dimension survives in era-appropriate form
  * instead of silently contributing nothing.
@@ -165,7 +166,7 @@ const ANCESTORS: Record<string, string[]> = {
 
 /**
  * Era ancestors for a genre, or an empty array when the genre has none
- * registered. Callers apply this only to genres measured as starved.
+ * registered. Apply only to genres measured as starved.
  */
 export function ancestorsOf(genre: string): string[] {
   return ANCESTORS[genre.toLowerCase().trim()] ?? [];

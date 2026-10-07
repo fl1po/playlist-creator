@@ -21,12 +21,11 @@
 
 import type { DeezerClient } from '../../lib/deezer-client.js';
 import type { LastfmClient } from '../../lib/lastfm-client.js';
-import type { SpotifyContext } from '../../lib/spotify-context.js';
 import type { PhaseReporter } from './checkpoint.js';
 import type { Cluster } from './genre-map.js';
 import type { YearRelease } from './releases.js';
 
-/** Blend weights, settled in Q8: critic-led. */
+/** Blend weights: deliberately critic-led. */
 export const STREAMING_WEIGHT = 0.35;
 export const CRITIC_WEIGHT = 0.65;
 
@@ -35,9 +34,6 @@ export const MIN_LASTFM_LISTENERS = 5_000;
 
 /** Releases below this percentile within their own cluster are cut. */
 export const FLOOR_PERCENTILE = 0.25;
-
-/** Spotify's cap on the batched albums endpoint. */
-const ALBUM_BATCH = 20;
 
 export interface AcclaimSignals {
   spotifyPopularity: number | null;
@@ -63,34 +59,6 @@ export interface ScoredRelease extends YearRelease {
 }
 
 // ── Signal collection ───────────────────────────────────────────────────────
-
-/** Spotify album popularity, 20 albums per request. */
-export async function fetchSpotifyPopularity(
-  ctx: SpotifyContext,
-  releaseIds: string[],
-  onProgress?: (done: number, total: number) => void,
-): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-  const unique = [...new Set(releaseIds)];
-
-  for (let i = 0; i < unique.length; i += ALBUM_BATCH) {
-    const batch = unique.slice(i, i + ALBUM_BATCH);
-    const result = await ctx.call(
-      () => ctx.api.albums.get(batch),
-      `album popularity batch ${i / ALBUM_BATCH + 1}`,
-    );
-    if (!result.success) {
-      if (result.authError) throw result.error;
-    } else {
-      for (const album of result.data) {
-        if (album) out.set(album.id, album.popularity ?? 0);
-      }
-    }
-    onProgress?.(Math.min(i + ALBUM_BATCH, unique.length), unique.length);
-  }
-
-  return out;
-}
 
 /**
  * Deezer track rank for each release, normalized 0–100.
@@ -311,7 +279,7 @@ export function scoreAcclaim(
 /**
  * Apply the acclaim floor.
  *
- * Q12: nothing is cut to hit a track target, but a release must clear the
+ * Nothing is cut to hit a track target, but a release must clear the
  * bottom quartile of its own cluster. "Weak for its scene" is a defensible
  * reason to exclude; "we needed to stop at 1,000 tracks" is not.
  */

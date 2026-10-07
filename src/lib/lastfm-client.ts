@@ -6,8 +6,8 @@
  * toward recent streams, and its userbase skews album-oriented.
  *
  * Coverage is very uneven by scene — see `MIN_LASTFM_LISTENERS` in
- * services/year-collection/acclaim.ts. This
- * client reports what it finds and leaves the sample-size judgement to callers.
+ * services/year-collection/acclaim.ts. This client reports what it finds and
+ * leaves the sample-size judgement to callers.
  */
 
 const BASE_URL = 'https://ws.audioscrobbler.com/2.0/';

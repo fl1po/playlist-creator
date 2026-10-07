@@ -34,7 +34,8 @@ export interface RosterArtist {
 /**
  * Relative pull of each priority tier, used both for weighting the taste
  * vector and for the roster-membership bonus in relevance scoring.
- * Q16 settled this: seed the graph from P1+P2, but credit all four tiers.
+ * Deliberately asymmetric: only P1+P2 seed the graph, but all four tiers
+ * earn credit.
  */
 export const TIER_WEIGHT: Record<number, number> = { 1: 4, 2: 3, 3: 2, 4: 1 };
 

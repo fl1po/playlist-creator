@@ -77,9 +77,8 @@ export class DeezerClient {
   }
 
   private async fetch<T>(path: string, retries = 3): Promise<T | null> {
-    await this.pace();
-
     for (let attempt = 0; attempt <= retries; attempt++) {
+      await this.pace();
       const res = await fetch(`${BASE_URL}${path}`);
 
       if (res.status === 429) {

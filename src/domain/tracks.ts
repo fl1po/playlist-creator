@@ -42,7 +42,6 @@ export function formatDateISO(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-/** Format Date to DD.MM.YY. */
 export function formatDdMmYy(d: Date): string {
   const dd = String(d.getDate()).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");

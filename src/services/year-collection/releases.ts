@@ -1,7 +1,7 @@
 /**
  * Release discovery and qualification for one year.
  *
- * Q10 settled the shape: bodies of work only — albums and EPs, no standalone
+ * The shape is deliberate: bodies of work only — albums and EPs, no standalone
  * singles — and no reissues, compilations, live albums or remix packs. Two
  * details make this harder than it sounds:
  *

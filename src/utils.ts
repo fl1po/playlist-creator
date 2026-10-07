@@ -5,6 +5,7 @@ import path from 'node:path';
 import { URL, fileURLToPath } from 'node:url';
 import { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import open from 'open';
+import { isAuthError } from './lib/api-wrapper.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_FILE = path.join(__dirname, '../spotify-config.json');
@@ -24,14 +25,9 @@ export function loadSpotifyConfig(): SpotifyConfig {
     );
   }
 
+  let config: SpotifyConfig;
   try {
-    const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    if (!(config.clientId && config.clientSecret && config.redirectUri)) {
-      throw new Error(
-        'Spotify configuration must include clientId, clientSecret, and redirectUri.',
-      );
-    }
-    return config;
+    config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
   } catch (error) {
     throw new Error(
       `Failed to parse Spotify configuration: ${
@@ -39,6 +35,12 @@ export function loadSpotifyConfig(): SpotifyConfig {
       }`,
     );
   }
+  if (!(config.clientId && config.clientSecret && config.redirectUri)) {
+    throw new Error(
+      'Spotify configuration must include clientId, clientSecret, and redirectUri.',
+    );
+  }
+  return config;
 }
 
 export function saveSpotifyConfig(config: SpotifyConfig): void {
@@ -58,7 +60,11 @@ export function createSpotifyApi(): SpotifyApi {
     const accessToken = {
       access_token: config.accessToken,
       token_type: 'Bearer',
-      expires_in: 3600 * 24 * 30, // Default to 1 month
+      // Not the real lifetime (Spotify issues 1h tokens). The SDK's own
+      // refresh is the PKCE flow, which Spotify rejects for these
+      // client-secret tokens, so keep it from ever firing; expiry is handled
+      // by the 401 → refreshStoredToken path in handleSpotifyRequest.
+      expires_in: 3600 * 24 * 30,
       refresh_token: config.refreshToken,
     };
 
@@ -72,6 +78,35 @@ export function createSpotifyApi(): SpotifyApi {
   );
 
   return cachedSpotifyApi;
+}
+
+/** Trade the stored refresh token for a new access token and persist both. */
+async function refreshStoredToken(config: SpotifyConfig): Promise<void> {
+  const response = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${base64Encode(`${config.clientId}:${config.clientSecret}`)}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: config.refreshToken ?? '',
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Spotify token refresh failed (${response.status}); run \`npm run auth\` to log in again.`,
+    );
+  }
+  const data = (await response.json()) as {
+    access_token: string;
+    refresh_token?: string;
+  };
+  config.accessToken = data.access_token;
+  // Spotify only sometimes rotates the refresh token.
+  if (data.refresh_token) config.refreshToken = data.refresh_token;
+  saveSpotifyConfig(config);
+  cachedSpotifyApi = null;
 }
 
 function generateRandomString(length: number): string {
@@ -275,12 +310,29 @@ export function formatDuration(ms: number): string {
   return `${minutes}:${seconds.padStart(2, '0')}`;
 }
 
+/** Runs `action`; on an auth error, refreshes the stored token and retries once. */
+async function withTokenRefresh<T>(
+  action: (spotifyApi: SpotifyApi) => Promise<T>,
+): Promise<T> {
+  try {
+    return await action(createSpotifyApi());
+  } catch (error) {
+    const config = loadSpotifyConfig();
+    if (
+      !(error instanceof Error && isAuthError(error) && config.refreshToken)
+    ) {
+      throw error;
+    }
+    await refreshStoredToken(config);
+    return action(createSpotifyApi());
+  }
+}
+
 export async function handleSpotifyRequest<T>(
   action: (spotifyApi: SpotifyApi) => Promise<T>,
 ): Promise<T> {
   try {
-    const spotifyApi = createSpotifyApi();
-    return await action(spotifyApi);
+    return await withTokenRefresh(action);
   } catch (error) {
     // Some successful writes return an empty/non-JSON body that the SDK still
     // tries to JSON-parse; that parse error means the call actually succeeded.

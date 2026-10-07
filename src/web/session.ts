@@ -71,10 +71,6 @@ export function verifyStreamTicket(
   return verify(ticket, secret);
 }
 
-/**
- * Extract Bearer token from Authorization header.
- * Returns the raw access token or null.
- */
 export function getBearerToken(req: IncomingMessage): string | null {
   const auth = req.headers.authorization;
   if (!auth?.startsWith('Bearer ')) return null;
@@ -82,9 +78,8 @@ export function getBearerToken(req: IncomingMessage): string | null {
 }
 
 /**
- * Extract refresh token from X-Refresh-Token header.
- * Sent by the client on every Bearer-auth request so the server can rebuild
- * its in-memory session after a restart, regardless of HTTP method.
+ * The client sends X-Refresh-Token on every Bearer-auth request so the server
+ * can rebuild its in-memory session after a restart, regardless of HTTP method.
  */
 export function getRefreshToken(req: IncomingMessage): string | null {
   const value = req.headers['x-refresh-token'];

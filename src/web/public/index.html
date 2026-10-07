@@ -1443,7 +1443,8 @@ function handleMessage({ type, data }) {
         if (authPopup && !authPopup.closed) break;
         location.reload();
       } else {
-        // Show inline banner instead of full overlay — auto-refresh on focus
+        // Show the inline session banner (manual Refresh) rather than the
+        // full auth overlay, so the page stays usable.
         tokenExpired = true;
         document.getElementById('tokenBanner').classList.add('visible');
       }

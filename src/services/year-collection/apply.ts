@@ -6,10 +6,10 @@
  * split: fetching is measured in hours, applying in minutes.
  *
  * Playlists are named `YYYY.MM`, deliberately *not* the `DD.MM.YY` weekly
- * convention. `non-listened-playlists.ts` and `fill-run.ts` both treat any
- * `DD.MM.YY`-shaped name as a weekly playlist, and `parseDate` maps a
- * two-digit year below 50 to 20xx — so a playlist called `01.01.16` would be picked up as a weekly
- * and make fill try to generate every Friday since 2016.
+ * convention. `isWeeklyPlaylistName` treats any `DD.MM.YY`-shaped name as a
+ * weekly playlist, and `parseDate` maps a two-digit year below 50 to 20xx —
+ * so a playlist called `01.01.16` would be picked up as a weekly and make
+ * fill try to generate every Friday since 2016.
  */
 
 import { getAllUserPlaylists } from '../../lib/pagination.js';

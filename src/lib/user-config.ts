@@ -5,8 +5,6 @@ import { DEFAULT_FEATURED_MULTIPLIER } from '../domain/artists.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
 export interface UserConfig {
   sourcePlaylists: {
     allWeeklyId: string;
@@ -42,8 +40,6 @@ export interface UserConfig {
   /** Dashboard blocks pinned to the top of the page, by element id. */
   pinnedBlocks: string[];
 }
-
-// ── Defaults ──────────────────────────────────────────────────────────────
 
 export const DEFAULT_USER_CONFIG: UserConfig = {
   sourcePlaylists: {
@@ -112,8 +108,6 @@ export const DEFAULT_USER_CONFIG: UserConfig = {
   pinnedBlocks: ['appHeader'],
 };
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
 /** Short label for the secondary source playlist. */
 export function secondaryLabel(cfg: UserConfig): 'Liked' | 'BoAW' {
   return cfg.sourcePlaylists.useLikedSongs ? 'Liked' : 'BoAW';
@@ -127,8 +121,6 @@ export function secondarySourceName(cfg: {
     ? 'Liked Songs'
     : 'Best of All Weekly';
 }
-
-// ── Store interface ─────────────────────────────────────────────────────────
 
 export interface IUserConfigStore {
   exists(): boolean | Promise<boolean>;
@@ -176,8 +168,6 @@ export function mergeConfigWithDefaults(
     pinnedBlocks: partial.pinnedBlocks ?? defaults.pinnedBlocks,
   };
 }
-
-// ── File-based store ────────────────────────────────────────────────────────
 
 export class UserConfigStore implements IUserConfigStore {
   private path: string;

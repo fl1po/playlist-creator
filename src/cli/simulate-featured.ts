@@ -64,7 +64,6 @@ const result = simulate(
   userConfig.scoring.priorityThresholds,
 );
 
-// Drift note: compare the fresh 1.0x baseline against what's stored live.
 let driftNote: string | undefined;
 const storedPath = './trusted-artists.json';
 if (fs.existsSync(storedPath)) {

@@ -104,9 +104,9 @@ export function loadPlan(path: string): YearPlan | null {
 /**
  * Order releases for a month: by date, ties broken by acclaim descending.
  *
- * Tracks stay contiguous within a release and in album sequence — Q13 settled
- * that re-sorting an album by popularity is a subtler form of the truncation
- * that was already rejected.
+ * Tracks stay contiguous within a release and in album sequence: re-sorting
+ * an album by popularity would be a subtler form of truncating it, which the
+ * design rejects (see `applyFloor`).
  */
 export function orderedForMonth(
   plan: YearPlan,

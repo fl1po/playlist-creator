@@ -6,7 +6,7 @@ import type { SpotifyContext } from '../../lib/spotify-context.js';
 import { spotifyReleaseReads } from '../week-collection/spotify-reads.js';
 import type { PlaylistWrites, PromotionReads } from './index.js';
 
-/** Release popularity lookup, reused from week collection (Deezer / fixed map). */
+/** Deezer release popularity, reused from week collection. */
 export { deezerPopularitySource } from '../week-collection/adapters.js';
 
 const WRITE_CHUNK = 100;

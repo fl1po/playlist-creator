@@ -18,8 +18,6 @@ export interface SpotifyConfig extends AppConfig {
   refreshToken?: string;
 }
 
-// ── Config store ────────────────────────────────────────────────────────────
-
 export interface ConfigStore {
   load(): SpotifyConfig;
   save(config: SpotifyConfig): void;
@@ -54,13 +52,6 @@ export interface SpotifyClient {
 }
 
 // ── Pagination ──────────────────────────────────────────────────────────────
-
-export interface PlaylistTrackItem {
-  id: string;
-  name: string;
-  artists: Array<{ id: string; name: string }>;
-  album: { id: string; name: string };
-}
 
 export interface SimplePlaylist {
   id: string;

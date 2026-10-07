@@ -19,7 +19,6 @@ export interface RetryPolicy {
   network: { maxRetries: number; baseDelayMs: number };
   rateLimit: {
     maxRetries: number;
-    escalateAfter: number;
     longSleepMs: (count: number) => number;
   };
 }
@@ -29,7 +28,6 @@ const DEFAULT_RETRY_POLICY: RetryPolicy = {
   network: { maxRetries: 10, baseDelayMs: 10000 },
   rateLimit: {
     maxRetries: 5,
-    escalateAfter: 5,
     longSleepMs: (n) => (1 + n) * 60 * 60 * 1000,
   },
 };

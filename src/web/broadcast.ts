@@ -89,7 +89,6 @@ export function createBroadcaster(): Broadcaster {
     for (const [res] of clients) send(res, msg);
   }
 
-  /** Broadcast to a specific user's clients only */
   function broadcastTo(
     userId: string,
     type: string,

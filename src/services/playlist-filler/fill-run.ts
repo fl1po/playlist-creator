@@ -83,7 +83,7 @@ export interface FillResult {
 
 type Emitter = ServiceEmitter<PlaylistFillerEventMap>;
 
-// ── Event translation (until the run event stream replaces the event map) ────
+// ── Event translation ────────────────────────────────────────────────────────
 
 /** Map week-collection liveness onto the existing event map. */
 function emitProgress(emitter: Emitter, e: WeekProgressEvent): void {
@@ -200,7 +200,6 @@ function toDateResult(week: WeekCollection, w: WeeklyWrite): DateResult {
 
 // ── Progress file, history, resume hint ──────────────────────────────────────
 
-/** Write the per-run progress file. */
 async function writeProgressFile(
   storage: FillStorage,
   results: DateResult[],

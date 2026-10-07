@@ -25,7 +25,7 @@ import {
 } from '../promotion-sync/index.js';
 import { scoreRoster } from './score.js';
 
-/**
+/*
  * Recalculation: re-scoring every artist in the source playlists into the
  * trusted artists roster, and — separately — applying the resulting priority
  * changes to already-published weekly playlists through promotion sync.

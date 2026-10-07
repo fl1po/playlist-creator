@@ -72,7 +72,6 @@ function handleFile(file) {
       const cacheKeys = ['trustedArtists', 'batchCache', 'fillHistory', 'durationSnapshots', 'listeningTime', 'awBreakdown'];
       const caches = cacheKeys.filter(k => fileData[k]);
       if (caches.length) parts.push(`${caches.length} caches`);
-      // Config: could be top-level sourcePlaylists, nested in .config, or from /api/config response
       const config = getConfig();
       if (config) parts.push('config' + (config.editorialPlaylists?.length ? ` (${config.editorialPlaylists.length} editorial)` : ''));
 
@@ -91,10 +90,8 @@ function getConfig() {
   if (!fileData) return null;
   // Direct user-config.json (has sourcePlaylists at top level)
   if (fileData.sourcePlaylists) return fileData;
-  // Embedded in export as .config
+  // Embedded in an export, or an /api/config response ({ ok, config })
   if (fileData.config?.sourcePlaylists) return fileData.config;
-  // From /api/config response: { ok, config: {...} }
-  if (fileData.ok && fileData.config?.sourcePlaylists) return fileData.config;
   return null;
 }
 

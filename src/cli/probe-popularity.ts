@@ -30,7 +30,7 @@ const trusted: TrustedArtistsFile = JSON.parse(
 );
 const roster = filterByPriority(trusted.artistCounts, [1, 2]).slice(0, numArtists);
 
-// Most recent Friday <= today, going back numWeeks.
+// The last numWeeks Fridays up to today.
 const fridays = generateFridayDates(new Date(2025, 0, 1), new Date());
 const weeks = fridays.slice(-numWeeks);
 const validDates = [...new Set(weeks.flatMap((w) => getValidDates(parseDate(w))))];

@@ -33,8 +33,8 @@ export interface AuthManager {
   getTokensForUser(
     userId: string,
   ): { accessToken: string; refreshToken: string; displayName?: string } | null;
-  waitForAuth(): Promise<boolean>;
-  readonly authResolve: (() => void) | null;
+  /** Resolves true once `userId` completes a login, false after 10 minutes. */
+  waitForAuth(userId: string): Promise<boolean>;
 }
 
 const SCOPES = [
@@ -51,9 +51,24 @@ const SCOPES = [
   'user-read-recently-played',
 ];
 
+const AUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+function escapeHtml(text: string): string {
+  return text.replace(
+    /[<>&"']/g,
+    (c) =>
+      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' })[
+        c
+      ] ?? c,
+  );
+}
+
 export function createAuthManager(deps: AuthDeps): AuthManager {
-  let authState: string | null = null;
-  let authResolve: (() => void) | null = null;
+  // Several logins can be in flight at once (different users, or one user's
+  // reauth racing a manual login), so every issued state stays valid until
+  // used or expired.
+  const pendingStates = new Map<string, number>();
+  const authWaiters = new Map<string, Set<() => void>>();
 
   // One-time auth tokens: token -> userId, expires after 60s or first use
   const pendingAuthTokens = new Map<
@@ -71,6 +86,24 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
       expires: number;
     }
   >();
+
+  function issueState(): string {
+    const now = Date.now();
+    for (const [s, expires] of pendingStates) {
+      if (expires < now) pendingStates.delete(s);
+    }
+    const state = crypto.randomBytes(16).toString('hex');
+    pendingStates.set(state, now + AUTH_STATE_TTL_MS);
+    return state;
+  }
+
+  function consumeState(state: string | undefined): boolean {
+    if (!state) return false;
+    const expires = pendingStates.get(state);
+    if (expires === undefined) return false;
+    pendingStates.delete(state);
+    return Date.now() <= expires;
+  }
 
   function createAuthToken(userId: string): string {
     const token = crypto.randomBytes(32).toString('hex');
@@ -174,146 +207,38 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
 <body data-token="${authToken}"><div class="card">
 <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="#1DB954" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
 <h1>Authenticated</h1>
-<p>Welcome, ${displayName.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c] ?? c)}</p>
+<p>Welcome, ${escapeHtml(displayName)}</p>
 <p class="closing">This window will close automatically...</p>
 </div><script>setTimeout(()=>{const t=document.body.dataset.token;if(window.opener){for(const o of (${targets}??[location.origin])){try{window.opener.postMessage({type:'spotify-auth',token:t},o)}catch{}}window.close()}else{window.location.href='/?auth_token='+encodeURIComponent(t)}},1500)</script></body></html>`;
   }
 
-  function startCallbackServer(port: number, callbackPath: string) {
-    const tmpServer = http.createServer(async (req, res) => {
-      const url = new URL(req.url ?? '/', `http://localhost:${port}`);
-      if (url.pathname !== callbackPath) {
-        res.writeHead(404);
-        res.end();
-        return;
-      }
-
-      const query: Record<string, string> = {};
-      for (const [k, v] of url.searchParams) query[k] = v;
-
-      const { code, state, error } = query;
-
-      if (error) {
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end('<h1>Auth Failed</h1><p>You can close this tab.</p>');
-        deps.broadcast('log', {
-          level: 'error',
-          message: `Auth failed: ${error}`,
-        });
-        tmpServer.close();
-        return;
-      }
-
-      if (state !== authState) {
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end('<h1>Auth Failed</h1><p>State mismatch.</p>');
-        deps.broadcast('log', {
-          level: 'error',
-          message: 'Auth failed: state mismatch',
-        });
-        tmpServer.close();
-        return;
-      }
-
-      try {
-        const appConfig = deps.loadAppConfig();
-        const user = await completeAuth(code, appConfig);
-        const authToken = createAuthToken(user.userId);
-
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(
-          buildAuthSuccessPage(user.displayName, authToken, [
-            `http://localhost:${deps.mainPort}`,
-            `http://127.0.0.1:${deps.mainPort}`,
-          ]),
-        );
-        // Credentials never ride the event stream: the popup hands the one-time
-        // token to its opener (see buildAuthSuccessPage), and the user's other
-        // tabs just learn that auth completed.
-        deps.broadcastTo(user.userId, 'log', {
-          level: 'success',
-          message: `Spotify authenticated: ${user.displayName}`,
-        });
-        deps.broadcastTo(user.userId, 'auth', { authenticated: true });
-        if (authResolve) {
-          authResolve();
-          authResolve = null;
-        }
-      } catch (err) {
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(`<h1>Auth Failed</h1><pre>${String(err)}</pre>`);
-        deps.broadcast('log', {
-          level: 'error',
-          message: `Token exchange failed: ${err}`,
-        });
-      }
-
-      authState = null;
-      tmpServer.close();
-    });
-
-    tmpServer.listen(port, '127.0.0.1', () => {
-      deps.broadcast('log', {
-        level: 'info',
-        message: `Listening for auth callback on port ${port}`,
-      });
-    });
-
-    // Auto-close after 5 minutes if no callback received
-    setTimeout(() => tmpServer.close(), 5 * 60 * 1000);
-  }
-
-  function buildAuthUrl(): string {
-    const config = deps.loadAppConfig();
-    authState = crypto.randomBytes(16).toString('hex');
-    const redirectUri = config.redirectUri;
-    const params = new URLSearchParams({
-      client_id: config.clientId,
-      response_type: 'code',
-      redirect_uri: redirectUri,
-      scope: SCOPES.join(' '),
-      state: authState,
-      show_dialog: 'false',
-    });
-    // Start temporary callback server if redirect URI is on a different port
-    const redirectUrl = new URL(redirectUri);
-    const redirectPort = Number(redirectUrl.port) || 80;
-    if (redirectPort !== deps.mainPort) {
-      startCallbackServer(redirectPort, redirectUrl.pathname);
-    }
-    return `https://accounts.spotify.com/authorize?${params}`;
-  }
-
-  async function handleAuthCallback(
-    req: express.Request,
-    res: express.Response,
-  ) {
-    const { code, state, error } = req.query as Record<string, string>;
+  /** Shared by the main-app route and the standalone callback server. Returns the page HTML. */
+  async function processCallback(
+    query: Record<string, string | undefined>,
+    openerOrigins: string[] | null,
+  ): Promise<string> {
+    const { code, state, error } = query;
 
     if (error) {
-      res.send('<h1>Auth Failed</h1><p>You can close this tab.</p>');
       deps.broadcast('log', {
         level: 'error',
         message: `Auth failed: ${error}`,
       });
-      return;
+      return '<h1>Auth Failed</h1><p>You can close this tab.</p>';
     }
 
-    if (state !== authState) {
-      res.send('<h1>Auth Failed</h1><p>State mismatch.</p>');
+    if (!(consumeState(state) && code)) {
       deps.broadcast('log', {
         level: 'error',
         message: 'Auth failed: state mismatch',
       });
-      return;
+      return '<h1>Auth Failed</h1><p>State mismatch.</p>';
     }
 
     try {
       const appConfig = deps.loadAppConfig();
       const user = await completeAuth(code, appConfig);
       const authToken = createAuthToken(user.userId);
-
-      res.send(buildAuthSuccessPage(user.displayName, authToken, null));
       // Credentials never ride the event stream: the popup hands the one-time
       // token to its opener (see buildAuthSuccessPage), and the user's other
       // tabs just learn that auth completed.
@@ -322,31 +247,121 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
         message: `Spotify authenticated: ${user.displayName}`,
       });
       deps.broadcastTo(user.userId, 'auth', { authenticated: true });
-      if (authResolve) {
-        authResolve();
-        authResolve = null;
-      }
+      const waiters = authWaiters.get(user.userId);
+      authWaiters.delete(user.userId);
+      for (const resolve of waiters ?? []) resolve();
+      return buildAuthSuccessPage(user.displayName, authToken, openerOrigins);
     } catch (err) {
-      res.send(`<h1>Auth Failed</h1><pre>${String(err)}</pre>`);
       deps.broadcast('log', {
         level: 'error',
         message: `Token exchange failed: ${err}`,
       });
+      return `<h1>Auth Failed</h1><pre>${escapeHtml(String(err))}</pre>`;
     }
-
-    authState = null;
   }
 
-  function waitForAuth(): Promise<boolean> {
+  // Used when the redirect URI points at a different port than the app (local
+  // dev). One server serves every pending login and closes once none remain, or
+  // once no new login has started for a full state lifetime.
+  let callbackServer: http.Server | null = null;
+  let callbackServerTimer: NodeJS.Timeout | null = null;
+
+  function closeCallbackServer() {
+    if (callbackServerTimer) clearTimeout(callbackServerTimer);
+    callbackServerTimer = null;
+    callbackServer?.close();
+    callbackServer = null;
+  }
+
+  function ensureCallbackServer(port: number, callbackPath: string) {
+    if (callbackServerTimer) clearTimeout(callbackServerTimer);
+    callbackServerTimer = setTimeout(
+      closeCallbackServer,
+      AUTH_STATE_TTL_MS,
+    ).unref();
+    if (callbackServer) return;
+
+    const server = http.createServer(async (req, res) => {
+      const url = new URL(req.url ?? '/', `http://localhost:${port}`);
+      if (url.pathname !== callbackPath) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+
+      const html = await processCallback(Object.fromEntries(url.searchParams), [
+        `http://localhost:${deps.mainPort}`,
+        `http://127.0.0.1:${deps.mainPort}`,
+      ]);
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(html);
+      if (pendingStates.size === 0) closeCallbackServer();
+    });
+    callbackServer = server;
+
+    server.on('error', (err) => {
+      deps.broadcast('log', {
+        level: 'error',
+        message: `Auth callback server failed: ${err.message}`,
+      });
+      if (callbackServer === server) closeCallbackServer();
+    });
+    server.listen(port, '127.0.0.1', () => {
+      deps.broadcast('log', {
+        level: 'info',
+        message: `Listening for auth callback on port ${port}`,
+      });
+    });
+  }
+
+  function buildAuthUrl(): string {
+    const config = deps.loadAppConfig();
+    const state = issueState();
+    const redirectUri = config.redirectUri;
+    const params = new URLSearchParams({
+      client_id: config.clientId,
+      response_type: 'code',
+      redirect_uri: redirectUri,
+      scope: SCOPES.join(' '),
+      state,
+      show_dialog: 'false',
+    });
+    const redirectUrl = new URL(redirectUri);
+    const redirectPort = Number(redirectUrl.port) || 80;
+    if (redirectPort !== deps.mainPort) {
+      ensureCallbackServer(redirectPort, redirectUrl.pathname);
+    }
+    return `https://accounts.spotify.com/authorize?${params}`;
+  }
+
+  async function handleAuthCallback(
+    req: express.Request,
+    res: express.Response,
+  ) {
+    res.send(
+      await processCallback(
+        req.query as Record<string, string | undefined>,
+        null,
+      ),
+    );
+  }
+
+  function waitForAuth(userId: string): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
-      authResolve = () => resolve(true);
-      setTimeout(
-        () => {
-          authResolve = null;
-          resolve(false);
-        },
-        10 * 60 * 1000,
-      );
+      const onAuth = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        authWaiters.get(userId)?.delete(onAuth);
+        resolve(false);
+      }, AUTH_STATE_TTL_MS).unref();
+      let waiters = authWaiters.get(userId);
+      if (!waiters) {
+        waiters = new Set();
+        authWaiters.set(userId, waiters);
+      }
+      waiters.add(onAuth);
     });
   }
 
@@ -372,9 +387,6 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
     consumeAuthToken,
     getTokensForUser,
     waitForAuth,
-    get authResolve() {
-      return authResolve;
-    },
   };
 }
 

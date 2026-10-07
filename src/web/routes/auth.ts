@@ -1,6 +1,13 @@
 import { Router } from 'express';
+import type { AppConfig } from '../../lib/types.js';
 import type { RouteContext } from '../route-context.js';
-import { clearSessionCookie, setSessionCookie } from '../session.js';
+import {
+  clearSessionCookie,
+  getBearerToken,
+  getRefreshToken,
+  getSessionUserId,
+  setSessionCookie,
+} from '../session.js';
 
 export function authRoutes(ctx: RouteContext): Router {
   const router = Router();
@@ -44,15 +51,13 @@ export function authRoutes(ctx: RouteContext): Router {
   });
 
   router.get('/api/auth/status', async (req, res) => {
-    let appConfig;
+    let appConfig: AppConfig;
     try {
       appConfig = ctx.loadAppConfig();
     } catch {
       res.json({ authenticated: false, reason: 'no_session' });
       return;
     }
-
-    const { getBearerToken, getSessionUserId } = await import('../session.js');
 
     // Try Bearer token first
     const bearerToken = getBearerToken(req);
@@ -105,7 +110,7 @@ export function authRoutes(ctx: RouteContext): Router {
   });
 
   router.post('/api/auth/refresh', async (req, res) => {
-    let appConfig;
+    let appConfig: AppConfig;
     try {
       appConfig = ctx.loadAppConfig();
     } catch {
@@ -113,7 +118,6 @@ export function authRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const { getRefreshToken } = await import('../session.js');
     const refreshToken =
       (req.body?.refreshToken as string | undefined) ??
       getRefreshToken(req) ??

@@ -3,9 +3,10 @@
  *
  * Answers "how likely is this artist to be someone the user cares about",
  * combining the co-citation graph, genre/cluster affinity, and roster
- * membership. Q2 settled that the roster is a *boost*, not a gate: an artist
- * absent from trusted-artists can still outrank a P2 on graph and genre
- * evidence alone.
+ * membership. The roster is a *boost*, not a gate: an artist absent from
+ * trusted-artists can still outrank a P2 on graph and genre evidence alone.
+ * It has to be — the roster holds no pre-2018 listening data, so for earlier
+ * years it can only project current taste backwards.
  *
  * This runs before any album fetching, because cutting here is what keeps the
  * Spotify bill at ~3,000 requests instead of ~12,000.
