@@ -1060,6 +1060,8 @@ const Store = {
 let activeFilters = new Set([1, 2]);
 let busy = false;
 let runningTask = null;
+let ownTask = false;
+let stopping = false;
 let streamConnected = false;
 
 // ── Fill progress state ──────────────────────────────────────────
@@ -1211,10 +1213,14 @@ async function connect() {
 function handleMessage({ type, data }) {
   switch (type) {
     case 'status':
+      // Only the owner learns which task is running (ADR-0003).
       busy = data.busy;
+      ownTask = !!data.mine;
       runningTask = data.task ?? null;
+      stopping = !!data.stopping;
       updateButtons();
       if (data.task) setStatusText(`Running: ${data.task}`);
+      else if (data.busy) setStatusText('Busy: another user’s task');
       else setStatusText('Connected');
       break;
 
@@ -1485,7 +1491,10 @@ async function stopTask() {
   btn.disabled = true;
   btn.textContent = 'Stopping...';
   const res = await api('POST', '/api/stop');
-  if (!res.ok) log('error', res.error || 'Failed to stop', undefined, runningTask ?? undefined);
+  if (!res.ok) {
+    log('error', res.error || 'Failed to stop', undefined, runningTask ?? undefined);
+    updateButtons();
+  }
 }
 
 let tokenExpired = false;
@@ -2050,8 +2059,9 @@ function updateButtons() {
   document.getElementById('awBreakdownBtn').disabled = disabled;
   if (disabled) document.getElementById('dedupRemoveBtn').disabled = true;
   const stopBtn = document.getElementById('stopBtn');
-  stopBtn.style.display = busy ? '' : 'none';
-  if (!busy) { stopBtn.disabled = false; stopBtn.textContent = 'Stop'; }
+  stopBtn.style.display = busy && ownTask ? '' : 'none';
+  stopBtn.disabled = stopping;
+  stopBtn.textContent = stopping ? 'Stopping...' : 'Stop';
 }
 
 let shouldScrollToLog = false;

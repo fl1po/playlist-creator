@@ -44,17 +44,15 @@ function fakeClient(): FakeClient {
   };
 }
 
-const NO_ARTISTS: ReadonlySet<string> = new Set();
-
 test('a fresh client receives the full log history', () => {
   const b = createBroadcaster();
   const first = fakeClient();
-  b.addClient(first.res, 'u1', null, NO_ARTISTS);
+  b.addClient(first.res, 'u1');
   b.broadcastTo('u1', 'log', { level: 'info', message: 'one' });
   b.broadcastTo('u1', 'log', { level: 'info', message: 'two' });
 
   const fresh = fakeClient();
-  b.addClient(fresh.res, 'u1', null, NO_ARTISTS);
+  b.addClient(fresh.res, 'u1');
 
   const logs = fresh.messages().filter((m) => m.type === 'log');
   assert.deepEqual(
@@ -66,7 +64,7 @@ test('a fresh client receives the full log history', () => {
 test('a reconnecting client resumes instead of replaying the whole log', () => {
   const b = createBroadcaster();
   const live = fakeClient();
-  b.addClient(live.res, 'u1', null, NO_ARTISTS);
+  b.addClient(live.res, 'u1');
   b.broadcastTo('u1', 'log', { level: 'info', message: 'before drop' });
 
   // Connection dies; EventSource reconnects with the id it last saw.
@@ -76,7 +74,7 @@ test('a reconnecting client resumes instead of replaying the whole log', () => {
   b.broadcastTo('u1', 'log', { level: 'info', message: 'while offline' });
 
   const reconnected = fakeClient();
-  b.addClient(reconnected.res, 'u1', null, NO_ARTISTS, resumeId);
+  b.addClient(reconnected.res, 'u1', resumeId);
 
   const logs = reconnected.messages().filter((m) => m.type === 'log');
   assert.deepEqual(
@@ -93,7 +91,7 @@ test('an event id from a previous process replays everything', () => {
   // Server restarted: the boot prefix no longer matches, so the client's
   // position is meaningless and the in-memory history is all it has.
   const client = fakeClient();
-  b.addClient(client.res, 'u1', null, NO_ARTISTS, 'staleboot-99');
+  b.addClient(client.res, 'u1', 'staleboot-99');
 
   const logs = client.messages().filter((m) => m.type === 'log');
   assert.equal(logs.length, 1);
@@ -108,7 +106,7 @@ test('replayed events keep the timestamp of when they happened', async () => {
   await new Promise((r) => setTimeout(r, 15));
 
   const client = fakeClient();
-  b.addClient(client.res, 'u1', null, NO_ARTISTS);
+  b.addClient(client.res, 'u1');
 
   const frames = client.frames.join('');
   const replayed = frames
@@ -127,12 +125,12 @@ test('replayed events keep the timestamp of when they happened', async () => {
 test('events carry the process that sent them, live and on replay', () => {
   const b = createBroadcaster();
   const live = fakeClient();
-  b.addClient(live.res, 'u1', null, NO_ARTISTS);
+  b.addClient(live.res, 'u1');
   b.broadcastTo('u1', 'fill:start', { dates: ['31.07.26'] }, 'fill');
   b.broadcastTo('u1', 'log', { level: 'info', message: 'signed in' });
 
   const fresh = fakeClient();
-  b.addClient(fresh.res, 'u1', null, NO_ARTISTS);
+  b.addClient(fresh.res, 'u1');
 
   for (const client of [live, fresh]) {
     const msgs = client.messages() as { type: string; task?: string }[];
@@ -146,7 +144,7 @@ test('history is scoped per user', () => {
   b.broadcastTo('u1', 'log', { level: 'info', message: 'mine' });
 
   const other = fakeClient();
-  b.addClient(other.res, 'u2', null, NO_ARTISTS);
+  b.addClient(other.res, 'u2');
   assert.equal(other.messages().filter((m) => m.type === 'log').length, 0);
 });
 
@@ -156,7 +154,7 @@ test('transient message types stay out of the replayed history', () => {
   b.broadcastTo('u1', 'log', { level: 'info', message: 'kept' });
 
   const client = fakeClient();
-  b.addClient(client.res, 'u1', null, NO_ARTISTS);
+  b.addClient(client.res, 'u1');
 
   const replayed = client
     .messages()

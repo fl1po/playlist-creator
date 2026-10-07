@@ -28,7 +28,6 @@ import {
   getRefreshToken,
   getSessionUserId,
 } from './session.js';
-import type { TaskMutex } from './task-mutex.js';
 
 export interface UserSession {
   userId: string;
@@ -41,7 +40,6 @@ export interface UserSession {
 export interface RouteContext {
   readonly broadcaster: Broadcaster;
   readonly broadcast: (type: string, data: unknown) => void;
-  readonly taskMutex: TaskMutex;
   readonly pacer: RequestPacer;
   readonly appConfigStore: IAppConfigStore;
   readonly auth: AuthManager;
@@ -65,7 +63,6 @@ export interface RouteContext {
 
 export interface RouteContextDeps {
   broadcaster: Broadcaster;
-  taskMutex: TaskMutex;
   pacer: RequestPacer;
   appConfigStore: IAppConfigStore;
   auth: AuthManager;
@@ -77,7 +74,6 @@ export interface RouteContextDeps {
 export function createRouteContext(deps: RouteContextDeps): RouteContext {
   const {
     broadcaster,
-    taskMutex,
     pacer,
     appConfigStore,
     auth,
@@ -275,7 +271,6 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
   return {
     broadcaster,
     broadcast,
-    taskMutex,
     pacer,
     appConfigStore,
     auth,

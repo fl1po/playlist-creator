@@ -8,15 +8,28 @@ export interface Broadcaster {
    * messages no process owns (auth, config).
    */
   broadcastTo(userId: string, type: string, data: unknown, task?: string): void;
+  /**
+   * Send every connected client its own payload, computed from its user
+   * (`null` when not signed in). Transient: not numbered, never replayed.
+   */
+  broadcastEach(
+    type: string,
+    dataFor: (userId: string | null) => unknown,
+  ): void;
+  /** Register messages every newly connected client receives before its history replay. */
+  onConnect(snapshot: (userId: string | null) => SnapshotMessage[]): void;
   addClient(
     res: Response,
     userId: string | null,
-    currentTask: string | null,
-    searchedArtists: ReadonlySet<string>,
     lastEventId?: string | null,
   ): void;
   removeClient(res: Response): void;
   clearHistory(userId: string): void;
+}
+
+export interface SnapshotMessage {
+  type: string;
+  data: unknown;
 }
 
 const MAX_LOG_HISTORY = 500;
@@ -55,6 +68,7 @@ const SKIP_HISTORY = new Set([
 export function createBroadcaster(): Broadcaster {
   const clients = new Map<Response, string | null>(); // res -> userId
   const logHistory = new Map<string, HistoryEntry[]>(); // userId -> messages
+  const snapshots: Array<(userId: string | null) => SnapshotMessage[]> = [];
   let seq = 0;
 
   function send(res: Response, msg: string, eventId?: string) {
@@ -119,29 +133,27 @@ export function createBroadcaster(): Broadcaster {
     }
   }
 
+  function broadcastEach(
+    type: string,
+    dataFor: (userId: string | null) => unknown,
+  ) {
+    for (const [res, uid] of clients) {
+      send(res, JSON.stringify({ type, data: dataFor(uid), ts: Date.now() }));
+    }
+  }
+
+  function onConnect(snapshot: (userId: string | null) => SnapshotMessage[]) {
+    snapshots.push(snapshot);
+  }
+
   function addClient(
     res: Response,
     userId: string | null,
-    currentTask: string | null,
-    searchedArtists: ReadonlySet<string>,
     lastEventId?: string | null,
   ) {
     clients.set(res, userId);
-    send(
-      res,
-      JSON.stringify({
-        type: 'status',
-        data: { busy: !!currentTask, task: currentTask },
-      }),
-    );
-    if (searchedArtists.size > 0) {
-      send(
-        res,
-        JSON.stringify({
-          type: 'fill:searchedArtists',
-          data: [...searchedArtists],
-        }),
-      );
+    for (const snapshot of snapshots) {
+      for (const m of snapshot(userId)) send(res, JSON.stringify(m));
     }
     // Replay user history from where this client left off. EventSource resends
     // its last id automatically, so a dropped connection (idle proxy timeout,
@@ -163,5 +175,13 @@ export function createBroadcaster(): Broadcaster {
     logHistory.delete(userId);
   }
 
-  return { broadcast, broadcastTo, addClient, removeClient, clearHistory };
+  return {
+    broadcast,
+    broadcastTo,
+    broadcastEach,
+    onConnect,
+    addClient,
+    removeClient,
+    clearHistory,
+  };
 }

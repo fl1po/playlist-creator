@@ -64,6 +64,12 @@ _Avoid_: sync queue, outbox
 **Album-unit removal**:
 The rule that promotion sync removes a demoted artist's tracks an album at a time: a whole album stays if any of its tracks belongs to a P1/P2 artist (it was added for that feature), otherwise the demoted artist's album group is removed entirely.
 
+### Running
+
+**Task**:
+One user-started background operation in the web app — a fill, recalculation, clear, dedup scan, and so on. At most one runs at a time across the whole server. The user who started it *owns* it: only they can stop it or see which task is running; everyone else just sees the server as busy. Its log lines carry the task's name, which is what the live log's process filter shows.
+_Avoid_: job, process (except as the live log's label)
+
 ### Releases
 
 **Release**:

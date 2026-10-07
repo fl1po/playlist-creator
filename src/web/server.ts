@@ -15,13 +15,7 @@ import {
 import { UserTokenStore, createAppConfigStore } from '../lib/config.js';
 import { createDurableCache } from '../lib/durable-cache.js';
 import { RequestPacer } from '../lib/request-pacer.js';
-import { broadcastEvents } from '../lib/service-events.js';
-import { createSpotifyContext } from '../lib/spotify-context.js';
 import type { AppConfig } from '../lib/types.js';
-import {
-  type PlaylistClearerEventMap,
-  PlaylistClearerService,
-} from '../services/playlist-clearer.js';
 import { createAuthManager, fetchSpotifyUserId } from './auth.js';
 import { bearerIdentity } from './bearer-identity.js';
 import { createBroadcaster } from './broadcast.js';
@@ -34,9 +28,14 @@ import {
   getSessionUserId,
   verifyStreamTicket,
 } from './session.js';
-import { createTaskMutex } from './task-mutex.js';
-import { createTaskRunner } from './task-runner.js';
+import {
+  type TaskDefinition,
+  createTaskRunner,
+  mountTask,
+  mountTaskControls,
+} from './task-runner.js';
 import { awBreakdownTask } from './tasks/aw-breakdown.js';
+import { clearTask } from './tasks/clear.js';
 import { dedupRemoveTask } from './tasks/dedup-remove.js';
 import { dedupScanTask } from './tasks/dedup-scan.js';
 import { fillTask, getSearchedArtists } from './tasks/fill.js';
@@ -56,9 +55,13 @@ const appConfigStore = createAppConfigStore();
 const broadcaster = createBroadcaster();
 const broadcast = broadcaster.broadcast;
 
-// Server-wide: one task runs at a time across all users.
-const taskMutex = createTaskMutex((busy, task) => {
-  broadcast('status', { busy, task });
+// Server-wide: one task runs at a time across all users (ADR-0003).
+const taskRunner = createTaskRunner({ broadcaster, pacer });
+broadcaster.onConnect(() => {
+  const searched = getSearchedArtists();
+  return searched.size > 0
+    ? [{ type: 'fill:searchedArtists', data: [...searched] }]
+    : [];
 });
 
 // ── Route Context ───────────────────────────────────────────────────────────
@@ -75,7 +78,6 @@ const auth = createAuthManager({
 
 const ctx = createRouteContext({
   broadcaster,
-  taskMutex,
   pacer,
   appConfigStore,
   auth,
@@ -136,8 +138,6 @@ app.get('/api/events', (req, res) => {
   broadcaster.addClient(
     res,
     userId,
-    taskMutex.currentTask,
-    getSearchedArtists(),
     (req.headers['last-event-id'] as string) ?? null,
   );
   // Comment frames keep idle proxies (Railway drops at ~5min) from killing the
@@ -170,13 +170,18 @@ app.use('/api', configRoutes(ctx));
 
 // ── Register tasks ──────────────────────────────────────────────────────────
 
-const taskRunner = createTaskRunner({ app, routeCtx: ctx });
-taskRunner.register(fillTask);
-taskRunner.register(recalculateTask);
-taskRunner.register(dedupScanTask);
-taskRunner.register(dedupRemoveTask);
-taskRunner.register(listeningTimeTask);
-taskRunner.register(awBreakdownTask);
+for (const task of [
+  fillTask,
+  recalculateTask,
+  dedupScanTask,
+  dedupRemoveTask,
+  listeningTimeTask,
+  awBreakdownTask,
+  clearTask,
+] as TaskDefinition[]) {
+  mountTask(app, taskRunner, task, ctx.requireSession);
+}
+mountTaskControls(app, taskRunner, ctx.requireSession);
 
 // ── Simple inline routes ────────────────────────────────────────────────────
 
@@ -276,85 +281,11 @@ app.post('/api/import-data', async (req, res) => {
   });
 });
 
-// Clear playlist (synchronous — no mutex)
-app.post('/api/clear', async (req, res) => {
-  const session = ctx.requireSession(req, res);
-  if (!session) return;
-
-  const name = req.body?.name?.trim();
-  if (!name) {
-    res.status(400).json({ error: 'name is required' });
-    return;
-  }
-
-  const userBroadcast = (type: string, data: unknown) =>
-    broadcaster.broadcastTo(session.userId, type, data, 'clear');
-
-  userBroadcast('log', {
-    level: 'info',
-    message: `Clearing playlist "${name}"...`,
-  });
-
-  const spotifyCtx = createSpotifyContext(session.client, undefined, pacer);
-  const service = new PlaylistClearerService(
-    spotifyCtx,
-    broadcastEvents<PlaylistClearerEventMap>(userBroadcast, {
-      playlistFound: {
-        log: (n, count) => `Found "${n}" (${count} tracks)`,
-      },
-      playlistNotFound: {
-        log: (n) => `Playlist "${n}" not found`,
-        level: 'warn',
-      },
-      cleared: {
-        type: 'clear:complete',
-        pack: (n, count) => ({ name: n, cleared: count }),
-      },
-    }),
-  );
-
-  try {
-    const result = await service.clear(name);
-    res.json({ ok: true, ...result });
-  } catch (err) {
-    res.status(500).json({ error: String(err) });
-  }
-});
-
-app.post('/api/stop', (req, res) => {
-  const session = ctx.requireSession(req, res);
-  if (!session) return;
-  const task = taskMutex.currentTask;
-  if (!task) {
-    res.status(400).json({ error: 'No task running' });
-    return;
-  }
-  if (taskMutex.currentTaskUserId !== session.userId) {
-    res.status(403).json({ error: 'Task belongs to another user' });
-    return;
-  }
-  if (taskMutex.stop()) {
-    broadcaster.broadcastTo(
-      session.userId,
-      'log',
-      { level: 'warn', message: `Stopping ${task}...` },
-      task,
-    );
-    res.json({ ok: true, message: `Stopping ${task}` });
-  } else {
-    res.json({ ok: true, message: 'Already stopping' });
-  }
-});
-
 app.post('/api/clear-logs', (req, res) => {
   const session = ctx.requireSession(req, res);
   if (!session) return;
   broadcaster.clearHistory(session.userId);
   res.json({ ok: true });
-});
-
-app.get('/api/status', (_req, res) => {
-  res.json({ busy: !!taskMutex.currentTask, task: taskMutex.currentTask });
 });
 
 // ── Playback tracking ──────────────────────────────────────────────────────
