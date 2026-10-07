@@ -40,15 +40,15 @@
   "description": "Automated weekly playlist generation driven by your listening history",
   "dependencies": {
     "@spotify/web-api-ts-sdk": "^1.2.0",
-    "@upstash/redis": "^1.38.0",
-    "compression": "^1.8.1",
+    "@upstash/redis": "^1.39.0",
+    "compression": "^1.8.2",
     "express": "^5.2.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.15",
+    "@biomejs/biome": "^2.5.15",
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.6",
-    "@types/node": "^25.9.1",
-    "typescript": "^6.0.3"
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
   }
 }
