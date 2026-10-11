@@ -22,7 +22,7 @@
 import { existsSync } from 'node:fs';
 import { DeezerClient } from '../../lib/deezer-client.js';
 import { LastfmClient } from '../../lib/lastfm-client.js';
-import type { SpotifyContext } from '../../lib/spotify-context.js';
+import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import type { TrustedArtistsFile } from '../../lib/types.js';
 import {
   CRITIC_WEIGHT,
@@ -80,7 +80,7 @@ export const CO_CITATION_THRESHOLD = 2;
 export const CANDIDATE_LIMIT = 1_500;
 
 export interface RunOptions {
-  ctx: SpotifyContext;
+  ctx: SpotifyGateway;
   trustedArtists: TrustedArtistsFile;
   year: number;
   lastfmKey: string;
@@ -250,11 +250,10 @@ export async function collectYear(opts: RunOptions): Promise<CollectResult> {
 
     report.attempt();
     const search = await ctx.call(
-      () => ctx.api.search(survivor.name, ['artist'], undefined, 5),
+      (api) => api.search(survivor.name, ['artist'], undefined, 5),
       `search artist "${survivor.name}"`,
     );
     if (!search.success) {
-      if (search.authError) throw search.error;
       report.fail();
       return false;
     }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { SpotifyContext } from '../lib/spotify-context.js';
+import { fixtureGateway } from '../lib/spotify/fixture.js';
 import { PlaylistClearerService } from '../services/playlist-clearer.js';
 
 // ── Fixture: one playlist on a fake Spotify, with injectable failures ───────
@@ -55,17 +55,7 @@ function fakeContext(opts: {
       },
     },
   };
-  const ctx = {
-    api,
-    call: async <T>(fn: () => Promise<T>) => {
-      try {
-        return { success: true, data: await fn() };
-      } catch (error) {
-        return { success: false, error };
-      }
-    },
-  } as unknown as SpotifyContext;
-  return { ctx, removed };
+  return { ctx: fixtureGateway(api), removed };
 }
 
 const uris = (n: number) =>

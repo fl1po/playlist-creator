@@ -1,4 +1,4 @@
-import type { SpotifyContext } from '../../lib/spotify-context.js';
+import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import type { BatchCache } from '../../lib/types.js';
 import { promotionReads } from '../promotion-sync/adapters.js';
 import { spotifyRecalculationPorts } from '../recalculation/adapters.js';
@@ -54,15 +54,13 @@ export function batchCacheCheckpoints(storage: FillStorage): CheckpointStore {
  * is persisted.
  */
 export function fillPorts(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   user: { userId: string; dataDir: string; storage: FillStorage },
 ): FillPorts {
   return {
     week: {
       reads: spotifyReleaseReads(ctx),
-      popularity: deezerPopularitySource(() => {
-        void ctx.api; // throws if aborted
-      }),
+      popularity: deezerPopularitySource(() => ctx.signal?.throwIfAborted()),
       checkpoints: batchCacheCheckpoints(user.storage),
     },
     weekly: spotifyWeeklyPlaylistStore(ctx),

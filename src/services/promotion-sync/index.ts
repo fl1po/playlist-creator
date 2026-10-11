@@ -37,7 +37,7 @@ export interface PriorityChange {
 /**
  * The reads a promotion sync needs: every release read (shared with week
  * collection via the engine) plus the two playlist-track reads the removal and
- * addition phases use. Prod adapter wraps SpotifyContext + pagination; test
+ * addition phases use. Prod adapter wraps SpotifyGateway + pagination; test
  * adapter is an in-memory fixture catalog.
  */
 export interface PromotionReads extends ReleaseReads {

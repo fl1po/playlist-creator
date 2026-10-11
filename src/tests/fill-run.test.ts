@@ -11,7 +11,8 @@ import {
 } from '../lib/cache-files.js';
 import { type DurableCache, createDurableCache } from '../lib/durable-cache.js';
 import type { EventHandlers } from '../lib/service-events.js';
-import type { SpotifyContext } from '../lib/spotify-context.js';
+import { fixtureGateway } from '../lib/spotify/fixture.js';
+import { type SpotifyGateway, TaskAborted } from '../lib/spotify/gateway.js';
 import type {
   BatchCache,
   SimplePlaylist,
@@ -96,7 +97,7 @@ function trusted(
   return { artistCounts } as unknown as TrustedArtistsFile;
 }
 
-// ── Fixture: fake SpotifyContext ────────────────────────────────────────────
+// ── Fixture: fake SpotifyGateway ────────────────────────────────────────────
 
 interface FixtureTrack {
   id: string;
@@ -118,7 +119,7 @@ interface FixtureWorld {
   unfilled?: boolean;
 }
 
-function fixtureCtx(world: FixtureWorld): SpotifyContext & {
+function fixtureCtx(world: FixtureWorld): SpotifyGateway & {
   removed: Record<string, string[]>;
 } {
   const removed: Record<string, string[]> = {};
@@ -175,37 +176,7 @@ function fixtureCtx(world: FixtureWorld): SpotifyContext & {
     },
   };
 
-  return {
-    api: api as unknown as SpotifyContext['api'],
-    client: {
-      api: api as unknown as SpotifyContext['api'],
-      async refreshToken() {
-        return 'token';
-      },
-      async recreateApi() {
-        return api as unknown as SpotifyContext['api'];
-      },
-      async runAuth() {
-        return true;
-      },
-      setTokens() {},
-    },
-    async call(fn) {
-      try {
-        return { success: true, data: await fn() };
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        // Mirrors lib/api-wrapper.ts::createApiCall: abort errors are rethrown
-        // immediately rather than folded into a failed ApiResult, which is how
-        // an abort propagates cleanly through pagination's strict error mode.
-        if (err.name === 'AbortError' || err.message === 'Stopped by user') {
-          throw err;
-        }
-        return { success: false, error: err };
-      }
-    },
-    removed,
-  };
+  return { ...fixtureGateway(api), removed };
 }
 
 function tmpDataDir(t: { after: (fn: () => void) => void }): string {
@@ -242,7 +213,7 @@ const USER_CONFIG: UserConfig = {
  */
 function world(
   t: { after: (fn: () => void) => void },
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   sources?: SourceReads,
 ) {
   const dataDir = tmpDataDir(t);
@@ -346,8 +317,7 @@ test('a sync failure is logged as a warning, fails nothing, and stays pending', 
 });
 
 test('an abort during sync propagates instead of being swallowed', async (t) => {
-  const abortError = new Error('Stopped by user');
-  abortError.name = 'AbortError';
+  const abortError = new TaskAborted();
   const w = world(
     t,
     demotionCtx({
@@ -383,8 +353,7 @@ test('a fill aborted after a mid-fill recalculation leaves the sync for the next
       };
     },
   };
-  const abortError = new Error('Stopped by user');
-  abortError.name = 'AbortError';
+  const abortError = new TaskAborted();
 
   const first = world(t, demotionCtx({ unfilled: true }), sources);
   await first.cache.save(

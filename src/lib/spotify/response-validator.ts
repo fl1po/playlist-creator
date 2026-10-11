@@ -1,6 +1,5 @@
 import type { IValidateResponses } from '@spotify/web-api-ts-sdk';
-import { RateLimitError } from './rate-limit-error.js';
-import { HttpError } from './resilience/errors.js';
+import { HttpError, RateLimitError } from './errors.js';
 
 export class RetryAfterResponseValidator implements IValidateResponses {
   public async validateResponse(response: Response): Promise<void> {

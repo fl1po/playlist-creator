@@ -1,5 +1,3 @@
-import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
-
 // ── Config ──────────────────────────────────────────────────────────────────
 
 export interface AppConfig {
@@ -21,34 +19,6 @@ export interface SpotifyConfig extends AppConfig {
 export interface ConfigStore {
   load(): SpotifyConfig;
   save(config: SpotifyConfig): void;
-}
-
-// ── API wrapper ─────────────────────────────────────────────────────────────
-
-export type ApiResult<T> =
-  | { success: true; data: T }
-  | { success: false; authError?: boolean; error?: Error };
-
-export interface ApiCallOptions {
-  onRateLimitWait?: (seconds: number) => void;
-  onNetworkRetry?: (attempt: number, maxAttempts: number) => void;
-  onLongSleep?: (hours: number, wakeTime: Date) => void;
-  onLongSleepWake?: () => void;
-  onError?: (description: string, error: Error) => void;
-  onSuccess?: () => void;
-  /** Checked before every API call and retry. Throw to abort. */
-  onBeforeCall?: () => void;
-}
-
-// ── Spotify client ──────────────────────────────────────────────────────────
-
-export interface SpotifyClient {
-  api: SpotifyApi;
-  refreshToken(): Promise<string>;
-  recreateApi(): Promise<SpotifyApi>;
-  runAuth(attempt?: number): Promise<boolean>;
-  /** Install tokens obtained out-of-band (e.g. a web login) and persist them. */
-  setTokens(tokens: { accessToken: string; refreshToken: string }): void;
 }
 
 // ── Pagination ──────────────────────────────────────────────────────────────

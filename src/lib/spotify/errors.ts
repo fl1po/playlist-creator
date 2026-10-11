@@ -1,5 +1,3 @@
-import { RateLimitError } from '../rate-limit-error.js';
-
 export type ErrorKind =
   | 'rate_limit'
   | 'auth'
@@ -23,6 +21,45 @@ export class HttpError extends Error {
     super(message);
     this.name = 'HttpError';
   }
+}
+
+/** A 429, carrying Spotify's Retry-After when it sent one. */
+export class RateLimitError extends Error {
+  constructor(public readonly retryAfterSeconds: number | null) {
+    super('The app has exceeded its rate limits.');
+    this.name = 'RateLimitError';
+  }
+}
+
+/**
+ * The owner stopped the task. Abort signals are aborted with this as their
+ * reason, so `signal.throwIfAborted()` throws it.
+ */
+export class TaskAborted extends Error {
+  constructor() {
+    super('Stopped by user');
+    this.name = 'TaskAborted';
+  }
+}
+
+/**
+ * Spotify auth is gone and the gateway could not get it back: the refresh
+ * token was rejected and re-authentication failed or isn't available here.
+ * Nothing a caller does can recover from it.
+ */
+export class SpotifyAuthLost extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'SpotifyAuthLost';
+  }
+}
+
+/** Whether `err` means the work was stopped rather than that it failed. */
+export function isAbort(err: unknown): boolean {
+  return (
+    err instanceof TaskAborted ||
+    (err instanceof Error && err.name === 'AbortError')
+  );
 }
 
 /**

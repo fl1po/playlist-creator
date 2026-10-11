@@ -6,7 +6,7 @@ import {
   getAllPlaylistTracks,
   getAllUserPlaylists,
 } from '../lib/pagination.js';
-import type { SpotifyContext } from '../lib/spotify-context.js';
+import type { SpotifyGateway } from '../lib/spotify/gateway.js';
 import type { SimplePlaylist } from '../lib/types.js';
 import { isWeeklyPlaylistName } from './weekly-playlists/index.js';
 
@@ -50,7 +50,7 @@ export async function invalidateNonListenedCache(
  * `invalidateNonListenedCache`; `awTrackIds` is always read fresh.
  */
 export async function getNonListenedPlaylists(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   userId: string,
   allWeeklyId: string,
   dataDir: string,

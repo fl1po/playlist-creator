@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import compression from 'compression';
 import express from 'express';
 import {
@@ -14,7 +13,7 @@ import {
 } from '../lib/cache-files.js';
 import { UserTokenStore, createAppConfigStore } from '../lib/config.js';
 import { createDurableCache } from '../lib/durable-cache.js';
-import { RequestPacer } from '../lib/request-pacer.js';
+import { RequestPacer, type SpotifyGateway } from '../lib/spotify/gateway.js';
 import type { AppConfig } from '../lib/types.js';
 import { createAuthManager, fetchSpotifyUserId } from './auth.js';
 import { bearerIdentity } from './bearer-identity.js';
@@ -28,6 +27,7 @@ import {
   getSessionUserId,
   verifyStreamTicket,
 } from './session.js';
+import { SpotifyCallFailed, orThrow, spotifyRoute } from './spotify-http.js';
 import {
   type TaskDefinition,
   createTaskRunner,
@@ -56,7 +56,7 @@ const broadcaster = createBroadcaster();
 const broadcast = broadcaster.broadcast;
 
 // Server-wide: one task runs at a time across all users (ADR-0003).
-const taskRunner = createTaskRunner({ broadcaster, pacer });
+const taskRunner = createTaskRunner({ broadcaster });
 broadcaster.onConnect(() => {
   const searched = getSearchedArtists();
   return searched.size > 0
@@ -312,25 +312,37 @@ function cachePlaylist(id: string, entry: PlaylistCache) {
   playlistDurationCache.set(id, entry);
 }
 
+/** Null when Spotify can't serve the playlist right now; auth loss still throws. */
 async function loadPlaylistCache(
-  spotifyApi: SpotifyApi,
+  gateway: SpotifyGateway,
   playlistId: string,
 ): Promise<PlaylistCache | null> {
   try {
-    const meta = await spotifyApi.playlists.getPlaylist(playlistId);
+    const meta = orThrow(
+      await gateway.call(
+        (api) => api.playlists.getPlaylist(playlistId),
+        `playlist ${playlistId}`,
+      ),
+    );
     const tracks: Array<{ id: string; duration_ms: number }> = [];
     let totalMs = 0;
     let offset = 0;
     const limit = 50;
     while (true) {
-      const page = await spotifyApi.playlists.getPlaylistItems(
-        playlistId,
-        undefined,
-        undefined,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        limit as any,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        offset as any,
+      const page = orThrow(
+        await gateway.call(
+          (api) =>
+            api.playlists.getPlaylistItems(
+              playlistId,
+              undefined,
+              undefined,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              limit as any,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              offset as any,
+            ),
+          `playlist items ${playlistId}`,
+        ),
       );
       for (const item of page.items) {
         const t = item.track;
@@ -343,8 +355,9 @@ async function loadPlaylistCache(
       offset += page.items.length;
     }
     return { name: meta.name, snapshotId: meta.snapshot_id, tracks, totalMs };
-  } catch {
-    return null;
+  } catch (err) {
+    if (err instanceof SpotifyCallFailed) return null;
+    throw err;
   }
 }
 
@@ -366,13 +379,19 @@ function computeRemaining(
   };
 }
 
-app.get('/api/playback', async (req, res) => {
-  const session = ctx.requireSession(req, res);
-  if (!session) return;
+app.get(
+  '/api/playback',
+  spotifyRoute(async (req, res) => {
+    const session = ctx.requireSession(req, res);
+    if (!session) return;
+    const { gateway } = session;
 
-  try {
-    const spotifyApi = session.client.api;
-    const playback = await spotifyApi.player.getPlaybackState();
+    const playback = orThrow(
+      await gateway.call(
+        (api) => api.player.getPlaybackState(),
+        'playback state',
+      ),
+    );
 
     if (!(playback?.item && 'album' in playback.item)) {
       res.json({ playing: false });
@@ -420,23 +439,21 @@ app.get('/api/playback', async (req, res) => {
         const dueForCheck =
           Date.now() - lastCheck >= SNAPSHOT_CHECK_INTERVAL_MS;
         if (!cached || dueForCheck) {
-          try {
-            const head = await spotifyApi.playlists.getPlaylist(
-              ctxId,
-              undefined,
-              'snapshot_id',
-            );
-            currentSnapshot = head.snapshot_id;
+          const head = await gateway.call(
+            (api) => api.playlists.getPlaylist(ctxId, undefined, 'snapshot_id'),
+            `playlist snapshot ${ctxId}`,
+          );
+          // On failure, fall back to whatever is cached.
+          if (head.success) {
+            currentSnapshot = head.data.snapshot_id;
             lastSnapshotCheck.set(ctxId, Date.now());
-          } catch {
-            // Ignore — fall back to whatever is cached.
           }
         }
         if (
           !cached ||
           (currentSnapshot && cached.snapshotId !== currentSnapshot)
         ) {
-          const loaded = await loadPlaylistCache(spotifyApi, ctxId);
+          const loaded = await loadPlaylistCache(gateway, ctxId);
           if (loaded) {
             cached = loaded;
             cachePlaylist(ctxId, loaded);
@@ -491,19 +508,20 @@ app.get('/api/playback', async (req, res) => {
       context: contextInfo,
       remaining,
     });
-  } catch (err) {
-    res.status(500).json({
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-});
+  }),
+);
 
-app.get('/api/album/:id', async (req, res) => {
-  const session = ctx.requireSession(req, res);
-  if (!session) return;
+app.get(
+  '/api/album/:id',
+  spotifyRoute(async (req, res) => {
+    const session = ctx.requireSession(req, res);
+    if (!session) return;
+    const { gateway } = session;
+    const albumId = req.params.id as string;
 
-  try {
-    const album = await session.client.api.albums.get(req.params.id);
+    const album = orThrow(
+      await gateway.call((api) => api.albums.get(albumId), `album ${albumId}`),
+    );
     // Same primary/featured split as /api/playback.
     const albumArtistIds = new Set((album.artists ?? []).map((a) => a.id));
     const mapTrack = (t: (typeof album.tracks.items)[number]) => {
@@ -527,11 +545,11 @@ app.get('/api/album/:id', async (req, res) => {
 
     let offset = album.tracks.items.length;
     while (offset < album.tracks.total) {
-      const page = await session.client.api.albums.tracks(
-        req.params.id,
-        undefined,
-        50,
-        offset,
+      const page = orThrow(
+        await gateway.call(
+          (api) => api.albums.tracks(albumId, undefined, 50, offset),
+          `album tracks ${albumId}`,
+        ),
       );
       if (page.items.length === 0) break;
       tracks.push(...page.items.map(mapTrack));
@@ -539,15 +557,25 @@ app.get('/api/album/:id', async (req, res) => {
     }
 
     const trackIds = tracks.map((t) => t.id).filter(Boolean);
-    const batches: Promise<{ ids: string[]; pop: any[]; liked: boolean[] }>[] =
-      [];
+    const batches: Promise<{
+      ids: string[];
+      pop: any[];
+      liked: boolean[];
+    }>[] = [];
     for (let i = 0; i < trackIds.length; i += 50) {
       const ids = trackIds.slice(i, i + 50);
       batches.push(
         Promise.all([
-          session.client.api.tracks.get(ids),
-          session.client.api.currentUser.tracks.hasSavedTracks(ids),
-        ]).then(([pop, liked]) => ({ ids, pop, liked })),
+          gateway.call((api) => api.tracks.get(ids), 'track popularity'),
+          gateway.call(
+            (api) => api.currentUser.tracks.hasSavedTracks(ids),
+            'saved tracks',
+          ),
+        ]).then(([pop, liked]) => ({
+          ids,
+          pop: orThrow(pop),
+          liked: orThrow(liked),
+        })),
       );
     }
     const results = await Promise.all(batches);
@@ -581,12 +609,8 @@ app.get('/api/album/:id', async (req, res) => {
       coverArt,
       tracks: tracksWithPop,
     });
-  } catch (err) {
-    res.status(500).json({
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-});
+  }),
+);
 
 // ── Migration ───────────────────────────────────────────────────────────────
 

@@ -7,7 +7,7 @@
  * the rest — see relevance.ts.
  */
 
-import type { SpotifyContext } from '../../lib/spotify-context.js';
+import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import type { TrustedArtistsFile } from '../../lib/types.js';
 import type { PhaseReporter } from './checkpoint.js';
 import { type Cluster, clusterOf } from './genre-map.js';
@@ -43,7 +43,7 @@ export function toRoster(file: TrustedArtistsFile): RosterArtist[] {
  * Artists Spotify cannot resolve are simply absent from the result.
  */
 export async function fetchArtistProfiles(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   ids: string[],
   onProgress?: (done: number, total: number) => void,
   report?: PhaseReporter,
@@ -55,12 +55,11 @@ export async function fetchArtistProfiles(
     const batch = unique.slice(i, i + ARTIST_BATCH);
     report?.attempt(batch.length);
     const result = await ctx.call(
-      () => ctx.api.artists.get(batch),
+      (api) => api.artists.get(batch),
       `artist metadata batch ${i / ARTIST_BATCH + 1}`,
     );
 
     if (!result.success) {
-      if (result.authError) throw result.error;
       // A dropped batch costs 50 artists their genres, which silently moves
       // them into the wrong cluster — count it rather than shrugging.
       report?.fail(batch.length);

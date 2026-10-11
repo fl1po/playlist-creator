@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { FileConfigStore } from '../lib/config.js';
-import { spotifyContext } from '../lib/spotify-context.js';
+import { createCliGateway } from '../lib/spotify/gateway.js';
 import type { TrustedArtistsFile } from '../lib/types.js';
 import { UserConfigStore, secondaryLabel } from '../lib/user-config.js';
 import { ArtistLookupService } from '../services/artist-lookup.js';
@@ -17,7 +17,7 @@ const trustedArtists: TrustedArtistsFile = JSON.parse(
   fs.readFileSync(TRUSTED_ARTISTS_PATH, 'utf8'),
 );
 
-const ctx = spotifyContext({ configStore: new FileConfigStore() });
+const ctx = createCliGateway({ configStore: new FileConfigStore() });
 const sl = secondaryLabel(new UserConfigStore().load());
 
 const service = new ArtistLookupService(ctx, {

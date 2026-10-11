@@ -1,6 +1,6 @@
 import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
-import type { SpotifyContext } from '../lib/spotify-context.js';
-import type { ApiResult } from '../lib/types.js';
+import type { SpotifyGateway } from '../lib/spotify/gateway.js';
+import type { ApiResult } from '../lib/spotify/gateway.js';
 
 export type PlaylistClearerEventMap = {
   playlistFound: [name: string, trackCount: number];
@@ -9,11 +9,11 @@ export type PlaylistClearerEventMap = {
 };
 
 export class PlaylistClearerService {
-  private ctx: SpotifyContext;
+  private ctx: SpotifyGateway;
   private emitter: ServiceEmitter<PlaylistClearerEventMap>;
 
   constructor(
-    ctx: SpotifyContext,
+    ctx: SpotifyGateway,
     events?: EventHandlers<PlaylistClearerEventMap>,
   ) {
     this.ctx = ctx;
@@ -32,7 +32,7 @@ export class PlaylistClearerService {
 
     while (true) {
       const result = await this.ctx.call(
-        () => this.ctx.api.currentUser.playlists.playlists(50, offset),
+        (api) => api.currentUser.playlists.playlists(50, offset),
         'user playlists',
       );
       if (!result.success) throw failure('list playlists', result);
@@ -61,8 +61,8 @@ export class PlaylistClearerService {
 
     while (true) {
       const result = await this.ctx.call(
-        () =>
-          this.ctx.api.playlists.getPlaylistItems(
+        (api) =>
+          api.playlists.getPlaylistItems(
             target.id,
             undefined,
             undefined,
@@ -89,8 +89,8 @@ export class PlaylistClearerService {
     for (let i = 0; i < uris.length; i += 100) {
       const batch = uris.slice(i, i + 100);
       const result = await this.ctx.call(
-        () =>
-          this.ctx.api.playlists.removeItemsFromPlaylist(target.id, {
+        (api) =>
+          api.playlists.removeItemsFromPlaylist(target.id, {
             tracks: batch,
           }),
         `remove tracks from ${target.name}`,

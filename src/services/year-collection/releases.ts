@@ -16,7 +16,7 @@
  */
 
 import { getBaseAlbumName, isDeluxeRelease } from '../../domain/releases.js';
-import type { SpotifyContext } from '../../lib/spotify-context.js';
+import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import type { PhaseReporter } from './checkpoint.js';
 
 /** Minimum tracks for a `single`-typed release to count as an EP. */
@@ -69,7 +69,7 @@ export interface Rejection {
  * `complete` is false when a page failed and the list is truncated.
  */
 export async function fetchArtistAlbums(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   artistId: string,
   report?: PhaseReporter,
 ): Promise<{ albums: RawAlbum[]; complete: boolean }> {
@@ -79,8 +79,8 @@ export async function fetchArtistAlbums(
   while (offset < MAX_ALBUMS) {
     report?.attempt();
     const result = await ctx.call(
-      () =>
-        ctx.api.artists.albums(
+      (api) =>
+        api.artists.albums(
           artistId,
           'album,single,compilation',
           undefined,
@@ -91,7 +91,6 @@ export async function fetchArtistAlbums(
     );
 
     if (!result.success) {
-      if (result.authError) throw result.error;
       // Breaking here truncates the artist's catalog, so the year may look
       // empty when it is not. That is invisible downstream — hence the count.
       report?.fail();
@@ -131,7 +130,7 @@ export interface AlbumDetail {
  * would double the most expensive call in the pipeline.
  */
 export async function fetchAlbumDetails(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   albumIds: string[],
   onProgress?: (done: number, total: number) => void,
   report?: PhaseReporter,
@@ -144,12 +143,11 @@ export async function fetchAlbumDetails(
     const batch = unique.slice(i, i + BATCH);
     report?.attempt(batch.length);
     const result = await ctx.call(
-      () => ctx.api.albums.get(batch),
+      (api) => api.albums.get(batch),
       `album details batch ${i / BATCH + 1}`,
     );
 
     if (!result.success) {
-      if (result.authError) throw result.error;
       // These releases would reach the plan with no track ids and contribute
       // nothing to the playlist while still appearing in the summary.
       report?.fail(batch.length);

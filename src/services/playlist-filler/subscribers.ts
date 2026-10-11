@@ -2,31 +2,10 @@ import {
   type EventHandlers,
   broadcastEvents,
 } from '../../lib/service-events.js';
-import type { ApiCallOptions } from '../../lib/types.js';
 import { describeChange } from '../recalculation/subscribers.js';
 import type { PlaylistFillerEventMap } from './events.js';
 
 // ── Console subscriber (CLI) ────────────────────────────────────────────────
-
-export function consoleApiCallbacks(): ApiCallOptions {
-  return {
-    onRateLimitWait: (s) => {
-      const resumeAt = new Date(Date.now() + s * 1000);
-      const display = s >= 60 ? `${(s / 60).toFixed(1)}min` : `${s}s`;
-      const time = resumeAt.toLocaleTimeString();
-      console.log(`  Rate limited, waiting ${display} (until ${time})...`);
-    },
-    onNetworkRetry: (a, m) => console.log(`  Network error, retry ${a}/${m}`),
-    onLongSleep: (h, w) => {
-      console.log(`\n!!! RATE LIMIT: Sleeping for ${h} hours...`);
-      console.log(`    Will resume at: ${w.toLocaleTimeString()}`);
-    },
-    onError: (desc, err) => {
-      if (err.message?.includes('404')) return;
-      console.log(`  Error (${desc}): ${err.message}`);
-    },
-  };
-}
 
 export function consoleHandlers(): EventHandlers<PlaylistFillerEventMap> {
   return {
@@ -130,48 +109,6 @@ export interface BroadcastHandlersOptions {
   searchedArtists: Set<string>;
   /** Throws if the user requested abort. Called at hot-path events. */
   checkAbort: () => void;
-}
-
-export function broadcastApiCallbacks(
-  broadcast: (type: string, data: unknown) => void,
-): ApiCallOptions {
-  return {
-    onRateLimitWait: (s) => {
-      const resumeAt = new Date(Date.now() + s * 1000);
-      const display = s >= 60 ? `${(s / 60).toFixed(1)}min` : `${s}s`;
-      const time = resumeAt.toLocaleTimeString();
-      broadcast('log', {
-        level: 'info',
-        message: `  Rate limited, waiting ${display} (until ${time})...`,
-      });
-      broadcast('fill:rateLimited', {
-        seconds: s,
-        wakeTime: resumeAt.toISOString(),
-      });
-    },
-    onNetworkRetry: (a, m) =>
-      broadcast('log', {
-        level: 'info',
-        message: `  Network error, retry ${a}/${m}`,
-      }),
-    onLongSleep: (h, w) => {
-      broadcast('log', {
-        level: 'warn',
-        message: `Rate limited — sleeping ${h}h, waking at ${w.toLocaleTimeString()}`,
-      });
-      broadcast('fill:rateLimited', {
-        seconds: h * 3600,
-        wakeTime: w.toISOString(),
-      });
-    },
-    onError: (desc, err) => {
-      if (err.message?.includes('404')) return;
-      broadcast('log', {
-        level: 'info',
-        message: `  Error (${desc}): ${err.message}`,
-      });
-    },
-  };
 }
 
 export function broadcastHandlers(

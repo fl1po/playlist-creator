@@ -36,9 +36,14 @@ export const dedupRemoveTask: TaskDefinition<DedupRemoveEvents> = {
         chunks.push(pl.uris.slice(i, i + batchSize));
       }
       await tc.iter(chunks, async (batch) => {
-        await tc.client.api.playlists.removeItemsFromPlaylist(pl.id, {
-          tracks: batch.map((uri) => ({ uri })),
-        });
+        const result = await tc.ctx.call(
+          (api) =>
+            api.playlists.removeItemsFromPlaylist(pl.id, {
+              tracks: batch.map((uri) => ({ uri })),
+            }),
+          `remove duplicates from ${pl.id}`,
+        );
+        if (!result.success) throw result.error;
         totalRemoved += batch.length;
       });
     });

@@ -49,7 +49,7 @@ function makeManager() {
     loadAppConfig: () => appConfig,
     getOrCreateUserSession: (userId) => ({
       userId,
-      client: { setTokens: () => {} },
+      gateway: { setTokens: () => {} },
     }),
     getUserDataDir: (userId) => path.join(dataRoot, userId),
     broadcast: () => {},
