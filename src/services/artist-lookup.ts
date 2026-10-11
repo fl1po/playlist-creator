@@ -1,5 +1,5 @@
 import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
-import type { SpotifyContext } from '../lib/spotify-context.js';
+import type { SpotifyGateway } from '../lib/spotify/gateway.js';
 import type { ArtistData, TrustedArtistsFile } from '../lib/types.js';
 
 export type ArtistLookupEventMap = {
@@ -18,11 +18,11 @@ export interface ArtistLookupResult {
 }
 
 export class ArtistLookupService {
-  private ctx: SpotifyContext;
+  private ctx: SpotifyGateway;
   private emitter: ServiceEmitter<ArtistLookupEventMap>;
 
   constructor(
-    ctx: SpotifyContext,
+    ctx: SpotifyGateway,
     events?: EventHandlers<ArtistLookupEventMap>,
   ) {
     this.ctx = ctx;
@@ -74,7 +74,7 @@ export class ArtistLookupService {
       if (data.spotifyId) {
         const spotifyId = data.spotifyId;
         const result = await this.ctx.call(
-          () => this.ctx.api.artists.get(spotifyId),
+          (api) => api.artists.get(spotifyId),
           `artist ${spotifyId}`,
         );
         if (result.success) {

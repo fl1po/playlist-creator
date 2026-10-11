@@ -1,8 +1,7 @@
 import { FileConfigStore } from '../lib/config.js';
 import { createDurableCache } from '../lib/durable-cache.js';
-import { spotifyContext } from '../lib/spotify-context.js';
+import { createCliGateway } from '../lib/spotify/gateway.js';
 import { UserConfigStore, secondaryLabel } from '../lib/user-config.js';
-import { consoleApiCallbacks } from '../services/playlist-filler/subscribers.js';
 import { consoleSyncHandlers } from '../services/promotion-sync/subscribers.js';
 import { spotifyRecalculationPorts } from '../services/recalculation/adapters.js';
 import { recalculate, syncPending } from '../services/recalculation/index.js';
@@ -19,15 +18,12 @@ const force = process.argv.includes('--force');
 const noSync = process.argv.includes('--no-sync');
 
 const DATA_DIR = '.';
-const ctx = spotifyContext({
-  configStore: new FileConfigStore(),
-  events: consoleApiCallbacks(),
-});
+const ctx = createCliGateway({ configStore: new FileConfigStore() });
 const userConfig = await new UserConfigStore().load();
 const sl = secondaryLabel(userConfig);
 
-const me = await ctx.call(() => ctx.api.currentUser.profile(), 'user profile');
-if (!me.success) throw me.error ?? new Error('Failed to get user profile');
+const me = await ctx.call((api) => api.currentUser.profile(), 'user profile');
+if (!me.success) throw me.error;
 const cache = createDurableCache({
   userId: me.data.id,
   dataDir: DATA_DIR,

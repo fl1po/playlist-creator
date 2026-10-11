@@ -37,7 +37,7 @@ export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
     )) as AwBreakdownCache | null;
 
     const awInfo = await tc.ctx.call(
-      () => tc.ctx.api.playlists.getPlaylist(awId, undefined, 'snapshot_id'),
+      (api) => api.playlists.getPlaylist(awId, undefined, 'snapshot_id'),
       'AW playlist info',
     );
     const liveSnapshot = awInfo.success ? awInfo.data.snapshot_id : undefined;

@@ -9,13 +9,12 @@ import {
 } from '../lib/config.js';
 import type { IAppConfigStore } from '../lib/config.js';
 import { createDurableCache } from '../lib/durable-cache.js';
-import type { RequestPacer } from '../lib/request-pacer.js';
-import { createSpotifyClient } from '../lib/spotify-client.js';
-import type {
-  AppConfig,
-  SpotifyClient,
-  TrustedArtistsFile,
-} from '../lib/types.js';
+import {
+  type RequestPacer,
+  type SessionGateway,
+  createSpotifyGateway,
+} from '../lib/spotify/gateway.js';
+import type { AppConfig, TrustedArtistsFile } from '../lib/types.js';
 import { type IUserConfigStore, UserConfigStore } from '../lib/user-config.js';
 import type { AuthManager } from './auth.js';
 import type { Broadcaster } from './broadcast.js';
@@ -32,7 +31,8 @@ import {
 export interface UserSession {
   userId: string;
   displayName?: string;
-  client: SpotifyClient;
+  /** The user's Spotify gateway; routes call it on the interactive lane. */
+  gateway: SessionGateway;
   userConfigStore: IUserConfigStore;
   dataDir: string;
 }
@@ -89,33 +89,36 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
 
   // Everything here carries the user's own auth state (login URL, tokens), so
   // it goes to that user's clients only — never the global broadcast.
-  function buildSpotifyClient(
+  function buildGateway(
     configStore: BridgedConfigStore,
     userId: string,
-  ): SpotifyClient {
-    return createSpotifyClient({
+  ): SessionGateway {
+    return createSpotifyGateway({
       configStore,
-      reauth: {
-        type: 'custom',
-        handler: async () => {
-          broadcaster.broadcastTo(userId, 'log', {
-            level: 'warn',
-            message:
-              'Token expired — opening Spotify login. Task paused, waiting...',
-          });
-          const url = auth.buildAuthUrl();
-          broadcaster.broadcastTo(userId, 'auth', {
-            authenticated: false,
-            url,
-          });
-          return auth.waitForAuth(userId);
-        },
-      },
-      onAuthFailed: (err) =>
+      pacer,
+      // Only tasks wait for a login; completing it installs the new tokens
+      // through the session gateway's setTokens.
+      reauth: async () => {
         broadcaster.broadcastTo(userId, 'log', {
-          level: 'error',
-          message: `Auth failed: ${err.message}`,
-        }),
+          level: 'warn',
+          message:
+            'Token expired — opening Spotify login. Task paused, waiting...',
+        });
+        const url = auth.buildAuthUrl();
+        broadcaster.broadcastTo(userId, 'auth', {
+          authenticated: false,
+          url,
+        });
+        const ok = await auth.waitForAuth(userId);
+        if (!ok) {
+          broadcaster.broadcastTo(userId, 'log', {
+            level: 'error',
+            message: 'Auth failed: re-authentication did not complete',
+          });
+        }
+        return ok;
+      },
+      authLostHint: 'Log in to Spotify again.',
     });
   }
 
@@ -151,9 +154,9 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
       ? new RedisUserConfigStore(userId)
       : new UserConfigStore(path.join(dataDir, 'user-config.json'));
 
-    const client = buildSpotifyClient(configStore, userId);
+    const gateway = buildGateway(configStore, userId);
 
-    const session: UserSession = { userId, client, userConfigStore, dataDir };
+    const session: UserSession = { userId, gateway, userConfigStore, dataDir };
     sessions.set(userId, session);
     return session;
   }
@@ -218,16 +221,11 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
     if (existing) {
       const cachedRefresh = bearerRefreshCache.get(userId);
       const cachedAccess = bearerTokenCache.get(userId);
-      // Rebuild the Spotify client whenever EITHER token differs from what
-      // we last installed — covers token rotation AND a session first built
-      // with a stale refresh token.
+      // Install the browser's tokens whenever EITHER differs from what it
+      // last sent — covers token rotation AND a session first built with a
+      // stale refresh token. A running task picks them up on its next call.
       if (cachedAccess !== accessToken || cachedRefresh !== refreshToken) {
-        const tokenStore = new InMemoryTokenStore(
-          { accessToken, refreshToken },
-          pushTokens(userId),
-        );
-        const configStore = new BridgedConfigStore(appConfig, tokenStore);
-        existing.client = buildSpotifyClient(configStore, userId);
+        existing.gateway.setTokens({ accessToken, refreshToken });
         bearerTokenCache.set(userId, accessToken);
         bearerRefreshCache.set(userId, refreshToken);
       }
@@ -243,13 +241,13 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
       ? new RedisUserConfigStore(userId)
       : new UserConfigStore(path.join(usersDir, userId, 'user-config.json'));
 
-    const client = buildSpotifyClient(configStore, userId);
+    const gateway = buildGateway(configStore, userId);
     bearerTokenCache.set(userId, accessToken);
     bearerRefreshCache.set(userId, refreshToken);
 
     const session: UserSession = {
       userId,
-      client,
+      gateway,
       userConfigStore,
       dataDir: path.join(usersDir, userId),
     };

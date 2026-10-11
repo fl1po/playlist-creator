@@ -13,8 +13,11 @@ export interface AuthDeps {
   ) => {
     userId: string;
     displayName?: string;
-    client: {
-      setTokens(tokens: { accessToken: string; refreshToken: string }): void;
+    gateway: {
+      setTokens(
+        tokens: { accessToken: string; refreshToken: string },
+        expiresInSec?: number,
+      ): void;
     };
   };
   getUserDataDir: (userId: string) => string;
@@ -122,7 +125,11 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
   async function exchangeCodeForTokens(
     code: string,
     appConfig: AppConfig,
-  ): Promise<{ access_token: string; refresh_token: string }> {
+  ): Promise<{
+    access_token: string;
+    refresh_token: string;
+    expires_in?: number;
+  }> {
     const authHeader = `Basic ${Buffer.from(`${appConfig.clientId}:${appConfig.clientSecret}`).toString('base64')}`;
     const params = new URLSearchParams({
       grant_type: 'authorization_code',
@@ -147,6 +154,7 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
     return tokenRes.json() as Promise<{
       access_token: string;
       refresh_token: string;
+      expires_in?: number;
     }>;
   }
 
@@ -180,13 +188,15 @@ export function createAuthManager(deps: AuthDeps): AuthManager {
 
     const session = deps.getOrCreateUserSession(user.id, appConfig);
     session.displayName = user.displayName;
-    // Install the new tokens directly rather than via recreateApi(): if a task
-    // is waiting on reauth, the client still holds the rejected refresh token,
-    // and refreshing with it would trigger a second, nested reauth.
-    session.client.setTokens({
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-    });
+    // Install the new tokens directly: a task waiting on reauth resumes with
+    // them, and the gateway refreshes them ahead of their known expiry.
+    session.gateway.setTokens(
+      {
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+      },
+      tokens.expires_in ?? 3600,
+    );
 
     return { userId: user.id, displayName: user.displayName };
   }

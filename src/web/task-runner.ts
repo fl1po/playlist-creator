@@ -1,11 +1,14 @@
 import fs from 'node:fs';
+import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import type express from 'express';
 import { createDurableCache } from '../lib/durable-cache.js';
 import type { DurableCache } from '../lib/durable-cache.js';
-import type { RequestPacer } from '../lib/request-pacer.js';
-import { createSpotifyContext } from '../lib/spotify-context.js';
-import type { SpotifyContext } from '../lib/spotify-context.js';
-import type { ApiCallOptions, SpotifyClient } from '../lib/types.js';
+import { describeSpotifyEvent } from '../lib/spotify/events.js';
+import {
+  type SpotifyEvent,
+  type SpotifyGateway,
+  TaskAborted,
+} from '../lib/spotify/gateway.js';
 import type { IUserConfigStore, UserConfig } from '../lib/user-config.js';
 import type { Broadcaster } from './broadcast.js';
 import type { UserSession } from './route-context.js';
@@ -29,16 +32,14 @@ export type TypedEmit<E extends BroadcastEventMap> = <
   data: E[K],
 ) => void;
 
-/** Spotify user profile, derived from the SDK without importing it directly. */
-type UserProfile = Awaited<
-  ReturnType<SpotifyClient['api']['currentUser']['profile']>
->;
+type UserProfile = Awaited<ReturnType<SpotifyApi['currentUser']['profile']>>;
 
 export interface TaskContext<E extends BaseEvents = BaseEvents> {
-  /** Abort-wrapped Spotify client. */
-  client: SpotifyClient;
-  /** SpotifyContext with pacer and optional API callbacks. */
-  ctx: SpotifyContext;
+  /**
+   * The owner's Spotify gateway on the background lane. Stopping the task
+   * aborts its calls and waits; rate-limit waits are logged to the owner.
+   */
+  ctx: SpotifyGateway;
   body: Record<string, unknown>;
   userConfigStore: IUserConfigStore;
   dataDir: string;
@@ -46,13 +47,11 @@ export interface TaskContext<E extends BaseEvents = BaseEvents> {
   /**
    * Untyped broadcast — interop escape hatch for helpers that take a generic
    * `(type, data) => void` (e.g. `broadcastEvents`, `broadcastHandlers`,
-   * `broadcastApiCallbacks`, the sync handlers). For direct task emissions
-   * use `emit` or `log`.
+   * the sync handlers). For direct task emissions use `emit` or `log`.
    */
   broadcast: (type: string, data: unknown) => void;
-  /** Throws if the user requested abort. */
+  /** Throws `TaskAborted` if the user requested abort. */
   checkAbort: () => void;
-  pacer: RequestPacer;
   /**
    * File-then-Redis durable cache, scoped to this user. Every save is also
    * mirrored to the browser's localStorage.
@@ -88,10 +87,6 @@ export interface TaskDefinition<E extends BaseEvents = BaseEvents> {
   method?: 'get' | 'post';
   /** Validate request body before the task slot is taken. Return error string to reject. */
   validate?: (body: Record<string, unknown>) => string | undefined;
-  /** Factory for API call callbacks (rate limit, network retry, etc.). */
-  apiCallbacks?: (
-    broadcast: (type: string, data: unknown) => void,
-  ) => ApiCallOptions;
   run: (tc: TaskContext<E>) => Promise<void>;
   /** Always runs after task (success, failure, or abort). */
   cleanup?: (tc: TaskContext<E>) => void | Promise<void>;
@@ -101,17 +96,7 @@ export interface TaskDefinition<E extends BaseEvents = BaseEvents> {
   startMessage?: string;
 }
 
-/**
- * Thrown by `checkAbort` and the abortable client once the owner stops the
- * task. The message stays "Stopped by user": api-wrapper and fill-run match on
- * it to tell a stop from a failure.
- */
-export class TaskAborted extends Error {
-  constructor() {
-    super('Stopped by user');
-    this.name = 'TaskAborted';
-  }
-}
+export { TaskAborted };
 
 /** What one viewer may know about the server's task slot (ADR-0003). */
 export type TaskStatus =
@@ -141,13 +126,12 @@ export interface TaskRunner {
 
 export interface TaskRunnerDeps {
   broadcaster: Broadcaster;
-  pacer: RequestPacer;
 }
 
 interface Running {
   name: string;
   userId: string;
-  abort: { aborted: boolean };
+  abort: AbortController;
 }
 
 /**
@@ -156,7 +140,7 @@ interface Running {
  * message the task sends is tagged with its name and goes to its owner only.
  */
 export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
-  const { broadcaster, pacer } = deps;
+  const { broadcaster } = deps;
   let running: Running | null = null;
 
   function statusFor(userId: string | null): TaskStatus {
@@ -166,7 +150,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       busy: true,
       mine: true,
       task: running.name,
-      stopping: running.abort.aborted,
+      stopping: running.abort.signal.aborted,
     };
   }
 
@@ -188,21 +172,22 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         : { kind: 'busy' };
     }
 
-    // Bound to this task's own flag: work leaking past the task's end must
+    // Bound to this task's own signal: work leaking past the task's end must
     // keep honouring this task's stop, never a later task's.
-    const abort = { aborted: false };
+    const abort = new AbortController();
     running = { name: def.name, userId: session.userId, abort };
     publishStatus();
 
-    const tc = createTaskContext(def, session, body, abort);
+    const tc = createTaskContext(def, session, body, abort.signal);
     const done = (async () => {
       try {
         // Every task assumes its data dir exists (services write cache files into it).
         fs.mkdirSync(session.dataDir, { recursive: true });
         await def.run(tc);
       } catch (err) {
-        def.onError?.(tc, err, abort.aborted);
-        if (abort.aborted) tc.log('warn', `${def.name} stopped by user`);
+        const stopped = abort.signal.aborted;
+        def.onError?.(tc, err, stopped);
+        if (stopped) tc.log('warn', `${def.name} stopped by user`);
         else tc.log('error', `${def.name} failed: ${err}`);
       } finally {
         try {
@@ -220,8 +205,8 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   function stop(userId: string): StopResult {
     if (!running) return 'none';
     if (running.userId !== userId) return 'not-owner';
-    if (running.abort.aborted) return 'already-stopping';
-    running.abort.aborted = true;
+    if (running.abort.signal.aborted) return 'already-stopping';
+    running.abort.abort(new TaskAborted());
     broadcaster.broadcastTo(
       userId,
       'log',
@@ -236,25 +221,20 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     def: TaskDefinition<E>,
     session: UserSession,
     body: Record<string, unknown>,
-    abort: { aborted: boolean },
+    signal: AbortSignal,
   ): TaskContext<E> {
-    const checkAbort = () => {
-      if (abort.aborted) throw new TaskAborted();
-    };
-    const client = abortableClient(session, checkAbort);
+    const checkAbort = () => signal.throwIfAborted();
     const userBroadcast = (type: string, data: unknown) =>
       broadcaster.broadcastTo(session.userId, type, data, def.name);
-    const ctx = createSpotifyContext(
-      client,
-      def.apiCallbacks?.(userBroadcast),
-      pacer,
-    );
+    const ctx = session.gateway.forTask({
+      signal,
+      onEvent: (event) => reportSpotifyEvent(userBroadcast, event),
+    });
 
     let userConfigPromise: Promise<UserConfig> | undefined;
     let mePromise: Promise<UserProfile> | undefined;
 
     return {
-      client,
       ctx,
       body,
       userConfigStore: session.userConfigStore,
@@ -262,7 +242,6 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       userId: session.userId,
       broadcast: userBroadcast,
       checkAbort,
-      pacer,
       // Mirror every save to the browser's localStorage under the
       // dataset's name.
       cache: createDurableCache({
@@ -285,7 +264,12 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         return userConfigPromise;
       },
       me: () => {
-        mePromise ??= client.api.currentUser.profile();
+        mePromise ??= ctx
+          .call((api) => api.currentUser.profile(), 'user profile')
+          .then((r) => {
+            if (!r.success) throw r.error;
+            return r.data;
+          });
         return mePromise;
       },
     };
@@ -294,31 +278,19 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   return { start, stop, statusFor };
 }
 
-/**
- * Reads `session.client` on every access rather than capturing it: token
- * rotation rebuilds the session's client mid-task, and a captured one would
- * keep refreshing with its own copy of the refresh token alongside it.
- */
-function abortableClient(
-  session: UserSession,
-  checkAbort: () => void,
-): SpotifyClient {
-  return {
-    get api() {
-      checkAbort();
-      return session.client.api;
-    },
-    refreshToken: () => {
-      checkAbort();
-      return session.client.refreshToken();
-    },
-    recreateApi: () => {
-      checkAbort();
-      return session.client.recreateApi();
-    },
-    runAuth: (attempt) => session.client.runAuth(attempt),
-    setTokens: (tokens) => session.client.setTokens(tokens),
-  };
+/** Show a gateway event to the task's owner; rate-limit waits also drive the UI's countdown. */
+function reportSpotifyEvent(
+  broadcast: (type: string, data: unknown) => void,
+  event: SpotifyEvent,
+): void {
+  broadcast('log', describeSpotifyEvent(event));
+  if (event.type === 'rateLimitWait' || event.type === 'longSleep') {
+    broadcast('spotify:rateLimited', {
+      seconds:
+        event.type === 'rateLimitWait' ? event.seconds : event.hours * 3600,
+      wakeTime: event.until.toISOString(),
+    });
+  }
 }
 
 // ── Express adapter ─────────────────────────────────────────────────────────

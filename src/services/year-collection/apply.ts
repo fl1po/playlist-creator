@@ -13,7 +13,7 @@
  */
 
 import { getAllUserPlaylists } from '../../lib/pagination.js';
-import type { SpotifyContext } from '../../lib/spotify-context.js';
+import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import { type YearPlan, months, orderedForMonth } from './plan.js';
 
 /** Spotify's cap per add-items request. */
@@ -41,7 +41,7 @@ export interface ApplyResult {
 }
 
 export async function applyPlan(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   userId: string,
   plan: YearPlan,
   events?: ApplyEvents,
@@ -76,8 +76,8 @@ export async function applyPlan(
       events?.onPlaylistReused?.(month, playlistId);
     } else {
       const created = await ctx.call(
-        () =>
-          ctx.api.playlists.createPlaylist(userId, {
+        (api) =>
+          api.playlists.createPlaylist(userId, {
             name: month,
             description: `${plan.year} retrospective — releases from ${month}`,
             public: false,
@@ -97,8 +97,8 @@ export async function applyPlan(
       events?.checkAbort?.();
       const batch = toAdd.slice(i, i + ADD_BATCH);
       const added = await ctx.call(
-        () =>
-          ctx.api.playlists.addItemsToPlaylist(
+        (api) =>
+          api.playlists.addItemsToPlaylist(
             playlistId,
             batch.map((id) => `spotify:track:${id}`),
           ),

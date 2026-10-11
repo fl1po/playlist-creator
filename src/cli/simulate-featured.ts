@@ -4,7 +4,7 @@ import {
   getLikedTracksWithPositions,
   getPlaylistTracksWithPositions,
 } from '../lib/pagination.js';
-import { spotifyContext } from '../lib/spotify-context.js';
+import { createCliGateway } from '../lib/spotify/gateway.js';
 import type { TrustedArtistsFile } from '../lib/types.js';
 import { UserConfigStore, secondarySourceName } from '../lib/user-config.js';
 import {
@@ -22,7 +22,7 @@ if (!Number.isFinite(multiplier) || multiplier < 0 || multiplier > 1) {
   process.exit(1);
 }
 
-const ctx = spotifyContext({ configStore: new FileConfigStore() });
+const ctx = createCliGateway({ configStore: new FileConfigStore() });
 const userConfig = new UserConfigStore().load();
 const secondaryName = secondarySourceName(userConfig);
 

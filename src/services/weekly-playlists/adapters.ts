@@ -1,15 +1,15 @@
 import { getAllUserPlaylists } from '../../lib/pagination.js';
-import type { SpotifyContext } from '../../lib/spotify-context.js';
+import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import type { SimplePlaylist } from '../../lib/types.js';
 import { spotifyPlaylistWrites } from '../promotion-sync/adapters.js';
 import type { WeeklyPlaylistStore } from './index.js';
 
 /**
- * Production WeeklyPlaylistStore over SpotifyContext + pagination. Track
+ * Production WeeklyPlaylistStore over SpotifyGateway + pagination. Track
  * writes reuse promotion sync's adapter (100-item chunks, uri formatting).
  */
 export function spotifyWeeklyPlaylistStore(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
 ): WeeklyPlaylistStore {
   const writes = spotifyPlaylistWrites(ctx);
   return {
@@ -18,8 +18,8 @@ export function spotifyWeeklyPlaylistStore(
     },
     async create(userId, name) {
       const result = await ctx.call(
-        () =>
-          ctx.api.playlists.createPlaylist(userId, {
+        (api) =>
+          api.playlists.createPlaylist(userId, {
             name,
             description: 'Weekly new music releases',
             public: false,
@@ -27,7 +27,6 @@ export function spotifyWeeklyPlaylistStore(
         `create playlist ${name}`,
       );
       if (!result.success) {
-        if (result.authError) throw result.error;
         throw new Error(`Failed to create playlist for ${name}`);
       }
       return { id: result.data.id, url: result.data.external_urls.spotify };

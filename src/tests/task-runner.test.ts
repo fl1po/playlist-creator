@@ -3,9 +3,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import type { Response } from 'express';
-import { RequestPacer } from '../lib/request-pacer.js';
-import type { SpotifyClient } from '../lib/types.js';
+import type { Clock } from '../lib/spotify/clock.js';
+import { RateLimitError } from '../lib/spotify/errors.js';
+import {
+  RequestPacer,
+  type SessionGateway,
+  createSpotifyGateway,
+} from '../lib/spotify/gateway.js';
+import type { SpotifyConfig } from '../lib/types.js';
 import type { IUserConfigStore } from '../lib/user-config.js';
 import { createBroadcaster } from '../web/broadcast.js';
 import type { UserSession } from '../web/route-context.js';
@@ -55,26 +62,56 @@ function fakeClient() {
   };
 }
 
-/** A Spotify client whose `api` records which client instance served it. */
-function fakeSpotify(label: string): SpotifyClient & { calls: string[] } {
-  const calls: string[] = [];
+/** Time moves only when something sleeps, so waits finish at once. */
+function instantClock(): Clock {
+  let now = 1_000_000;
   return {
-    calls,
-    get api() {
-      calls.push(label);
-      return { label } as unknown as SpotifyClient['api'];
+    now: () => now,
+    async sleep(ms, signal) {
+      signal?.throwIfAborted();
+      now += ms;
+      await Promise.resolve();
     },
-    refreshToken: async () => label,
-    recreateApi: async () => ({ label }) as unknown as SpotifyClient['api'],
-    runAuth: async () => true,
-    setTokens: () => {},
   };
 }
 
-function session(userId: string, client = fakeSpotify(userId)): UserSession {
+/**
+ * A real gateway over a fake SDK: the "api" a call receives is just the
+ * access token it was built with.
+ */
+function fakeGateway(accessToken: string): SessionGateway {
+  const clock = instantClock();
+  let config: SpotifyConfig = {
+    clientId: 'id',
+    clientSecret: 'secret',
+    redirectUri: 'http://x',
+    accessToken,
+    refreshToken: 'r',
+  };
+  return createSpotifyGateway({
+    configStore: {
+      load: () => config,
+      save: (c) => {
+        config = c;
+      },
+    },
+    pacer: new RequestPacer(1, clock),
+    clock,
+    sdk: (_id, tokens) => tokens.accessToken as unknown as SpotifyApi,
+  });
+}
+
+/** The access token the task's next call runs with. */
+const tokenOf = async (tc: TaskContext) => {
+  const r = await tc.ctx.call(async (api) => api as unknown as string, 'probe');
+  assert.ok(r.success);
+  return r.data;
+};
+
+function session(userId: string, gateway = fakeGateway(userId)): UserSession {
   return {
     userId,
-    client,
+    gateway,
     userConfigStore: {} as IUserConfigStore,
     dataDir: fs.mkdtempSync(path.join(os.tmpdir(), `task-runner-${userId}-`)),
   };
@@ -115,10 +152,7 @@ function gatedTask(
 
 function setup() {
   const broadcaster = createBroadcaster();
-  const runner = createTaskRunner({
-    broadcaster,
-    pacer: new RequestPacer(1000),
-  });
+  const runner = createTaskRunner({ broadcaster });
   const connect = (userId: string | null) => {
     const c = fakeClient();
     broadcaster.addClient(c.res, userId);
@@ -248,61 +282,93 @@ test('stopping is visible and the slot frees only after cleanup', async () => {
 
 // ── Abort stays put ──────────────────────────────────────────────────────────
 
-test('a stopped task stays stopped, even through a client leaked past its end', async () => {
+test('a stopped task stays stopped, even through a gateway leaked past its end', async () => {
   const { runner } = setup();
   const first = gatedTask('fill');
   const firstRun = started(runner.start(first, session('u1'), {}));
-  const leaked = (await first.started).client;
+  const leaked = await first.started;
 
   runner.stop('u1');
   first.release();
   await firstRun.done;
-  assert.throws(() => leaked.api, { name: 'TaskAborted' });
-  assert.throws(() => leaked.refreshToken(), { name: 'TaskAborted' });
+  await assert.rejects(tokenOf(leaked), { name: 'TaskAborted' });
+  assert.throws(() => leaked.checkAbort(), { name: 'TaskAborted' });
 
-  // A later task's client is unaffected by the earlier stop…
+  // A later task's gateway is unaffected by the earlier stop…
   const second = gatedTask('fill');
   const secondRun = started(runner.start(second, session('u1'), {}));
-  const fresh = (await second.started).client;
-  assert.doesNotThrow(() => fresh.api);
+  assert.equal(await tokenOf(await second.started), 'u1');
   second.release();
   await secondRun.done;
 });
 
-test('an unstopped task’s leaked client is not stopped by a later task’s stop', async () => {
+test('an unstopped task’s leaked gateway is not stopped by a later task’s stop', async () => {
   const { runner } = setup();
   const first = gatedTask('fill');
   const firstRun = started(runner.start(first, session('u1'), {}));
-  const leaked = (await first.started).client;
+  const leaked = await first.started;
   first.release();
   await firstRun.done;
 
   const second = gatedTask('fill');
   const secondRun = started(runner.start(second, session('u1'), {}));
   runner.stop('u1');
-  assert.doesNotThrow(() => leaked.api);
+  assert.equal(await tokenOf(leaked), 'u1');
   second.release();
   await secondRun.done;
 });
 
-// ── Client follows the session ───────────────────────────────────────────────
+// ── Tokens follow the session ────────────────────────────────────────────────
 
-test('a running task follows the session to a rebuilt Spotify client', async () => {
+test('a running task uses tokens installed on the session mid-task', async () => {
   const { runner } = setup();
-  const s = session('u1', fakeSpotify('old'));
+  const s = session('u1', fakeGateway('old'));
   const fill = gatedTask('fill');
   const run = started(runner.start(fill, s, {}));
   const tc = await fill.started;
 
-  tc.client.api;
-  const rebuilt = fakeSpotify('new');
-  s.client = rebuilt; // token rotation rebuilds the session's client
-  tc.client.api;
-
-  assert.deepEqual(rebuilt.calls, ['new']);
-  assert.equal(await tc.client.refreshToken(), 'new');
+  assert.equal(await tokenOf(tc), 'old');
+  s.gateway.setTokens({ accessToken: 'new', refreshToken: 'r2' }); // rotation
+  assert.equal(await tokenOf(tc), 'new');
   fill.release();
   await run.done;
+});
+
+// ── Spotify events ───────────────────────────────────────────────────────────
+
+test('a rate-limit wait reaches only the owner, as a log line and a countdown', async () => {
+  const { runner, connect } = setup();
+  const owner = connect('u1');
+  const other = connect('u2');
+  const task = gatedTask('recalculate');
+  const run = started(runner.start(task, session('u1'), {}));
+  const tc = await task.started;
+
+  let first = true;
+  const result = await tc.ctx.call(async () => {
+    if (first) {
+      first = false;
+      throw new RateLimitError(2);
+    }
+    return 'ok';
+  }, 'read');
+  assert.ok(result.success);
+  task.release();
+  await run.done;
+
+  const countdown = owner
+    .messages()
+    .find((m) => m.type === 'spotify:rateLimited');
+  assert.equal(countdown?.task, 'recalculate');
+  assert.equal(countdown?.data.seconds, 3);
+  assert.ok(
+    owner
+      .messages()
+      .some(
+        (m) => m.type === 'log' && /Rate limited/.test(String(m.data.message)),
+      ),
+  );
+  assert.ok(!other.messages().some((m) => m.type === 'spotify:rateLimited'));
 });
 
 // ── Outcome logging ──────────────────────────────────────────────────────────

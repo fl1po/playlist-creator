@@ -1,5 +1,5 @@
 import { FileConfigStore } from '../lib/config.js';
-import { spotifyContext } from '../lib/spotify-context.js';
+import { createCliGateway } from '../lib/spotify/gateway.js';
 import { PlaylistClearerService } from '../services/playlist-clearer.js';
 
 const targetName = process.argv[2];
@@ -8,7 +8,7 @@ if (!targetName) {
   process.exit(1);
 }
 
-const ctx = spotifyContext({ configStore: new FileConfigStore() });
+const ctx = createCliGateway({ configStore: new FileConfigStore() });
 
 const service = new PlaylistClearerService(ctx, {
   onPlaylistFound: (name, count) =>

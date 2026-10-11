@@ -6,7 +6,6 @@ import {
 } from '../../lib/cache-files.js';
 import { getPlaylistTotalDuration } from '../../lib/pagination.js';
 import { getNonListenedPlaylists } from '../../services/non-listened-playlists.js';
-import { broadcastApiCallbacks } from '../../services/playlist-filler/subscribers.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -39,7 +38,6 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
   name: 'listening-time',
   path: '/listening-time',
   startMessage: 'Listening time calculation started',
-  apiCallbacks: (b) => broadcastApiCallbacks(b),
 
   async run(tc: TaskContext<ListeningTimeEvents>) {
     const userConfig = await tc.userConfig();
@@ -69,8 +67,8 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
       let plTracks: number;
 
       const plInfo = await tc.ctx.call(
-        () =>
-          tc.ctx.api.playlists.getPlaylist(
+        (api) =>
+          api.playlists.getPlaylist(
             pl.id,
             undefined,
             'snapshot_id,description',

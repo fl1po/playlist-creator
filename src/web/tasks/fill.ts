@@ -1,10 +1,7 @@
 import { fillPorts } from '../../services/playlist-filler/adapters.js';
 import { runFill } from '../../services/playlist-filler/fill-run.js';
 import { DurableFillStorage } from '../../services/playlist-filler/storage.js';
-import {
-  broadcastApiCallbacks,
-  broadcastHandlers,
-} from '../../services/playlist-filler/subscribers.js';
+import { broadcastHandlers } from '../../services/playlist-filler/subscribers.js';
 import { broadcastSyncHandlers } from '../../services/promotion-sync/subscribers.js';
 import type {
   BaseEvents,
@@ -17,9 +14,8 @@ interface FillEvents extends BaseEvents {
   'fill:error': { date: string; message: string };
   // fill:start / fill:progress / fill:searchProgress / fill:releaseFound /
   // fill:dateComplete / fill:recalculated / fill:complete /
-  // fill:searchedArtists / fill:rateLimited are emitted through
-  // broadcastHandlers / broadcastApiCallbacks using the raw tc.broadcast
-  // interop surface.
+  // fill:searchedArtists are emitted through broadcastHandlers using the raw
+  // tc.broadcast interop surface.
 }
 
 const searchedArtists = new Set<string>();
@@ -29,7 +25,6 @@ export const fillTask: TaskDefinition<FillEvents> = {
   name: 'fill',
   path: '/fill',
   startMessage: 'Fill started',
-  apiCallbacks: (b) => broadcastApiCallbacks(b),
 
   async run(tc: TaskContext<FillEvents>) {
     const freshMode = !!tc.body.fresh;

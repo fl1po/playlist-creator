@@ -2,7 +2,7 @@ import {
   getLikedTracksWithPositions,
   getPlaylistTracksWithPositions,
 } from '../../lib/pagination.js';
-import type { SpotifyContext } from '../../lib/spotify-context.js';
+import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import {
   getNonListenedPlaylists,
   invalidateNonListenedCache,
@@ -15,13 +15,13 @@ import {
 import type { RecalculationPorts, SourceReads } from './index.js';
 
 /** Production SourceReads: snapshot ids and position-aware scans via Spotify. */
-export function spotifySourceReads(ctx: SpotifyContext): SourceReads {
+export function spotifySourceReads(ctx: SpotifyGateway): SourceReads {
   return {
     async snapshots(sources) {
       const snapshotOf = async (playlistId: string, what: string) => {
         const r = await ctx.call(
-          () =>
-            ctx.api.playlists.getPlaylist(playlistId, undefined, 'snapshot_id'),
+          (api) =>
+            api.playlists.getPlaylist(playlistId, undefined, 'snapshot_id'),
           what,
         );
         return r.success ? r.data.snapshot_id : undefined;
@@ -37,7 +37,7 @@ export function spotifySourceReads(ctx: SpotifyContext): SourceReads {
       }
       // Liked Songs has no snapshot id: total count + newest addition stands in.
       const liked = await ctx.call(
-        () => ctx.api.currentUser.tracks.savedTracks(1, 0),
+        (api) => api.currentUser.tracks.savedTracks(1, 0),
         'Liked Songs snapshot',
       );
       if (!liked.success) return { aw };
@@ -70,16 +70,13 @@ export function spotifySourceReads(ctx: SpotifyContext): SourceReads {
  * `dataDir` where that user's non-listened cache lives.
  */
 export function spotifyRecalculationPorts(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   user: { userId: string; dataDir: string },
 ): RecalculationPorts {
   return {
     sources: spotifySourceReads(ctx),
     unprocessed: {
-      async find(allWeeklyId, log) {
-        // Refresh the token up front: a sync usually follows a long scan or
-        // fill, and its playlist writes shouldn't be what discovers expiry.
-        await ctx.client.recreateApi();
+      find(allWeeklyId, log) {
         return getNonListenedPlaylists(
           ctx,
           user.userId,
@@ -92,9 +89,7 @@ export function spotifyRecalculationPorts(
     },
     sync: {
       reads: promotionReads(ctx),
-      popularity: deezerPopularitySource(() => {
-        void ctx.api; // throws if aborted
-      }),
+      popularity: deezerPopularitySource(() => ctx.signal?.throwIfAborted()),
       writes: spotifyPlaylistWrites(ctx),
     },
   };

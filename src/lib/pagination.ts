@@ -1,4 +1,5 @@
-import type { SpotifyContext } from './spotify-context.js';
+import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
+import type { SpotifyGateway } from './spotify/gateway.js';
 import { trackKey } from './track-utils.js';
 import type {
   AlbumTrack,
@@ -63,7 +64,11 @@ export interface TracksWithPositionsResult {
 // ── Private engine ───────────────────────────────────────────────────────────
 
 interface EngineOptions<TAcc> {
-  fetch: (limit: SpotifyInt, offset: SpotifyInt) => Promise<unknown>;
+  fetch: (
+    api: SpotifyApi,
+    limit: SpotifyInt,
+    offset: SpotifyInt,
+  ) => Promise<unknown>;
   description: string;
   init: () => TAcc;
   onPage: (
@@ -75,7 +80,7 @@ interface EngineOptions<TAcc> {
 }
 
 async function runPagination<TAcc>(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   engine: EngineOptions<TAcc>,
 ): Promise<TAcc> {
   const o = engine.opts ?? {};
@@ -95,12 +100,11 @@ async function runPagination<TAcc>(
     }
 
     const result = await ctx.call(
-      () => engine.fetch(limit, offset),
+      (api) => engine.fetch(api, limit, offset),
       engine.description,
     );
 
     if (!result.success) {
-      if (result.authError) throw result.error;
       if (errorMode === 'partial') return acc;
       throw new PaginationFailure(
         `pagination failed at offset ${offset} (${engine.description})`,
@@ -136,9 +140,13 @@ async function runPagination<TAcc>(
 
 /** Paginate and collect mapped items. Return null from `map` to skip an item. */
 export async function paginate<T>(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   source: {
-    fetch: (limit: SpotifyInt, offset: SpotifyInt) => Promise<unknown>;
+    fetch: (
+      api: SpotifyApi,
+      limit: SpotifyInt,
+      offset: SpotifyInt,
+    ) => Promise<unknown>;
     description: string;
   },
   map: (
@@ -168,9 +176,13 @@ export async function paginate<T>(
 
 /** Paginate and fold items into a custom accumulator (Map, struct, etc.). */
 export async function paginateReduce<TAcc>(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   source: {
-    fetch: (limit: SpotifyInt, offset: SpotifyInt) => Promise<unknown>;
+    fetch: (
+      api: SpotifyApi,
+      limit: SpotifyInt,
+      offset: SpotifyInt,
+    ) => Promise<unknown>;
     description: string;
   },
   init: () => TAcc,
@@ -196,19 +208,13 @@ export async function paginateReduce<TAcc>(
 
 /** Get all track IDs from a playlist. */
 export function getAllPlaylistTracks(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   playlistId: string,
   opts?: PageOpts,
 ): Promise<string[]> {
   return runPagination<string[]>(ctx, {
-    fetch: (l, o) =>
-      ctx.api.playlists.getPlaylistItems(
-        playlistId,
-        undefined,
-        undefined,
-        l,
-        o,
-      ),
+    fetch: (api, l, o) =>
+      api.playlists.getPlaylistItems(playlistId, undefined, undefined, l, o),
     description: `playlist items ${playlistId}`,
     init: () => [],
     onPage: (acc, items) => {
@@ -222,12 +228,12 @@ export function getAllPlaylistTracks(
 
 /** Get all playlists owned by a user. */
 export function getAllUserPlaylists(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   userId: string,
   opts?: PageOpts,
 ): Promise<SimplePlaylist[]> {
   return runPagination<SimplePlaylist[]>(ctx, {
-    fetch: (l, o) => ctx.api.playlists.getUsersPlaylists(userId, l, o),
+    fetch: (api, l, o) => api.playlists.getUsersPlaylists(userId, l, o),
     description: 'user playlists',
     init: () => [],
     onPage: (acc, items) => {
@@ -247,12 +253,12 @@ export function getAllUserPlaylists(
 
 /** Get all tracks from an album with normalized dedup keys. */
 export function getAlbumTracks(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   albumId: string,
   opts?: PageOpts,
 ): Promise<AlbumTrack[]> {
   return runPagination<AlbumTrack[]>(ctx, {
-    fetch: (l, o) => ctx.api.albums.tracks(albumId, undefined, l, o),
+    fetch: (api, l, o) => api.albums.tracks(albumId, undefined, l, o),
     description: `tracks for album ${albumId}`,
     init: () => [],
     onPage: (acc, items) => {
@@ -272,19 +278,13 @@ export function getAlbumTracks(
 
 /** Get unique albums referenced by tracks in a playlist. */
 export function getPlaylistAlbums(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   playlistId: string,
   opts?: PageOpts,
 ): Promise<Map<string, PlaylistAlbumInfo>> {
   return runPagination<Map<string, PlaylistAlbumInfo>>(ctx, {
-    fetch: (l, o) =>
-      ctx.api.playlists.getPlaylistItems(
-        playlistId,
-        undefined,
-        undefined,
-        l,
-        o,
-      ),
+    fetch: (api, l, o) =>
+      api.playlists.getPlaylistItems(playlistId, undefined, undefined, l, o),
     description: `editorial playlist ${playlistId}`,
     init: () => new Map(),
     onPage: (acc, items) => {
@@ -307,19 +307,13 @@ export function getPlaylistAlbums(
 
 /** Get all tracks from a playlist with normalized dedup keys. */
 export function getPlaylistTracksDetailed(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   playlistId: string,
   opts?: PageOpts,
 ): Promise<PlaylistTrackDetailed[]> {
   return runPagination<PlaylistTrackDetailed[]>(ctx, {
-    fetch: (l, o) =>
-      ctx.api.playlists.getPlaylistItems(
-        playlistId,
-        undefined,
-        undefined,
-        l,
-        o,
-      ),
+    fetch: (api, l, o) =>
+      api.playlists.getPlaylistItems(playlistId, undefined, undefined, l, o),
     description: `playlist items ${playlistId}`,
     init: () => [],
     onPage: (acc, items) => {
@@ -341,19 +335,13 @@ export function getPlaylistTracksDetailed(
 
 /** Get all tracks from a playlist with individual artist names (not comma-joined). */
 export function getPlaylistTracksWithArtists(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   playlistId: string,
   opts?: PageOpts,
 ): Promise<PlaylistTrackWithArtists[]> {
   return runPagination<PlaylistTrackWithArtists[]>(ctx, {
-    fetch: (l, o) =>
-      ctx.api.playlists.getPlaylistItems(
-        playlistId,
-        undefined,
-        undefined,
-        l,
-        o,
-      ),
+    fetch: (api, l, o) =>
+      api.playlists.getPlaylistItems(playlistId, undefined, undefined, l, o),
     description: `playlist items ${playlistId}`,
     init: () => [],
     onPage: (acc, items) => {
@@ -376,19 +364,13 @@ export function getPlaylistTracksWithArtists(
 
 /** Get total duration of all tracks in a playlist. */
 export function getPlaylistTotalDuration(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   playlistId: string,
   opts?: PageOpts,
 ): Promise<{ totalMs: number; trackCount: number }> {
   return runPagination<{ totalMs: number; trackCount: number }>(ctx, {
-    fetch: (l, o) =>
-      ctx.api.playlists.getPlaylistItems(
-        playlistId,
-        undefined,
-        undefined,
-        l,
-        o,
-      ),
+    fetch: (api, l, o) =>
+      api.playlists.getPlaylistItems(playlistId, undefined, undefined, l, o),
     description: `playlist duration ${playlistId}`,
     init: () => ({ totalMs: 0, trackCount: 0 }),
     onPage: (acc, items) => {
@@ -404,9 +386,13 @@ export function getPlaylistTotalDuration(
 }
 
 function paginateTracksWithPositions(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   source: {
-    fetch: (limit: SpotifyInt, offset: SpotifyInt) => Promise<unknown>;
+    fetch: (
+      api: SpotifyApi,
+      limit: SpotifyInt,
+      offset: SpotifyInt,
+    ) => Promise<unknown>;
     description: string;
     invertPositions?: boolean;
   },
@@ -456,21 +442,15 @@ function paginateTracksWithPositions(
 
 /** Scan playlist tracks with position info for recency calculations. */
 export function getPlaylistTracksWithPositions(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   playlistId: string,
   opts?: PageOpts,
 ): Promise<TracksWithPositionsResult> {
   return paginateTracksWithPositions(
     ctx,
     {
-      fetch: (l, o) =>
-        ctx.api.playlists.getPlaylistItems(
-          playlistId,
-          undefined,
-          undefined,
-          l,
-          o,
-        ),
+      fetch: (api, l, o) =>
+        api.playlists.getPlaylistItems(playlistId, undefined, undefined, l, o),
       description: `playlist tracks with positions ${playlistId}`,
     },
     opts,
@@ -483,13 +463,13 @@ export function getPlaylistTracksWithPositions(
  * convention (higher position = more recent).
  */
 export function getLikedTracksWithPositions(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   opts?: PageOpts,
 ): Promise<TracksWithPositionsResult> {
   return paginateTracksWithPositions(
     ctx,
     {
-      fetch: (l, o) => ctx.api.currentUser.tracks.savedTracks(l, o),
+      fetch: (api, l, o) => api.currentUser.tracks.savedTracks(l, o),
       description: 'liked songs with positions',
       invertPositions: true,
     },

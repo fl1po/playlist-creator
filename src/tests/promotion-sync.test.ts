@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { SpotifyContext } from '../lib/spotify-context.js';
+import type { SpotifyGateway } from '../lib/spotify/gateway.js';
 import type { ArtistData, TrustedArtistsFile } from '../lib/types.js';
 import { spotifyPlaylistWrites } from '../services/promotion-sync/adapters.js';
 import {
@@ -358,12 +358,10 @@ test('no P1/P2 boundary crossings: nothing is read or written', async () => {
 // since a failed Spotify write must surface as a thrown error rather than be
 // silently treated as done.
 
-function fakeCtxWithFailingCall(error: Error): SpotifyContext {
+function fakeCtxWithFailingCall(error: Error): SpotifyGateway {
   return {
-    api: {} as SpotifyContext['api'],
-    client: {} as SpotifyContext['client'],
     async call() {
-      return { success: false, error };
+      return { success: false, error, kind: 'unknown' };
     },
   };
 }

@@ -1,13 +1,16 @@
 import { filterByPriority } from '../../domain/artists.js';
-import { abortableSleep } from '../../lib/abort.js';
-import { isAuthError } from '../../lib/api-wrapper.js';
 import { TRUSTED_ARTISTS } from '../../lib/cache-files.js';
 import type { DurableCache } from '../../lib/durable-cache.js';
 import {
   type EventHandlers,
   ServiceEmitter,
 } from '../../lib/service-events.js';
-import type { SpotifyContext } from '../../lib/spotify-context.js';
+import { sleep } from '../../lib/spotify/clock.js';
+import {
+  SpotifyAuthLost,
+  type SpotifyGateway,
+  isAbort,
+} from '../../lib/spotify/gateway.js';
 import type { DateResult, TrustedArtistsFile } from '../../lib/types.js';
 import type { UserConfig } from '../../lib/user-config.js';
 import type {
@@ -55,8 +58,8 @@ export interface FillPorts {
 }
 
 export interface FillRunOptions {
-  /** Kept for token refresh, re-auth and abort-aware sleeps. */
-  ctx: SpotifyContext;
+  /** Kept for the stop-aware pauses between dates. */
+  ctx: SpotifyGateway;
   userId: string;
   userConfig: UserConfig;
   /** The fill's own persistence: progress file and fill history. */
@@ -308,10 +311,8 @@ async function finishFill(
       syncedPlaylists = synced.playlistsSynced;
     }
   } catch (syncErr) {
+    if (isAbort(syncErr)) throw syncErr;
     const err = syncErr instanceof Error ? syncErr : new Error(String(syncErr));
-    if (err.name === 'AbortError' || err.message === 'Stopped by user') {
-      throw err;
-    }
     syncHandlers.onLog(
       `Post-fill sync failed: ${err.message} — the priority changes stay pending for the next run`,
       'warn',
@@ -416,11 +417,6 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
         throw new Error('No trusted artists roster — run a recalculation');
       }
 
-      // A long fill can outlive the access token; refresh every 10 dates.
-      if (i > 0 && (i + 1) % 10 === 0) {
-        await ctx.client.refreshToken();
-      }
-
       const week = await collectWeek(
         {
           week: targetDate,
@@ -441,28 +437,19 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
       emitter.emit('dateCompleted', result);
 
       if (i < datesToProcess.length - 1) {
-        await abortableSleep(2000, ctx.client);
+        await sleep(2000, ctx.signal);
       }
     } catch (error) {
+      if (isAbort(error)) throw error;
       const err = error instanceof Error ? error : new Error(String(error));
-      if (err.name === 'AbortError' || err.message === 'Stopped by user') {
-        throw err;
-      }
       emitter.emit('dateError', targetDate, err);
-      if (isAuthError(err)) {
-        const ok = await ctx.client.runAuth();
-        if (ok) {
-          await ctx.client.recreateApi();
-          i--; // retry the same date with the fresh token
-          continue;
-        }
-        results.push({ date: targetDate, error: err.message } as DateResult);
-        break;
-      }
+      // The gateway already tried a refresh and a login; week progress lets
+      // the next fill resume this week mid-search.
+      if (err instanceof SpotifyAuthLost) throw err;
       results.push({ date: targetDate, error: err.message } as DateResult);
       // Back off before the next date; there's nothing to wait for after the last.
       if (i < datesToProcess.length - 1) {
-        await abortableSleep(60000, ctx.client);
+        await sleep(60000, ctx.signal);
       }
     }
   }

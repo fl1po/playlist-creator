@@ -1309,7 +1309,7 @@ function handleMessage({ type, data }) {
       logPriorityChanges(data.changes);
       loadArtists();
       break;
-    case 'fill:rateLimited':
+    case 'spotify:rateLimited':
       startRateLimitCountdown(data.wakeTime);
       setFetching(false);
       break;

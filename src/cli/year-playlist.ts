@@ -21,7 +21,7 @@ import { readFileSync } from 'node:fs';
 import { writeFileSync } from 'node:fs';
 import { FileConfigStore } from '../lib/config.js';
 import { lastfmKeyFromEnv } from '../lib/lastfm-client.js';
-import { spotifyContext } from '../lib/spotify-context.js';
+import { createCliGateway } from '../lib/spotify/gateway.js';
 import type { TrustedArtistsFile } from '../lib/types.js';
 import { applyPlan } from '../services/year-collection/apply.js';
 import {
@@ -60,7 +60,7 @@ if (!Number.isFinite(year)) {
 const DATA_DIR = '.';
 const TRUSTED = './trusted-artists.json';
 
-const ctx = spotifyContext({ configStore: new FileConfigStore() });
+const ctx = createCliGateway({ configStore: new FileConfigStore() });
 const path = planPath(DATA_DIR, year);
 
 // Label of the in-place progress line currently on screen; `log` breaks the
@@ -93,10 +93,7 @@ if (apply) {
     process.exit(1);
   }
 
-  const me = await ctx.call(
-    () => ctx.api.currentUser.profile(),
-    'current user',
-  );
+  const me = await ctx.call((api) => api.currentUser.profile(), 'current user');
   if (!me.success) {
     console.error('Could not identify the current Spotify user.');
     process.exit(1);

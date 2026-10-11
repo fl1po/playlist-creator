@@ -14,7 +14,7 @@ import {
 } from '../domain/tracks.js';
 import { FileConfigStore } from '../lib/config.js';
 import { fetchDeezerPopularities } from '../lib/deezer-popularity.js';
-import { spotifyContext } from '../lib/spotify-context.js';
+import { createCliGateway } from '../lib/spotify/gateway.js';
 import type { FoundRelease, TrustedArtistsFile } from '../lib/types.js';
 import { type Run, getArtistWindowReleases } from '../services/week-collection/engine.js';
 import { spotifyReleaseReads } from '../services/week-collection/spotify-reads.js';
@@ -22,7 +22,7 @@ import { spotifyReleaseReads } from '../services/week-collection/spotify-reads.j
 const numArtists = Number(process.argv[2] ?? 50) || 50;
 const numWeeks = Number(process.argv[3] ?? 1) || 1;
 
-const ctx = spotifyContext({ configStore: new FileConfigStore() });
+const ctx = createCliGateway({ configStore: new FileConfigStore() });
 const reads = spotifyReleaseReads(ctx);
 
 const trusted: TrustedArtistsFile = JSON.parse(

@@ -2,7 +2,7 @@ import {
   getAllPlaylistTracks,
   getPlaylistTracksWithArtists,
 } from '../../lib/pagination.js';
-import type { SpotifyContext } from '../../lib/spotify-context.js';
+import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import { spotifyReleaseReads } from '../week-collection/spotify-reads.js';
 import type { PlaylistWrites, PromotionReads } from './index.js';
 
@@ -15,7 +15,7 @@ const WRITE_CHUNK = 100;
  * Production PromotionReads adapter: the week-collection ReleaseReads adapter
  * plus the two playlist-track readers.
  */
-export function promotionReads(ctx: SpotifyContext): PromotionReads {
+export function promotionReads(ctx: SpotifyGateway): PromotionReads {
   return {
     ...spotifyReleaseReads(ctx),
     playlistTracksWithArtists(playlistId) {
@@ -33,7 +33,7 @@ export function promotionReads(ctx: SpotifyContext): PromotionReads {
  * `ctx.call` has already exhausted its own retries by the time it reports
  * failure, so a caller must not treat the write as done.
  */
-export function spotifyPlaylistWrites(ctx: SpotifyContext): PlaylistWrites {
+export function spotifyPlaylistWrites(ctx: SpotifyGateway): PlaylistWrites {
   return {
     async addTracks(playlistId, trackIds) {
       for (let i = 0; i < trackIds.length; i += WRITE_CHUNK) {
@@ -41,7 +41,7 @@ export function spotifyPlaylistWrites(ctx: SpotifyContext): PlaylistWrites {
           .slice(i, i + WRITE_CHUNK)
           .map((id) => `spotify:track:${id}`);
         const result = await ctx.call(
-          () => ctx.api.playlists.addItemsToPlaylist(playlistId, uris),
+          (api) => api.playlists.addItemsToPlaylist(playlistId, uris),
           `add tracks to ${playlistId}`,
         );
         if (!result.success) {
@@ -57,8 +57,8 @@ export function spotifyPlaylistWrites(ctx: SpotifyContext): PlaylistWrites {
           .slice(i, i + WRITE_CHUNK)
           .map((id) => ({ uri: `spotify:track:${id}` }));
         const result = await ctx.call(
-          () =>
-            ctx.api.playlists.removeItemsFromPlaylist(playlistId, { tracks }),
+          (api) =>
+            api.playlists.removeItemsFromPlaylist(playlistId, { tracks }),
           `remove tracks from ${playlistId}`,
         );
         if (!result.success) {

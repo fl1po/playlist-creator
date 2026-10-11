@@ -100,11 +100,20 @@ export function authRoutes(ctx: RouteContext): Router {
     }
     try {
       const session = ctx.getOrCreateUserSession(userId, appConfig);
-      await session.client.refreshToken();
-      const profile = await session.client.api.currentUser.profile();
+      const result = await session.gateway.call(
+        (api) => api.currentUser.profile(),
+        'user profile',
+      );
+      if (!result.success) {
+        // Spotify is unreachable or rate-limited — the session may be fine.
+        res.json({ authenticated: false, reason: 'transient' });
+        return;
+      }
+      const profile = result.data;
       session.displayName = profile.display_name ?? profile.id;
       res.json({ authenticated: true, displayName: session.displayName });
     } catch {
+      // SpotifyAuthLost: the refresh token is dead.
       res.json({ authenticated: false, reason: 'expired' });
     }
   });

@@ -45,7 +45,7 @@ export interface ArtistProfile {
 
 /**
  * The Spotify reads a week collection needs. Prod adapter wraps
- * SpotifyContext + pagination; test adapter is an in-memory fixture catalog.
+ * SpotifyGateway + pagination; test adapter is an in-memory fixture catalog.
  *
  * Error contract: every method throws on auth failure (the caller re-auths
  * and retries the week). `searchArtist`, `albumDetails` and `artistProfile`

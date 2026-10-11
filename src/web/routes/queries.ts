@@ -7,8 +7,8 @@ import {
 import { createDurableCache } from '../../lib/durable-cache.js';
 import type { CacheDescriptor } from '../../lib/durable-cache.js';
 import { getAllUserPlaylists } from '../../lib/pagination.js';
-import { createSpotifyContext } from '../../lib/spotify-context.js';
 import type { RouteContext } from '../route-context.js';
+import { orThrow, spotifyRoute } from '../spotify-http.js';
 
 export function queryRoutes(ctx: RouteContext): Router {
   const router = Router();
@@ -147,40 +147,38 @@ export function queryRoutes(ctx: RouteContext): Router {
     });
   });
 
-  router.get('/user-playlists', async (req, res) => {
-    const session = ctx.requireSession(req, res);
-    if (!session) return;
-
-    try {
-      const me = await session.client.api.currentUser.profile();
-      const spotifyCtx = createSpotifyContext(
-        session.client,
-        undefined,
-        ctx.pacer,
+  router.get(
+    '/user-playlists',
+    spotifyRoute(async (req, res) => {
+      const session = ctx.requireSession(req, res);
+      if (!session) return;
+      const me = orThrow(
+        await session.gateway.call(
+          (api) => api.currentUser.profile(),
+          'user profile',
+        ),
       );
-      const playlists = await getAllUserPlaylists(spotifyCtx, me.id);
+      const playlists = await getAllUserPlaylists(session.gateway, me.id);
       res.json({ ok: true, playlists });
-    } catch (err) {
-      res.status(500).json({ error: String(err) });
-    }
-  });
+    }),
+  );
 
-  router.get('/search-playlists', async (req, res) => {
-    const session = ctx.requireSession(req, res);
-    if (!session) return;
+  router.get(
+    '/search-playlists',
+    spotifyRoute(async (req, res) => {
+      const session = ctx.requireSession(req, res);
+      if (!session) return;
 
-    const query = (req.query.q as string)?.trim();
-    if (!query) {
-      res.status(400).json({ error: 'q query parameter required' });
-      return;
-    }
-    try {
-      await session.client.refreshToken();
-      const result = await session.client.api.search(
-        query,
-        ['playlist'],
-        undefined,
-        20,
+      const query = (req.query.q as string)?.trim();
+      if (!query) {
+        res.status(400).json({ error: 'q query parameter required' });
+        return;
+      }
+      const result = orThrow(
+        await session.gateway.call(
+          (api) => api.search(query, ['playlist'], undefined, 20),
+          `search playlists "${query}"`,
+        ),
       );
       const playlists = (result.playlists?.items ?? [])
         .filter(Boolean)
@@ -191,31 +189,34 @@ export function queryRoutes(ctx: RouteContext): Router {
           trackCount: p.tracks?.total ?? 0,
         }));
       res.json({ ok: true, playlists });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      res.status(500).json({ error: msg });
-    }
-  });
+    }),
+  );
 
-  router.get('/artist-releases', async (req, res) => {
-    const session = ctx.requireSession(req, res);
-    if (!session) return;
+  router.get(
+    '/artist-releases',
+    spotifyRoute(async (req, res) => {
+      const session = ctx.requireSession(req, res);
+      if (!session) return;
 
-    const artistId = (req.query.id as string)?.trim();
-    const after = (req.query.after as string) ?? '';
-    const before = (req.query.before as string) ?? '';
-    if (!artistId) {
-      res.status(400).json({ error: 'id query parameter required' });
-      return;
-    }
-    try {
-      await session.client.refreshToken();
-      const result: any = await session.client.api.artists.albums(
-        artistId,
-        'album,single,appears_on',
-        undefined,
-        50,
-        0,
+      const artistId = (req.query.id as string)?.trim();
+      const after = (req.query.after as string) ?? '';
+      const before = (req.query.before as string) ?? '';
+      if (!artistId) {
+        res.status(400).json({ error: 'id query parameter required' });
+        return;
+      }
+      const result: any = orThrow(
+        await session.gateway.call(
+          (api) =>
+            api.artists.albums(
+              artistId,
+              'album,single,appears_on',
+              undefined,
+              50,
+              0,
+            ),
+          `artist releases ${artistId}`,
+        ),
       );
       const items = (result.items ?? [])
         .filter(
@@ -232,24 +233,26 @@ export function queryRoutes(ctx: RouteContext): Router {
           markets: a.available_markets?.length ?? 0,
         }));
       res.json({ ok: true, releases: items });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      res.status(500).json({ error: msg });
-    }
-  });
+    }),
+  );
 
-  router.get('/playlist-info', async (req, res) => {
-    const session = ctx.requireSession(req, res);
-    if (!session) return;
+  router.get(
+    '/playlist-info',
+    spotifyRoute(async (req, res) => {
+      const session = ctx.requireSession(req, res);
+      if (!session) return;
 
-    const id = (req.query.id as string)?.trim();
-    if (!id) {
-      res.status(400).json({ error: 'id query parameter required' });
-      return;
-    }
-    try {
-      await session.client.refreshToken();
-      const pl: any = await session.client.api.playlists.getPlaylist(id);
+      const id = (req.query.id as string)?.trim();
+      if (!id) {
+        res.status(400).json({ error: 'id query parameter required' });
+        return;
+      }
+      const pl: any = orThrow(
+        await session.gateway.call(
+          (api) => api.playlists.getPlaylist(id),
+          `playlist info ${id}`,
+        ),
+      );
       res.json({
         ok: true,
         playlist: {
@@ -259,11 +262,8 @@ export function queryRoutes(ctx: RouteContext): Router {
           trackCount: pl.tracks?.total ?? 0,
         },
       });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      res.status(500).json({ error: msg });
-    }
-  });
+    }),
+  );
 
   // Cached GET routes. Prefer the local file, then fall back to the durable
   // Redis copy so display stays correct on a fresh/ephemeral filesystem.

@@ -1,5 +1,5 @@
 import { getAlbumTracks, getPlaylistAlbums } from '../../lib/pagination.js';
-import type { SpotifyContext } from '../../lib/spotify-context.js';
+import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import type { AlbumDetails, RawAlbum, ReleaseReads } from './index.js';
 
 const PAGE = 50;
@@ -7,19 +7,17 @@ const PAGE = 50;
 const MAX_OFFSET = 100;
 
 /**
- * Production ReleaseReads adapter: wraps SpotifyContext + the pagination
+ * Production ReleaseReads adapter: wraps SpotifyGateway + the pagination
  * readers. Auth failures throw; other failures degrade (null / empty).
  */
-export function spotifyReleaseReads(ctx: SpotifyContext): ReleaseReads {
+export function spotifyReleaseReads(ctx: SpotifyGateway): ReleaseReads {
   return {
     async searchArtist(name) {
       const result = await ctx.call(
-        () => ctx.api.search(name, ['artist'], undefined, 5),
+        (api) => api.search(name, ['artist'], undefined, 5),
         `search "${name}"`,
       );
       if (!result.success) {
-        if (result.authError)
-          throw result.error ?? new Error(`Search failed for "${name}"`);
         return null;
       }
       if (result.data.artists?.items.length) {
@@ -37,8 +35,8 @@ export function spotifyReleaseReads(ctx: SpotifyContext): ReleaseReads {
       let offset = 0;
       while (true) {
         const result = await ctx.call(
-          () =>
-            ctx.api.artists.albums(
+          (api) =>
+            api.artists.albums(
               artistId,
               'album,single,compilation',
               undefined,
@@ -48,7 +46,6 @@ export function spotifyReleaseReads(ctx: SpotifyContext): ReleaseReads {
           `releases for ${artistId}`,
         );
         if (!result.success) {
-          if (result.authError) throw result.error;
           break;
         }
         for (const album of result.data.items) {
@@ -69,11 +66,10 @@ export function spotifyReleaseReads(ctx: SpotifyContext): ReleaseReads {
 
     async albumDetails(albumId) {
       const result = await ctx.call(
-        () => ctx.api.albums.get(albumId),
+        (api) => api.albums.get(albumId),
         `album details ${albumId}`,
       );
       if (!result.success) {
-        if (result.authError) throw result.error;
         return null;
       }
       const album = result.data;
@@ -103,11 +99,10 @@ export function spotifyReleaseReads(ctx: SpotifyContext): ReleaseReads {
     // user's first 50 playlists.
     async userPlaylists(userId) {
       const result = await ctx.call(
-        () => ctx.api.playlists.getUsersPlaylists(userId, PAGE, 0),
+        (api) => api.playlists.getUsersPlaylists(userId, PAGE, 0),
         `playlists of ${userId}`,
       );
       if (!result.success) {
-        if (result.authError) throw result.error;
         return [];
       }
       return result.data.items.map((p: { id: string; name: string }) => ({
@@ -118,11 +113,10 @@ export function spotifyReleaseReads(ctx: SpotifyContext): ReleaseReads {
 
     async artistProfile(artistId) {
       const result = await ctx.call(
-        () => ctx.api.artists.get(artistId),
+        (api) => api.artists.get(artistId),
         `artist ${artistId}`,
       );
       if (!result.success) {
-        if (result.authError) throw result.error;
         return null;
       }
       return {

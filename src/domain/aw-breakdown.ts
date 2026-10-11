@@ -1,5 +1,5 @@
 import { type PageOpts, paginateReduce } from '../lib/pagination.js';
-import type { SpotifyContext } from '../lib/spotify-context.js';
+import type { SpotifyGateway } from '../lib/spotify/gateway.js';
 import { formatDdMmYy, parseDate, toReleaseFriday } from './tracks.js';
 
 type Item = any;
@@ -41,21 +41,15 @@ function trackFriday(releaseDate: string | undefined, addedAt: string): string {
  * are folded into the latest week.
  */
 export async function getPlaylistTracksGroupedByWeek(
-  ctx: SpotifyContext,
+  ctx: SpotifyGateway,
   playlistId: string,
   opts?: PageOpts,
 ): Promise<WeekBreakdownEntry[]> {
   const { byFriday, addedAtCounts } = await paginateReduce(
     ctx,
     {
-      fetch: (l, o) =>
-        ctx.api.playlists.getPlaylistItems(
-          playlistId,
-          undefined,
-          undefined,
-          l,
-          o,
-        ),
+      fetch: (api, l, o) =>
+        api.playlists.getPlaylistItems(playlistId, undefined, undefined, l, o),
       description: `playlist tracks grouped ${playlistId}`,
     },
     () => ({
