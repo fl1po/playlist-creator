@@ -175,7 +175,7 @@ export class InMemoryTokenStore implements ITokenStore {
 
 /**
  * Bridges AppConfig + token store into a ConfigStore that existing
- * SpotifyClient code expects. Token reads/writes go to the token store;
+ * Spotify gateway expects. Token reads/writes go to the token store;
  * app credentials come from AppConfig.
  */
 export class BridgedConfigStore implements ConfigStore {

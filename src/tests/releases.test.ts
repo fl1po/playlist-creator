@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { getBaseAlbumName } from '../domain/releases.js';
-import { HttpError, classifyError } from '../lib/resilience/errors.js';
+import { HttpError, classifyError } from '../lib/spotify/errors.js';
 
 test('getBaseAlbumName strips anniversary editions in every suffix form', () => {
   for (const name of [
