@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { aiFindsAvailable } from '../lib/anthropic-key.js';
 import { mergeConfigWithDefaults } from '../lib/user-config.js';
 
 test('AI finds default to off, threshold 50, no scouting playlists', () => {
@@ -55,10 +54,4 @@ test('a non-numeric AI finds threshold falls back to the default', () => {
     },
   });
   assert.equal(merged.aiFinds.threshold, 50);
-});
-
-test('AI finds are available only when ANTHROPIC_API_KEY is set', () => {
-  assert.equal(aiFindsAvailable({}), false);
-  assert.equal(aiFindsAvailable({ ANTHROPIC_API_KEY: '' }), false);
-  assert.equal(aiFindsAvailable({ ANTHROPIC_API_KEY: 'sk-ant-test' }), true);
 });

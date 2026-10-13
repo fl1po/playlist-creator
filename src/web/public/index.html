@@ -951,7 +951,7 @@
     <!-- Section 2b: AI Finds -->
     <div class="settings-section" id="aiFindsSection">
       <h3>AI Finds</h3>
-      <p class="desc">Each fill, Claude judges new releases from outside your P1/P2 artists against your taste and adds the ones it's confident you'll want.</p>
+      <p class="desc">Each fill, Claude judges new releases from outside your P1/P2 artists against your top-ranked artists and adds the ones it's confident you'll want.</p>
       <p class="desc" id="aiFindsUnavailable">AI finds unavailable on this server</p>
       <div id="aiFindsControls">
         <div class="settings-row">
@@ -2474,7 +2474,9 @@ let searchDebounce = null;
 
 async function pickPlaylist(target) {
   pickerTarget = target;
-  pickerMode = (target === 'editorial') ? 'search' : 'user';
+  // Editorial and scouting playlists are usually someone else's, and the user
+  // library listing only returns playlists the user owns
+  pickerMode = (target === 'editorial' || target === 'scouting') ? 'search' : 'user';
   document.getElementById('pickerOverlay').classList.remove('hidden');
   const searchInput = document.getElementById('pickerSearch');
   searchInput.value = '';
