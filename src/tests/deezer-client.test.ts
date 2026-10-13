@@ -111,3 +111,59 @@ test('getAlbum exposes the barcode', async () => {
   const album = await new DeezerClient().getAlbum(10);
   assert.equal(album?.upc, '0602445123456');
 });
+
+// ── artistAlbums ────────────────────────────────────────────────────────────
+
+const listed = (id: number, release_date: string) => ({
+  id,
+  title: `Album ${id}`,
+  record_type: 'single',
+  release_date,
+});
+
+test('artistAlbums lists the artist releases', async () => {
+  let asked = '';
+  fakeDeezer((path) => {
+    asked = path;
+    return { body: { data: [listed(10, '2026-06-05')] } };
+  });
+  const albums = await new DeezerClient().artistAlbums(7);
+  assert.deepEqual(albums, [listed(10, '2026-06-05')]);
+  assert.equal(asked, '/artist/7/albums?limit=100');
+});
+
+test('artistAlbums returns an empty list when the artist has none', async () => {
+  fakeDeezer(() => ({ body: { data: [] } }));
+  assert.deepEqual(await new DeezerClient().artistAlbums(7), []);
+});
+
+test('artistAlbums returns null when the lookup fails', async () => {
+  fakeDeezer(() => ({ status: 500 }));
+  assert.equal(await new DeezerClient().artistAlbums(7), null);
+  fakeDeezer(() => 'offline');
+  assert.equal(await new DeezerClient().artistAlbums(7), null);
+});
+
+// ── topTracks ───────────────────────────────────────────────────────────────
+
+test('topTracks returns each top track rank and album', async () => {
+  let asked = '';
+  fakeDeezer((path) => {
+    asked = path;
+    return {
+      body: {
+        data: [{ id: 1, title: 'Hit', rank: 500_000, album: { id: 9 } }],
+      },
+    };
+  });
+  const top = await new DeezerClient().topTracks(7);
+  assert.deepEqual(top, [{ album: 9, rank: 500_000 }]);
+  assert.equal(asked, '/artist/7/top?limit=10');
+});
+
+test('topTracks returns null when the lookup fails', async () => {
+  fakeDeezer(() => ({ body: { error: { type: 'Exception', code: 800 } } }));
+  assert.equal(await new DeezerClient().topTracks(7), null);
+  fakeDeezer(() => 'offline');
+  assert.equal(await new DeezerClient().topTracks(7), null);
+});

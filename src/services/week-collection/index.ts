@@ -124,7 +124,10 @@ export interface Candidate {
   genres: string[];
   artistFans: number | null;
   upc: string | null;
-  /** Best track rank ÷ the artist's median top-10 rank; null when unknown. */
+  /**
+   * Best track rank ÷ the median rank of the artist's top 10 tracks on other
+   * releases; null when unknown.
+   */
   relativePopularity: number | null;
   provenance: CandidateProvenance[];
   /** Known when the candidate came from Spotify (e.g. a scouting playlist). */

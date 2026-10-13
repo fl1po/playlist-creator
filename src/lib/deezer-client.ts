@@ -21,10 +21,24 @@ interface DeezerTrack {
   explicit_lyrics: boolean;
 }
 
+/** One of an artist's top tracks: its Deezer rank and the album it's on. */
+export interface DeezerTopTrack {
+  album: number;
+  rank: number;
+}
+
 export interface DeezerArtist {
   id: number;
   name: string;
   nb_fan: number;
+}
+
+/** One release in an artist's album list. */
+export interface DeezerArtistAlbum {
+  id: number;
+  title: string;
+  record_type: string;
+  release_date: string;
 }
 
 export interface DeezerAlbumDetail {
@@ -36,6 +50,8 @@ export interface DeezerAlbumDetail {
   release_date: string;
   record_type: string;
   explicit_lyrics: boolean;
+  nb_tracks?: number;
+  genres?: { data: Array<{ name: string }> };
   tracks: { data: DeezerTrack[] };
 }
 
@@ -163,5 +179,26 @@ export class DeezerClient {
       `/artist/${artistId}/related?limit=25`,
     );
     return data?.data ?? null;
+  }
+
+  /**
+   * The artist's releases (first 100). Returns null when the lookup failed
+   * and an empty list only when the artist has none.
+   */
+  async artistAlbums(artistId: number): Promise<DeezerArtistAlbum[] | null> {
+    const data = await this.tryFetch<{ data?: DeezerArtistAlbum[] }>(
+      `/artist/${artistId}/albums?limit=100`,
+    );
+    return data?.data ?? null;
+  }
+
+  /** The artist's top 10 tracks; null when the lookup failed. */
+  async topTracks(artistId: number): Promise<DeezerTopTrack[] | null> {
+    const data = await this.tryFetch<{
+      data?: Array<{ rank: number; album: { id: number } }>;
+    }>(`/artist/${artistId}/top?limit=10`);
+    return (
+      data?.data?.map((t) => ({ album: t.album.id, rank: t.rank })) ?? null
+    );
   }
 }

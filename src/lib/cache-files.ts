@@ -1,5 +1,6 @@
 import type { PriorityChange } from '../services/promotion-sync/index.js';
 import type { AiPicksRecord } from '../services/week-collection/index.js';
+import type { DeezerTopTrack } from './deezer-client.js';
 import type { CacheDescriptor } from './durable-cache.js';
 import type {
   BatchCache,
@@ -75,4 +76,25 @@ export const AI_PICKS: CacheDescriptor<Record<string, AiPicksRecord>> = {
   redisName: 'aiPicks',
   file: 'ai-picks.json',
   isEmpty: (v) => !v || Object.keys(v).length === 0,
+};
+
+/**
+ * Owned by the Deezer CandidateSource: roster and reject artists resolved on
+ * Deezer (null when Deezer has none), and each pool artist's top tracks for
+ * relative popularity. Keyed by folded name and Deezer artist id.
+ */
+export interface DeezerArtistCache {
+  artists: Record<
+    string,
+    { deezer: { id: number; fans: number } | null; fetchedAt: number }
+  >;
+  topTracks: Record<
+    string,
+    { tracks: DeezerTopTrack[]; fetchedAt: number }
+  >;
+}
+
+export const DEEZER_ARTISTS: CacheDescriptor<DeezerArtistCache> = {
+  redisName: 'deezerArtists',
+  file: 'deezer-artists.json',
 };
