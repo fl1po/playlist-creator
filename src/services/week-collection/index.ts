@@ -37,6 +37,11 @@ export interface AlbumDetails {
   artists: Array<{ id: string; name: string }>;
 }
 
+/** A Spotify album found by its barcode. */
+export interface BarcodeAlbum extends RawAlbum {
+  artists: Array<{ id: string; name: string }>;
+}
+
 export interface ArtistProfile {
   popularity: number;
   followers: number;
@@ -48,14 +53,16 @@ export interface ArtistProfile {
  * SpotifyGateway + pagination; test adapter is an in-memory fixture catalog.
  *
  * Error contract: every method throws on auth failure (the caller re-auths
- * and retries the week). `searchArtist`, `albumDetails` and `artistProfile`
- * return null on other failures so collection degrades instead of aborting;
- * `userPlaylists` returns [] and `artistAlbums` returns the pages fetched
- * before the failure. `albumTracks` and `playlistAlbums` may throw on
- * persistent failures.
+ * and retries the week). `searchArtist`, `searchByUpc`, `albumDetails` and
+ * `artistProfile` return null on other failures so collection degrades
+ * instead of aborting; `userPlaylists` returns [] and `artistAlbums` returns
+ * the pages fetched before the failure. `albumTracks` and `playlistAlbums`
+ * may throw on persistent failures.
  */
 export interface ReleaseReads {
   searchArtist(name: string): Promise<{ id: string; name: string } | null>;
+  /** One album search by barcode (`upc:`); the first hit, or null. */
+  searchByUpc(upc: string): Promise<BarcodeAlbum | null>;
   /** Artist album/single/compilation pages, flattened (first 3 pages). */
   artistAlbums(artistId: string): Promise<RawAlbum[]>;
   albumDetails(albumId: string): Promise<AlbumDetails | null>;

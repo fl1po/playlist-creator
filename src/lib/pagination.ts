@@ -290,12 +290,16 @@ export function getPlaylistAlbums(
     onPage: (acc, items) => {
       for (const item of items as Item[]) {
         if (item.track?.album) {
-          const albumId = item.track.album.id;
-          if (!acc.has(albumId)) {
-            acc.set(albumId, {
-              id: albumId,
-              name: item.track.album.name,
+          const album = item.track.album;
+          if (!acc.has(album.id)) {
+            acc.set(album.id, {
+              id: album.id,
+              name: album.name,
               artistName: item.track.artists?.[0]?.name ?? 'Unknown',
+              artistIds: (album.artists ?? []).map((a: { id: string }) => a.id),
+              releaseDate: album.release_date,
+              albumType: album.album_type,
+              totalTracks: album.total_tracks,
             });
           }
         }

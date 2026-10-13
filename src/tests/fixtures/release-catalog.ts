@@ -20,6 +20,8 @@ export interface FixtureAlbum {
   release_date: string;
   markets?: number;
   explicit?: boolean;
+  /** Barcode, for `searchByUpc`. */
+  upc?: string;
   tracks: AlbumTrack[];
 }
 
@@ -44,8 +46,8 @@ export interface FixturePlaylist {
 
 export interface Catalog {
   artists: FixtureArtist[];
-  /** Editorial playlist id → the albums it contains. */
-  playlistAlbums?: Record<string, PlaylistAlbumInfo[]>;
+  /** Playlist id → the ids of the catalog albums it contains. */
+  playlistAlbums?: Record<string, string[]>;
   /** Artist id → profile, for the editorial gate. */
   profiles?: Record<string, ArtistProfile>;
   /** Weekly playlists with their tracks, for promotion sync's two reads. */
@@ -74,6 +76,22 @@ export function fixtureReads(catalog: Catalog): PromotionReads & {
       );
       return artist ? { id: artist.id, name: artist.name } : null;
     },
+    async searchByUpc(upc) {
+      for (const artist of catalog.artists) {
+        const album = artist.albums.find((a) => a.upc === upc);
+        if (album) {
+          return {
+            id: album.id,
+            name: album.name,
+            type: album.type,
+            release_date: album.release_date,
+            markets: album.markets ?? 0,
+            artists: [{ id: artist.id, name: artist.name }],
+          };
+        }
+      }
+      return null;
+    },
     async artistAlbums(artistId) {
       const artist = catalog.artists.find((a) => a.id === artistId);
       return (artist?.albums ?? []).map((a) => ({
@@ -101,8 +119,21 @@ export function fixtureReads(catalog: Catalog): PromotionReads & {
       return findAlbum(albumId)?.album.tracks ?? [];
     },
     async playlistAlbums(playlistId) {
-      const infos = catalog.playlistAlbums?.[playlistId] ?? [];
-      return new Map(infos.map((i) => [i.id, i]));
+      const albums = new Map<string, PlaylistAlbumInfo>();
+      for (const albumId of catalog.playlistAlbums?.[playlistId] ?? []) {
+        const hit = findAlbum(albumId);
+        if (!hit) continue;
+        albums.set(albumId, {
+          id: albumId,
+          name: hit.album.name,
+          artistName: hit.artist.name,
+          artistIds: [hit.artist.id],
+          releaseDate: hit.album.release_date,
+          albumType: hit.album.type,
+          totalTracks: hit.album.tracks.length,
+        });
+      }
+      return albums;
     },
     async userPlaylists() {
       return [];

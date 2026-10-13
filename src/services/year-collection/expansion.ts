@@ -64,14 +64,14 @@ export async function expandFromSeeds(
     progress?.checkAbort?.();
 
     const artist = await client.searchArtist(seed.name);
-    if (!artist) {
+    if (!artist || artist === 'not-found') {
       progress?.onSeedUnresolved?.(seed.name);
       done++;
       progress?.onSeedResolved?.(done, seeds.length, seed.name);
       continue;
     }
 
-    const related = await client.relatedArtists(artist.id);
+    const related = (await client.relatedArtists(artist.id)) ?? [];
     const cluster = seedCluster(seed);
     seedRelations.set(
       seed.spotifyId,

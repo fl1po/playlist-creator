@@ -500,7 +500,7 @@ test('editorial: unknown artist admitted through the popularity/genre gate', asy
       },
     ],
     playlistAlbums: {
-      pl1: [{ id: 'alb-e', name: 'Fresh Drop', artistName: 'Newcomer' }],
+      pl1: ['alb-e'],
     },
     profiles: {
       'art-new': { popularity: 70, followers: 1000, genres: ['pop'] },

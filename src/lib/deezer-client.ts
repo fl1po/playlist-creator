@@ -30,6 +30,8 @@ export interface DeezerArtist {
 export interface DeezerAlbumDetail {
   id: number;
   title: string;
+  /** Barcode; matches Spotify's `external_ids.upc` for the same release. */
+  upc?: string;
   fans: number;
   release_date: string;
   record_type: string;
@@ -96,6 +98,18 @@ export class DeezerClient {
     return null;
   }
 
+  /**
+   * `fetch` that also turns an unreachable Deezer into null, for lookups
+   * whose callers must tell a failure apart from a genuine empty result.
+   */
+  private async tryFetch<T>(path: string): Promise<T | null> {
+    try {
+      return await this.fetch<T>(path);
+    } catch {
+      return null;
+    }
+  }
+
   /** Search for an album by artist + title. Returns top 3 results. */
   async searchAlbum(query: string): Promise<DeezerAlbumSearchResult[]> {
     const encoded = encodeURIComponent(query);
@@ -117,15 +131,18 @@ export class DeezerClient {
    * the top hits — Deezer's search happily returns tribute acts and
    * soundalikes, and a wrong resolution silently poisons the whole
    * related-artist graph downstream.
+   *
+   * Returns `'not-found'` when Deezer has no such artist and null when the
+   * lookup failed, so a failure is never mistaken for (or cached as) one.
    */
-  async searchArtist(name: string): Promise<DeezerArtist | null> {
-    const data = await this.fetch<{ data: DeezerArtist[] }>(
+  async searchArtist(name: string): Promise<DeezerArtist | 'not-found' | null> {
+    const data = await this.tryFetch<{ data?: DeezerArtist[] }>(
       `/search/artist?q=${encodeURIComponent(name)}&limit=10`,
     );
-    const results = data?.data ?? [];
+    if (!data?.data) return null;
     const target = foldName(name);
-    const matches = results.filter((a) => foldName(a.name) === target);
-    if (matches.length === 0) return null;
+    const matches = data.data.filter((a) => foldName(a.name) === target);
+    if (matches.length === 0) return 'not-found';
 
     // Deezer carries duplicate and impostor profiles under the same name —
     // "Fousheé" matched a profile with 4 fans, "Chlöe" one with 7. The
@@ -137,11 +154,14 @@ export class DeezerClient {
    * Artists Deezer considers similar. This is the taste graph the whole
    * expansion rests on, since Spotify's related-artists endpoint has been
    * deprecated and returns 404 for apps registered after November 2024.
+   *
+   * Returns null when the lookup failed and an empty list only when Deezer
+   * genuinely has no related artists.
    */
-  async relatedArtists(artistId: number): Promise<DeezerArtist[]> {
-    const data = await this.fetch<{ data: DeezerArtist[] }>(
+  async relatedArtists(artistId: number): Promise<DeezerArtist[] | null> {
+    const data = await this.tryFetch<{ data?: DeezerArtist[] }>(
       `/artist/${artistId}/related?limit=25`,
     );
-    return data?.data ?? [];
+    return data?.data ?? null;
   }
 }

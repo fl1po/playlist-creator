@@ -6,6 +6,23 @@ const PAGE = 50;
 /** `artistAlbums` stops after the page at this offset: 3 pages, 150 releases. */
 const MAX_OFFSET = 100;
 
+/** The SDK album fields every album read keeps. */
+function toRawAlbum(album: {
+  id: string;
+  name: string;
+  album_type: string;
+  release_date: string;
+  available_markets?: string[];
+}): RawAlbum {
+  return {
+    id: album.id,
+    name: album.name,
+    type: album.album_type,
+    release_date: album.release_date,
+    markets: album.available_markets?.length ?? 0,
+  };
+}
+
 /**
  * Production ReleaseReads adapter: wraps SpotifyGateway + the pagination
  * readers. Auth failures throw; other failures degrade (null / empty).
@@ -30,6 +47,24 @@ export function spotifyReleaseReads(ctx: SpotifyGateway): ReleaseReads {
       return null;
     },
 
+    async searchByUpc(upc) {
+      const result = await ctx.call(
+        (api) => api.search(`upc:${upc}`, ['album']),
+        `search upc ${upc}`,
+      );
+      if (!result.success) {
+        return null;
+      }
+      const album = result.data.albums?.items[0];
+      if (!album) {
+        return null;
+      }
+      return {
+        ...toRawAlbum(album),
+        artists: album.artists.map((a) => ({ id: a.id, name: a.name })),
+      };
+    },
+
     async artistAlbums(artistId) {
       const albums: RawAlbum[] = [];
       let offset = 0;
@@ -49,13 +84,7 @@ export function spotifyReleaseReads(ctx: SpotifyGateway): ReleaseReads {
           break;
         }
         for (const album of result.data.items) {
-          albums.push({
-            id: album.id,
-            name: album.name,
-            type: album.album_type,
-            release_date: album.release_date,
-            markets: album.available_markets?.length ?? 0,
-          });
+          albums.push(toRawAlbum(album));
         }
         if (result.data.items.length < PAGE) break;
         offset += PAGE;

@@ -129,6 +129,9 @@ function fixtureWeeklies(input: Array<{ id: string; tracks: WeeklyTrack[] }>) {
         async searchArtist() {
           return null;
         },
+        async searchByUpc() {
+          return null;
+        },
         async artistAlbums() {
           return [];
         },

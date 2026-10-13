@@ -40,6 +40,10 @@ export interface PlaylistAlbumInfo {
   id: string;
   name: string;
   artistName: string;
+  artistIds: string[];
+  releaseDate: string;
+  albumType: string;
+  totalTracks: number;
 }
 
 // ── Domain types ────────────────────────────────────────────────────────────
