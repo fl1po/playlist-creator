@@ -93,9 +93,11 @@ export interface FoundRelease {
   release_date: string;
   artistName: string;
   artistSpotifyId: string;
-  priority: number | 'editorial';
+  priority: number | 'editorial' | 'ai';
   score: number;
   markets?: number;
+  /** Set on AI finds: the LLM's confidence (0–100) and one-line reason. */
+  aiFind?: { confidence: number; reason: string };
 }
 
 export interface DateResult {

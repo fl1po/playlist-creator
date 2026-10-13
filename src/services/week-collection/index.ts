@@ -14,6 +14,7 @@ import type {
   PlaylistAlbumInfo,
   TrustedArtistsFile,
 } from '../../lib/types.js';
+import { landAiPicks, runAiPhase } from './ai-finds.js';
 import { type Run, collectTracks, getArtistWindowReleases } from './engine.js';
 
 // ── Ports (the seam) ─────────────────────────────────────────────────────────
@@ -99,10 +100,114 @@ export interface WeekProgress {
   foundReleases: Record<string, FoundRelease>;
 }
 
+// ── AI finds ports (ADR-0005) ────────────────────────────────────────────────
+
+/** Where a candidate came from. A candidate keeps every source it came from. */
+export type CandidateProvenance =
+  | { kind: 'related'; to: string[] }
+  | { kind: 'roster'; priority: number | null }
+  | { kind: 'scouting'; playlist: string }
+  | { kind: 'editorial-reject'; reason: string; playlists: string[] }
+  | { kind: 'low-popularity'; popularity: number };
+
+/** One release the judge may pick, in Deezer shape. */
+export interface Candidate {
+  /** Pool id the judge answers with. */
+  id: string;
+  title: string;
+  artist: string;
+  type: string;
+  trackCount: number;
+  /** `YYYY-MM-DD`. */
+  releaseDate: string;
+  genres: string[];
+  artistFans: number | null;
+  upc: string | null;
+  /** Best track rank ÷ the artist's median top-10 rank; null when unknown. */
+  relativePopularity: number | null;
+  provenance: CandidateProvenance[];
+  /** Known when the candidate came from Spotify (e.g. a scouting playlist). */
+  spotifyAlbumId?: string;
+}
+
+/** A release the week's gates turned away, kept for a second look. */
+export interface CandidateReject {
+  albumId: string;
+  artist: string;
+  title: string;
+  /** The gate reason, e.g. `popularity 6`. */
+  reason: string;
+  playlists: string[];
+}
+
+export interface CandidateRequest {
+  /** The P1/P2 artists: seeds for related artists, never candidates. */
+  seeds: Array<{ name: string; spotifyId: string | null }>;
+  /** P3/P4 and unranked roster artists. */
+  rosterArtists: Array<{
+    name: string;
+    priority: number | null;
+    spotifyId: string | null;
+  }>;
+  scouting: Array<{ playlist: string; album: PlaylistAlbumInfo }>;
+  rejects: CandidateReject[];
+  /** The week's valid release dates, `YYYY-MM-DD`. */
+  window: string[];
+}
+
+/** The week's candidates. Prod = Deezer; test = fixed list. */
+export interface CandidateSource {
+  candidates(request: CandidateRequest): Promise<Candidate[]>;
+}
+
+export type Tier = 'P1' | 'P2' | 'P3' | 'P4' | 'unranked';
+
+/** What the judge weighs candidates against. Names and tiers, no scores. */
+export interface TasteContext {
+  roster: Array<{ name: string; tier: Tier }>;
+  /** The week's P1/P2 releases: what the user is already getting. */
+  weekReleases: Array<{ artist: string; release: string }>;
+  /** Accepted genres, as a soft preference. */
+  acceptGenres: string[];
+}
+
+export interface TasteJudgeRequest {
+  taste: TasteContext;
+  candidates: Candidate[];
+  /** What's left of the fill's AI spend ceiling, in USD. */
+  budgetUsd: number;
+}
+
+export interface JudgePick {
+  /** A candidate id from the request. */
+  id: string;
+  /** 0–100. */
+  confidence: number;
+  reason: string;
+}
+
+/** SDK-free: no Anthropic types or errors cross this seam. */
+export type TasteJudgeOutcome =
+  | { ok: true; picks: JudgePick[]; spendUsd: number }
+  | {
+      ok: false;
+      failure: 'no-api-key' | 'over-budget' | 'spend-cap';
+      spendUsd: number;
+    }
+  | { ok: false; failure: 'failed'; message: string; spendUsd: number };
+
+/** Picks candidates that fit the user's taste. Prod = Claude; test = script. */
+export interface TasteJudge {
+  judge(request: TasteJudgeRequest): Promise<TasteJudgeOutcome>;
+}
+
 export interface WeekCollectionPorts {
   reads: ReleaseReads;
   popularity: PopularitySource;
   checkpoints: CheckpointStore;
+  /** AI finds only. Without both, the AI phase doesn't run. */
+  candidates?: CandidateSource;
+  judge?: TasteJudge;
 }
 
 // ── Collection decisions (the audit trail, returned as data) ────────────────
@@ -155,7 +260,30 @@ export type CollectionDecision =
       oldTracks: number;
       otherTracks: number;
     }
-  | { kind: 'single-skipped'; release: string };
+  | { kind: 'single-skipped'; release: string }
+  | {
+      kind: 'ai-pick';
+      artist: string;
+      release: string;
+      albumId: string;
+      confidence: number;
+      reason: string;
+    }
+  | {
+      kind: 'ai-skipped';
+      reason: AiSkipReason;
+      /** Set on per-pick skips. */
+      artist?: string;
+      release?: string;
+    };
+
+/** Why the week's AI finds, or one pick, didn't land. */
+export type AiSkipReason =
+  | 'no-api-key'
+  | 'over-budget'
+  | 'failed'
+  | 'not on Spotify'
+  | 'no tracks left';
 
 // ── Progress (liveness only — never carries decisions) ──────────────────────
 
@@ -172,7 +300,28 @@ export type WeekProgressEvent =
   | { phase: 'checkpoint'; searched: number; total: number }
   | { phase: 'editorial'; playlist: string }
   | { phase: 'popularity'; done: number; total: number }
-  | { phase: 'collecting'; done: number; total: number; release: string };
+  | { phase: 'collecting'; done: number; total: number; release: string }
+  | {
+      phase: 'ai-pick';
+      artist: string;
+      release: string;
+      confidence: number;
+      reason: string;
+    }
+  | {
+      phase: 'ai-skip';
+      reason: AiSkipReason;
+      artist?: string;
+      release?: string;
+      /** A failed judge call's message: for the log, never stored. */
+      message?: string;
+    }
+  | {
+      phase: 'ai-summary';
+      picks: number;
+      candidates: number;
+      spendUsd: number;
+    };
 
 // ── Input / result ───────────────────────────────────────────────────────────
 
@@ -203,11 +352,38 @@ export interface WeekCollectionInput {
   /** Track ids already in the listening history — excluded outright. */
   listeningHistory: Set<string>;
   editorial: EditorialConfig;
+  /** AI finds. Absent or disabled: the phase doesn't run and leaves no trace. */
+  ai?: AiFindsConfig;
 }
+
+export interface AiFindsConfig {
+  enabled: boolean;
+  /** Lowest confidence (0–100) a pick needs to land. */
+  threshold: number;
+  scoutingPlaylists: Array<{ id: string; name: string }>;
+  /** What's left of the fill's AI spend ceiling, in USD. */
+  budgetUsd: number;
+}
+
+/** What a week's AI phase came to, for the AI-picks record. */
+export type AiPicksRecord =
+  | {
+      picks: Array<{
+        albumId: string;
+        artist: string;
+        title: string;
+        confidence: number;
+        reason: string;
+      }>;
+    }
+  | { skipped: 'no-api-key' | 'over-budget' | 'failed' };
 
 export interface WeekCollection {
   week: string;
-  /** Final play order: releases ranked by popularity; ties keep albums before singles. */
+  /**
+   * Final play order: releases ranked by popularity, ties keeping albums
+   * before singles; then AI finds, highest confidence first.
+   */
   tracks: string[];
   /** Surviving releases in collection order, with contributed track counts. */
   releases: Array<FoundRelease & { tracksAdded: number }>;
@@ -215,6 +391,10 @@ export interface WeekCollection {
   decisions: CollectionDecision[];
   /** Tracks considered but excluded by any dedup/gate rule. */
   skippedCount: number;
+  /** The AI phase's outcome; absent when it didn't run. */
+  aiPicks?: AiPicksRecord;
+  /** What the AI phase spent, in USD; 0 when it didn't run. */
+  aiSpendUsd: number;
 }
 
 const CHECKPOINT_EVERY = 50;
@@ -228,6 +408,11 @@ const CHECKPOINT_EVERY = 50;
  * listening history appears at all; every track traces to exactly one release;
  * each release kept exactly one variant; `decisions` records every choice
  * that altered the outcome, in the order it was made.
+ *
+ * AI finds (only when `input.ai` is enabled and both AI ports are given):
+ * after the popularity gate, the judge picks from a pool of candidates the
+ * search didn't cover. Picks at or above the threshold resolve to Spotify,
+ * skip the gate, and go through the same variant strip and track rules.
  *
  * Error mode: any throw during the artist search phase checkpoints week
  * progress first, then propagates — a later call with the same week resumes
@@ -381,6 +566,22 @@ export async function collectWeek(
     foundReleases.delete(id);
   }
 
+  // ── AI finds (picks skip the popularity gate) ─────────────────────────────
+  const aiPhase =
+    input.ai?.enabled && ports.candidates && ports.judge
+      ? await runAiPhase(
+          run,
+          input,
+          input.ai,
+          { candidates: ports.candidates, judge: ports.judge },
+          validDates,
+          foundReleases,
+        )
+      : null;
+  for (const { release } of aiPhase?.picks ?? []) {
+    foundReleases.set(release.id, release);
+  }
+
   // ── Variant strip (alternate versions of kept releases) ──────────────────
   const { filtered: variantIds, removed } = filterVariants(foundReleases);
   for (const { type, release } of removed) {
@@ -404,14 +605,35 @@ export async function collectWeek(
     ...c.release,
     tracksAdded: c.trackIds.length,
   }));
-  const ranked = [...collected].sort(
-    (a, b) =>
-      (releasePopularity.get(b.release.id) ?? 0) -
-      (releasePopularity.get(a.release.id) ?? 0),
-  );
+  const aiPicks = aiPhase ? landAiPicks(run, aiPhase, collected) : undefined;
+  // AI finds play after the popularity-ranked releases, by confidence.
+  const ranked = [
+    ...collected
+      .filter((c) => !c.release.aiFind)
+      .sort(
+        (a, b) =>
+          (releasePopularity.get(b.release.id) ?? 0) -
+          (releasePopularity.get(a.release.id) ?? 0),
+      ),
+    ...collected
+      .filter((c) => c.release.aiFind)
+      .sort(
+        (a, b) =>
+          (b.release.aiFind?.confidence ?? 0) -
+          (a.release.aiFind?.confidence ?? 0),
+      ),
+  ];
   const tracks = ranked.flatMap((c) => c.trackIds);
 
-  return { week, tracks, releases, decisions: run.decisions, skippedCount };
+  return {
+    week,
+    tracks,
+    releases,
+    decisions: run.decisions,
+    skippedCount,
+    aiPicks,
+    aiSpendUsd: aiPhase?.spendUsd ?? 0,
+  };
 }
 
 // ── Editorial merge ──────────────────────────────────────────────────────────

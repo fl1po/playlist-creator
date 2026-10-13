@@ -1,7 +1,13 @@
 import { fetchDeezerPopularities } from '../../lib/deezer-popularity.js';
 import type {
+  Candidate,
+  CandidateRequest,
+  CandidateSource,
   CheckpointStore,
   PopularitySource,
+  TasteJudge,
+  TasteJudgeOutcome,
+  TasteJudgeRequest,
   WeekProgress,
 } from './index.js';
 
@@ -41,6 +47,36 @@ export function memoryCheckpoints(): CheckpointStore & {
     },
     async clear() {
       this.current = null;
+    },
+  };
+}
+
+/** Fixed-list CandidateSource for tests. Records each request it's given. */
+export function fixtureCandidates(
+  candidates: Candidate[],
+): CandidateSource & { requests: CandidateRequest[] } {
+  return {
+    requests: [],
+    async candidates(request) {
+      this.requests.push(request);
+      return candidates;
+    },
+  };
+}
+
+/**
+ * Scripted TasteJudge for tests: returns `outcome` (or what it computes from
+ * the request) and records each request, so tests can check the pool and
+ * taste context it was given.
+ */
+export function fixtureJudge(
+  outcome: TasteJudgeOutcome | ((r: TasteJudgeRequest) => TasteJudgeOutcome),
+): TasteJudge & { requests: TasteJudgeRequest[] } {
+  return {
+    requests: [],
+    async judge(request) {
+      this.requests.push(request);
+      return typeof outcome === 'function' ? outcome(request) : outcome;
     },
   };
 }

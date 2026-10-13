@@ -230,7 +230,7 @@ async function maybeAppendFillHistory(
   for (const r of completed) {
     for (const rel of r.releases ?? []) {
       const key =
-        rel.priority === 'editorial' ? 'editorial' : `p${rel.priority}`;
+        typeof rel.priority === 'number' ? `p${rel.priority}` : rel.priority;
       releasesByPriority[key] = (releasesByPriority[key] || 0) + 1;
     }
   }

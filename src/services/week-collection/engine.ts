@@ -36,6 +36,8 @@ export interface Collected {
   trackIds: string[];
 }
 
+export type WindowRelease = RawRelease & { markets: number };
+
 // ── Artist release discovery ─────────────────────────────────────────────────
 
 async function memoArtistAlbums(run: Run, artistId: string) {
@@ -51,9 +53,23 @@ export async function getArtistWindowReleases(
   run: Run,
   artistId: string,
   validDates: string[],
-): Promise<Array<RawRelease & { markets: number }>> {
+): Promise<WindowRelease[]> {
+  const inWindow = await getArtistInWindow(run, artistId, validDates);
+  const releases: WindowRelease[] = [];
+  for (const [, group] of groupReleases(inWindow)) {
+    releases.push(await chooseVariant(run, group as WindowRelease[]));
+  }
+  return releases;
+}
+
+/** An artist's releases inside the window, every variant included. */
+export async function getArtistInWindow(
+  run: Run,
+  artistId: string,
+  validDates: string[],
+): Promise<WindowRelease[]> {
   const albums = await memoArtistAlbums(run, artistId);
-  const inWindow: Array<RawRelease & { markets: number }> = [];
+  const inWindow: WindowRelease[] = [];
 
   for (const album of albums) {
     // Spotify reports some release dates at month/year precision. When such a
@@ -82,42 +98,40 @@ export async function getArtistWindowReleases(
       markets: album.markets,
     });
   }
+  return inWindow;
+}
 
-  // Same-release duplicates: keep the explicit / widest-market variant.
-  const groups = groupReleases(inWindow);
-  const releases: Array<RawRelease & { markets: number }> = [];
-  for (const [, group] of groups) {
-    if (group.length === 1) {
-      releases.push(group[0] as RawRelease & { markets: number });
-      continue;
+/**
+ * Same-release duplicates: keep the explicit variant, then the one with the
+ * widest market coverage. A choice among several is a `variant-picked`.
+ */
+export async function chooseVariant(
+  run: Run,
+  group: WindowRelease[],
+): Promise<WindowRelease> {
+  if (group.length === 1) return group[0];
+  let best = group[0];
+  let bestIsExplicit = false;
+  let bestMarkets = group[0].markets;
+  for (const release of group) {
+    const info = await run.reads.albumDetails(release.id);
+    if (!info) continue;
+    if (info.explicit && !bestIsExplicit) {
+      best = release;
+      bestIsExplicit = true;
+      bestMarkets = info.markets;
+    } else if (info.explicit === bestIsExplicit && info.markets > bestMarkets) {
+      best = release;
+      bestMarkets = info.markets;
     }
-    let best = group[0];
-    let bestIsExplicit = false;
-    let bestMarkets = group[0].markets;
-    for (const release of group) {
-      const info = await run.reads.albumDetails(release.id);
-      if (!info) continue;
-      if (info.explicit && !bestIsExplicit) {
-        best = release;
-        bestIsExplicit = true;
-        bestMarkets = info.markets;
-      } else if (
-        info.explicit === bestIsExplicit &&
-        info.markets > bestMarkets
-      ) {
-        best = release;
-        bestMarkets = info.markets;
-      }
-    }
-    releases.push(best as RawRelease & { markets: number });
-    run.decisions.push({
-      kind: 'variant-picked',
-      release: best.name,
-      variantCount: group.length,
-      explicit: bestIsExplicit,
-    });
   }
-  return releases;
+  run.decisions.push({
+    kind: 'variant-picked',
+    release: best.name,
+    variantCount: group.length,
+    explicit: bestIsExplicit,
+  });
+  return best;
 }
 
 // ── Track collection ─────────────────────────────────────────────────────────
