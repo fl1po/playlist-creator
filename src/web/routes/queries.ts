@@ -7,6 +7,11 @@ import {
 import { createDurableCache } from '../../lib/durable-cache.js';
 import type { CacheDescriptor } from '../../lib/durable-cache.js';
 import { getAllUserPlaylists } from '../../lib/pagination.js';
+import {
+  listAiPicks,
+  loadWeekAiPicks,
+  readWeekPicks,
+} from '../../services/ai-picks.js';
 import type { RouteContext } from '../route-context.js';
 import { orThrow, spotifyRoute } from '../spotify-http.js';
 
@@ -262,6 +267,55 @@ export function queryRoutes(ctx: RouteContext): Router {
           trackCount: pl.tracks?.total ?? 0,
         },
       });
+    }),
+  );
+
+  // AI Picks card. The list reads the records alone; a week reads its
+  // weekly playlist live. Neither writes a record.
+  router.get('/ai-picks', async (req, res) => {
+    const session = ctx.requireSession(req, res);
+    if (!session) return;
+    const cache = createDurableCache({
+      userId: session.userId,
+      dataDir: session.dataDir,
+    });
+    const [config, weeks] = await Promise.all([
+      session.userConfigStore.load(),
+      listAiPicks(cache),
+    ]);
+    res.json({ ok: true, enabled: config.aiFinds.enabled, weeks });
+  });
+
+  router.get(
+    '/ai-picks/week',
+    spotifyRoute(async (req, res) => {
+      const session = ctx.requireSession(req, res);
+      if (!session) return;
+
+      const date = (req.query.date as string)?.trim();
+      if (!date) {
+        res.status(400).json({ error: 'date query parameter required' });
+        return;
+      }
+      const picks = await loadWeekAiPicks(
+        createDurableCache({
+          userId: session.userId,
+          dataDir: session.dataDir,
+        }),
+        date,
+      );
+      if (!picks) {
+        res.status(404).json({ error: `No AI picks for ${date}` });
+        return;
+      }
+      const me = orThrow(
+        await session.gateway.call(
+          (api) => api.currentUser.profile(),
+          'user profile',
+        ),
+      );
+      const week = await readWeekPicks(session.gateway, me.id, date, picks);
+      res.json({ ok: true, ...week });
     }),
   );
 

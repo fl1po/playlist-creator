@@ -371,6 +371,31 @@
   .ai-unavailable #aiFindsUnavailable { display: block; }
   .ai-unavailable #aiFindsControls { opacity: 0.4; pointer-events: none; }
 
+  /* AI Picks card: one expandable row per week with an AI-picks record */
+  .ai-week { border-bottom: 1px solid #282828; }
+  .ai-week:last-child { border-bottom: none; }
+  .ai-week-head {
+    display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px;
+  }
+  .ai-week.expandable .ai-week-head { cursor: pointer; }
+  .ai-week.expandable .ai-week-head:hover .ai-week-date { color: #fff; }
+  .ai-week-date { font-variant-numeric: tabular-nums; }
+  .ai-week-caret { color: #666; width: 10px; font-size: 10px; }
+  .ai-week-state { margin-left: auto; color: #b3b3b3; }
+  .ai-week-state.muted { color: #666; }
+  .ai-week-state.warn {
+    color: #e67e22; border: 1px solid #e67e22; border-radius: 10px;
+    padding: 0 8px; font-size: 11px;
+  }
+  .ai-week-body { display: none; padding: 0 0 10px 18px; font-size: 13px; }
+  .ai-week.open .ai-week-body { display: block; }
+  .ai-pick { margin-top: 8px; }
+  .ai-pick a { color: #e0e0e0; text-decoration: none; }
+  .ai-pick a:hover { color: #1DB954; text-decoration: underline; }
+  .ai-pick-conf { color: #1DB954; font-size: 12px; margin-left: 6px; font-variant-numeric: tabular-nums; }
+  .ai-pick-reason { color: #999; font-size: 12px; margin-top: 2px; }
+  .ai-week-note { color: #666; font-size: 12px; margin-top: 6px; }
+
   /* External source fields */
   .ext-source {
     background: #1a1a1a; border: 1px solid #282828; border-radius: 6px;
@@ -809,6 +834,13 @@
       <p id="awProgressText" class="progress-text"></p>
       <div id="awResult" style="display:none; margin-top:8px; font-weight:600;"></div>
       <button id="awExpandBtn" class="secondary" style="display:none; margin-top:6px; font-size:12px;" onclick="toggleAwBreakdown()">Show breakdown</button>
+    </div>
+
+    <!-- AI Picks -->
+    <div class="card" id="aiPicksCard" style="display:none">
+      <h2>AI Picks</h2>
+      <div id="aiPicksList"></div>
+      <p class="hint">Albums AI finds added to each week. Prune misses in Spotify; expanding a week reads its playlist to show the picks still there.</p>
     </div>
 
   </div>
@@ -1313,6 +1345,7 @@ function handleMessage({ type, data }) {
       log('success', `  ${data.results.length} dates: ${data.results.length - skipped - errors} created, ${skipped} skipped, ${errors} errors`);
       log('success', `  Total tracks added: ${totalTracks}`);
       loadArtists();
+      loadAiPicks();
       if (statsVisible) loadStats();
       break;
     }
@@ -1327,6 +1360,8 @@ function handleMessage({ type, data }) {
       const totalTxt2 = document.getElementById('fillTotalProgressText');
       setTimeout(() => { segBar2.classList.remove('visible'); totalTxt2.classList.remove('visible'); }, 1500);
       loadArtists();
+      // A stopped fill keeps the weeks it finished.
+      loadAiPicks();
       if (statsVisible) loadStats();
       break;
     }
@@ -1913,6 +1948,87 @@ async function calcListeningTime() {
   if (!res.ok) log('error', res.error || 'Failed to start listening time calculation', undefined, 'listening-time');
 }
 
+// ── AI Picks ─────────────────────────────────────────────────────
+const AI_SKIP_LABELS = {
+  'no-api-key': 'skipped: no API key',
+  'over-budget': 'over budget',
+  failed: 'failed',
+};
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+// Rows by date, kept across refreshes so an open row stays as it was.
+const aiPickRows = new Map();
+
+async function loadAiPicks() {
+  const res = await api('GET', '/api/ai-picks');
+  if (!res.ok) return;
+  document.getElementById('aiPicksCard').style.display =
+    res.enabled || res.weeks.length ? '' : 'none';
+  const list = document.getElementById('aiPicksList');
+  list.innerHTML = '';
+  if (!res.weeks.length) {
+    list.innerHTML = '<p class="ai-week-note">No AI picks yet — they appear after the next fill.</p>';
+    return;
+  }
+  for (const { date, record } of res.weeks) {
+    const key = JSON.stringify(record);
+    let row = aiPickRows.get(date);
+    if (!row || row.dataset.record !== key) {
+      row = aiPickRow(date, record);
+      row.dataset.record = key;
+      aiPickRows.set(date, row);
+    }
+    list.appendChild(row);
+  }
+}
+
+function aiPickRow(date, record) {
+  const row = document.createElement('div');
+  row.className = 'ai-week';
+  const expandable = !record.skipped && record.picks.length > 0;
+  row.classList.toggle('expandable', expandable);
+  let state;
+  if (record.skipped) {
+    state = `<span class="ai-week-state warn">${esc(AI_SKIP_LABELS[record.skipped] ?? record.skipped)}</span>`;
+  } else if (record.picks.length === 0) {
+    state = '<span class="ai-week-state muted">no picks</span>';
+  } else {
+    state = `<span class="ai-week-state">${plural(record.picks.length, 'pick')}</span>`;
+  }
+  const caret = expandable ? '▸' : '';
+  row.innerHTML = `<div class="ai-week-head"><span class="ai-week-caret">${caret}</span><span class="ai-week-date">${esc(date)}</span>${state}</div><div class="ai-week-body"></div>`;
+  if (expandable) {
+    row.querySelector('.ai-week-head').onclick = () => toggleAiWeek(row, date);
+  }
+  return row;
+}
+
+// Opening a row reads its weekly playlist live; it isn't re-read while open.
+async function toggleAiWeek(row, date) {
+  const open = !row.classList.contains('open');
+  row.classList.toggle('open', open);
+  row.querySelector('.ai-week-caret').textContent = open ? '▾' : '▸';
+  if (!open) return;
+  const body = row.querySelector('.ai-week-body');
+  body.innerHTML = '<p class="ai-week-note">Reading playlist…</p>';
+  const read = (row.dataset.read = String(Number(row.dataset.read ?? 0) + 1));
+  const res = await api('GET', `/api/ai-picks/week?date=${encodeURIComponent(date)}`);
+  // Closed or reopened while reading: a newer read (or none) owns the body.
+  if (row.dataset.read !== read || !row.classList.contains('open')) return;
+  if (!res.ok) {
+    body.innerHTML = `<p class="ai-week-note">${esc(res.error || 'Could not read the playlist')}</p>`;
+    return;
+  }
+  if (!res.exists) {
+    body.innerHTML = '<p class="ai-week-note">playlist no longer exists</p>';
+    return;
+  }
+  const picks = res.present.map(p => `<div class="ai-pick"><a href="https://open.spotify.com/album/${encodeURIComponent(p.albumId)}" target="_blank" rel="noopener">${esc(p.artist)} — ${esc(p.title)}</a><span class="ai-pick-conf">${p.confidence}</span><div class="ai-pick-reason">${esc(p.reason)}</div></div>`).join('');
+  let count = '';
+  if (res.present.length === 0) count = `${plural(res.total, 'pick')}, all removed`;
+  else if (res.present.length < res.total) count = `${res.present.length} of ${res.total} still in playlist`;
+  body.innerHTML = picks + (count ? `<p class="ai-week-note">${count}</p>` : '');
+}
+
 // ── AW Breakdown ─────────────────────────────────────────────────
 function showAwBreakdownResult(data) {
   const el = document.getElementById('awResult');
@@ -2376,6 +2492,7 @@ async function saveConfig() {
   if (res.ok) {
     currentConfig = cfg;
     closeSettings();
+    loadAiPicks();
     log('success', 'Settings saved');
   } else {
     log('error', res.error || 'Failed to save settings');
@@ -3090,6 +3207,7 @@ checkAuth().then(() => {
     loadArtists();
     loadListeningTime();
     loadAwBreakdown();
+    loadAiPicks();
     configPromise = loadConfig();
     startNpPolling();
   }
