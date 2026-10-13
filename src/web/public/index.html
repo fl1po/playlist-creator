@@ -366,6 +366,11 @@
   }
   .list-item .remove-btn:hover { color: #e74c3c; }
 
+  /* AI finds: greyed out when the server has no Anthropic key */
+  #aiFindsUnavailable { display: none; color: #e67e22; }
+  .ai-unavailable #aiFindsUnavailable { display: block; }
+  .ai-unavailable #aiFindsControls { opacity: 0.4; pointer-events: none; }
+
   /* External source fields */
   .ext-source {
     background: #1a1a1a; border: 1px solid #282828; border-radius: 6px;
@@ -941,6 +946,26 @@
       <p class="desc">Curators whose playlists are matched by date and name pattern.</p>
       <div id="extSourceList"></div>
       <button class="secondary" style="margin-top:8px;font-size:12px;padding:4px 12px;" onclick="addExtSource()">+ Add Source</button>
+    </div>
+
+    <!-- Section 2b: AI Finds -->
+    <div class="settings-section" id="aiFindsSection">
+      <h3>AI Finds</h3>
+      <p class="desc">Each fill, Claude judges new releases from outside your P1/P2 artists against your taste and adds the ones it's confident you'll want.</p>
+      <p class="desc" id="aiFindsUnavailable">AI finds unavailable on this server</p>
+      <div id="aiFindsControls">
+        <div class="settings-row">
+          <label class="toggle"><input type="checkbox" id="cfgAiFindsEnabled"> Enable AI finds</label>
+        </div>
+        <div class="settings-row">
+          <label title="Lowest confidence (0–100) a pick needs to land. Lower means more picks and more misses.">Threshold</label>
+          <input type="number" id="cfgAiThreshold" min="0" max="100" step="1" style="max-width:80px;">
+        </div>
+        <h3 style="margin-top:16px;">Scouting Playlists</h3>
+        <p class="desc">Playlists you follow for discovery. Their releases are weighed by Claude but never added directly.</p>
+        <div id="scoutingList"></div>
+        <button class="secondary" style="margin-top:8px;font-size:12px;padding:4px 12px;" onclick="pickPlaylist('scouting')">+ Add Playlist</button>
+      </div>
     </div>
 
     <!-- Section 3: Genre Filters -->
@@ -2180,7 +2205,8 @@ function updateSecondaryLabels() {
 // ── Settings ─────────────────────────────────────────────────────
 let currentConfig = null;
 let cachedPlaylists = null;
-let pickerTarget = null; // 'aw', 'boaw', 'editorial'
+let pickerTarget = null; // 'aw', 'boaw', 'editorial', 'scouting'
+let aiFindsAvailable = false;
 
 let configLoaded = false;
 let configPromise = null;
@@ -2189,6 +2215,7 @@ async function loadConfig() {
   const res = await api('GET', '/api/config');
   if (res.ok) {
     currentConfig = res.config;
+    aiFindsAvailable = res.aiFindsAvailable;
     configLoaded = true;
     populateSettings(currentConfig);
     if (currentConfig.weeklyListeningBudget) {
@@ -2237,7 +2264,7 @@ function populateSettings(cfg) {
   updateSecondaryLabels();
 
   // Editorial playlists
-  renderEditorialList(cfg.editorialPlaylists);
+  renderPlaylistList('editorialList', cfg.editorialPlaylists);
   renderExtSources(cfg.externalPlaylistSources);
 
   // Genre tags
@@ -2254,12 +2281,22 @@ function populateSettings(cfg) {
   document.getElementById('cfgP4').value = cfg.scoring.priorityThresholds.p4;
   document.getElementById('cfgMinPop').value = cfg.editorialFilter.minPopularity;
   document.getElementById('cfgMinFollowers').value = cfg.editorialFilter.minFollowers;
+
+  // AI finds — the user's settings stay visible but locked when the server has no key
+  document.getElementById('aiFindsSection').classList.toggle('ai-unavailable', !aiFindsAvailable);
+  document.getElementById('cfgAiFindsEnabled').disabled = !aiFindsAvailable;
+  document.getElementById('cfgAiThreshold').disabled = !aiFindsAvailable;
+  // A config migrated from localStorage predates AI finds
+  const ai = cfg.aiFinds ?? { enabled: false, threshold: 50, scoutingPlaylists: [] };
+  document.getElementById('cfgAiFindsEnabled').checked = ai.enabled;
+  document.getElementById('cfgAiThreshold').value = ai.threshold;
+  renderPlaylistList('scoutingList', ai.scoutingPlaylists);
 }
 
 function collectSettings() {
-  const getEditorial = () => {
+  const getPlaylists = (containerId) => {
     const items = [];
-    for (const el of document.querySelectorAll('#editorialList .list-item')) {
+    for (const el of document.querySelectorAll(`#${containerId} .list-item`)) {
       items.push({ id: el.dataset.id, name: el.dataset.name });
     }
     return items;
@@ -2294,7 +2331,7 @@ function collectSettings() {
       bestOfAllWeeklyName: document.getElementById('cfgBoawName').value.trim(),
       useLikedSongs: document.getElementById('cfgBoawSource').value === 'liked',
     },
-    editorialPlaylists: getEditorial(),
+    editorialPlaylists: getPlaylists('editorialList'),
     externalPlaylistSources: getExtSources(),
     genreFilters: {
       accepted: getTags('accepted'),
@@ -2317,6 +2354,14 @@ function collectSettings() {
     editorialFilter: {
       minPopularity: Number(document.getElementById('cfgMinPop').value) || 10,
       minFollowers: Number(document.getElementById('cfgMinFollowers').value) || 100000,
+    },
+    aiFinds: {
+      enabled: document.getElementById('cfgAiFindsEnabled').checked,
+      threshold: (() => {
+        const v = document.getElementById('cfgAiThreshold').value;
+        return v === '' ? 50 : Math.min(100, Math.max(0, Math.round(Number(v)) || 0));
+      })(),
+      scoutingPlaylists: getPlaylists('scoutingList'),
     },
     // Lives outside the modal (Listening Time card) — carry it through so a
     // settings save doesn't reset it to the default.
@@ -2348,20 +2393,25 @@ async function resetConfig() {
   }
 }
 
-// ── Editorial list rendering ─────────────────────────────────────
-function renderEditorialList(playlists) {
-  const container = document.getElementById('editorialList');
+// ── Playlist list rendering (editorial, scouting) ────────────────
+function renderPlaylistList(containerId, playlists) {
+  const container = document.getElementById(containerId);
   container.innerHTML = '';
-  for (const pl of playlists) {
-    const div = document.createElement('div');
-    div.className = 'list-item';
-    div.dataset.id = pl.id;
-    div.dataset.name = pl.name;
-    div.innerHTML = `<span class="list-name">${esc(pl.name)}</span>
-      <span class="list-id">${esc(pl.id)}</span>
-      <button class="remove-btn" onclick="this.parentElement.remove()">&times;</button>`;
-    container.appendChild(div);
+  for (const pl of playlists) addPlaylistItem(container, pl);
+}
+
+function addPlaylistItem(container, pl) {
+  for (const existing of container.querySelectorAll('.list-item')) {
+    if (existing.dataset.id === pl.id) return;
   }
+  const div = document.createElement('div');
+  div.className = 'list-item';
+  div.dataset.id = pl.id;
+  div.dataset.name = pl.name;
+  div.innerHTML = `<span class="list-name">${esc(pl.name)}</span>
+    <span class="list-id">${esc(pl.id)}</span>
+    <button class="remove-btn" onclick="this.parentElement.remove()">&times;</button>`;
+  container.appendChild(div);
 }
 
 // ── External sources rendering ───────────────────────────────────
@@ -2534,18 +2584,9 @@ function selectPlaylist(pl) {
     document.getElementById('cfgBoawName').value = pl.name;
     document.getElementById('cfgBoawId').value = pl.id;
   } else if (pickerTarget === 'editorial') {
-    const container = document.getElementById('editorialList');
-    for (const existing of container.querySelectorAll('.list-item')) {
-      if (existing.dataset.id === pl.id) { closePicker(); return; }
-    }
-    const div = document.createElement('div');
-    div.className = 'list-item';
-    div.dataset.id = pl.id;
-    div.dataset.name = pl.name;
-    div.innerHTML = `<span class="list-name">${esc(pl.name)}</span>
-      <span class="list-id">${esc(pl.id)}</span>
-      <button class="remove-btn" onclick="this.parentElement.remove()">&times;</button>`;
-    container.appendChild(div);
+    addPlaylistItem(document.getElementById('editorialList'), pl);
+  } else if (pickerTarget === 'scouting') {
+    addPlaylistItem(document.getElementById('scoutingList'), pl);
   }
   closePicker();
 }

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { aiFindsAvailable } from '../../lib/anthropic-key.js';
 import { DEFAULT_USER_CONFIG } from '../../lib/user-config.js';
 import type { RouteContext } from '../route-context.js';
 
@@ -13,7 +14,13 @@ export function configRoutes(ctx: RouteContext): Router {
       session.userConfigStore.load(),
       session.userConfigStore.exists(),
     ]);
-    res.json({ ok: true, config, configured, defaults: DEFAULT_USER_CONFIG });
+    res.json({
+      ok: true,
+      config,
+      configured,
+      defaults: DEFAULT_USER_CONFIG,
+      aiFindsAvailable: aiFindsAvailable(),
+    });
   });
 
   router.put('/config', async (req, res) => {

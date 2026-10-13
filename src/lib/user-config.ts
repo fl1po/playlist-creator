@@ -35,6 +35,16 @@ export interface UserConfig {
     minPopularity: number;
     minFollowers: number;
   };
+  /**
+   * Opt-in AI finds. The model, effort, pool cap and cost ceiling are code
+   * constants, not config.
+   */
+  aiFinds: {
+    enabled: boolean;
+    /** Lowest LLM confidence (0–100) a pick needs to become an AI find. */
+    threshold: number;
+    scoutingPlaylists: Array<{ id: string; name: string }>;
+  };
   /** Listening hours per week; the listening-time view uses it to estimate backlog catch-up. */
   weeklyListeningBudget: number;
   /** Dashboard blocks pinned to the top of the page, by element id. */
@@ -104,6 +114,11 @@ export const DEFAULT_USER_CONFIG: UserConfig = {
     minPopularity: 10,
     minFollowers: 100000,
   },
+  aiFinds: {
+    enabled: false,
+    threshold: 50,
+    scoutingPlaylists: [],
+  },
   weeklyListeningBudget: 15,
   pinnedBlocks: ['appHeader'],
 };
@@ -163,10 +178,26 @@ export function mergeConfigWithDefaults(
       ...defaults.editorialFilter,
       ...partial.editorialFilter,
     },
+    aiFinds: {
+      enabled: partial.aiFinds?.enabled ?? defaults.aiFinds.enabled,
+      threshold: clampThreshold(
+        partial.aiFinds?.threshold,
+        defaults.aiFinds.threshold,
+      ),
+      scoutingPlaylists:
+        partial.aiFinds?.scoutingPlaylists ??
+        defaults.aiFinds.scoutingPlaylists,
+    },
     weeklyListeningBudget:
       partial.weeklyListeningBudget ?? defaults.weeklyListeningBudget,
     pinnedBlocks: partial.pinnedBlocks ?? defaults.pinnedBlocks,
   };
+}
+
+/** A whole number in 0–100, so a typo can't break the fill. */
+function clampThreshold(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(100, Math.max(0, Math.round(value)));
 }
 
 export class UserConfigStore implements IUserConfigStore {

@@ -127,6 +127,7 @@ All operations stream live logs and progress via WebSocket — you see every rel
 | `PORT` | optional | Web server port (defaults to `3005`) |
 | `UPSTASH_REDIS_REST_URL` | optional | Upstash Redis REST endpoint. If set together with the token, state is mirrored to Redis |
 | `UPSTASH_REDIS_REST_TOKEN` | optional | Upstash Redis REST token |
+| `ANTHROPIC_API_KEY` | optional | Server-wide Claude key for AI finds. Without it, the AI Finds settings are greyed out |
 
 Without Redis the app runs purely on the filesystem (per-user directories under `data/users/<spotifyUserId>/`). With Redis, the same data is keyed per user (`config:<userId>`, `trustedArtists:<userId>`, `fillHistory:<userId>`, `batchCache:<userId>`) so deployments can survive restarts without a mounted volume.
 
@@ -141,6 +142,7 @@ Configured per user via the Settings panel in the dashboard. Persisted to disk a
 | **External Sources** | Curator playlists matched by user ID + name regex + date format |
 | **Genre Filters** | Accepted and rejected genre lists for editorial artist filtering |
 | **Scoring** | AW/BoAW weights, P1–P4 thresholds, min popularity, min followers |
+| **AI Finds** | Opt-in toggle (off by default), confidence threshold (0–100, default 50), scouting playlists |
 
 Changes take effect on the next Fill or Recalculate.
 
