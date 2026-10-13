@@ -56,7 +56,16 @@ export interface FillPorts {
   history: Pick<PromotionReads, 'playlistTrackIds'>;
   /** Mid-fill recalculation and the trailing promotion sync. */
   recalculation: RecalculationPorts;
+  /**
+   * AI finds' candidate source and judge, built once per fill and only for
+   * an opted-in user, so nobody else makes candidate or judge calls.
+   */
+  ai?: (fill: { weeks: number }) => AiFindsPorts;
 }
+
+export type AiFindsPorts = Required<
+  Pick<WeekCollectionPorts, 'candidates' | 'judge'>
+>;
 
 export interface FillRunOptions {
   /** Kept for the stop-aware pauses between dates. */
@@ -425,6 +434,10 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
   const cleared = new Set<string>();
   // What's left of the AI spend ceiling; nothing once the judge is exhausted.
   let aiBudgetUsd = AI_FILL_CEILING_USD;
+  const weekPorts: WeekCollectionPorts =
+    userConfig.aiFinds.enabled && ports.ai
+      ? { ...ports.week, ...ports.ai({ weeks: datesToProcess.length }) }
+      : ports.week;
 
   for (let i = 0; i < datesToProcess.length; i++) {
     const targetDate = datesToProcess[i];
@@ -477,7 +490,7 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
               }
             : undefined,
         },
-        ports.week,
+        weekPorts,
         (e) => emitProgress(emitter, e),
       );
       aiBudgetUsd = week.aiExhausted ? 0 : aiBudgetUsd - week.aiSpendUsd;

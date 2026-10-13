@@ -50,6 +50,7 @@ export const fillTask: TaskDefinition<FillEvents> = {
         userId: tc.userId,
         dataDir: tc.dataDir,
         storage,
+        cache: tc.cache,
       }),
       handlers,
       syncHandlers: broadcastSyncHandlers(tc.broadcast),

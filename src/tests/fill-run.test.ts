@@ -228,7 +228,7 @@ function world(
   const dataDir = tmpDataDir(t);
   const cache = createDurableCache({ userId: 'user-1', dataDir, redis: null });
   const storage = memoryStorage();
-  const ports = fillPorts(ctx, { userId: 'user-1', dataDir, storage });
+  const ports = fillPorts(ctx, { userId: 'user-1', dataDir, storage, cache });
   if (sources) ports.recalculation = { ...ports.recalculation, sources };
   return {
     cache,
@@ -394,6 +394,7 @@ test('a fill aborted after a mid-fill recalculation leaves the sync for the next
       userId: 'user-1',
       dataDir: tmpDataDir(t),
       storage: first.storage,
+      cache: first.cache,
     }),
   });
 
@@ -913,8 +914,13 @@ function aiPorts(
     gammaCandidate('c-g0', { id: 'alb-g0', title: 'G0', date: IN_WINDOW }),
   ]);
   const judge = fixtureJudge(outcome);
-  m.ports.week = { ...m.ports.week, candidates, judge };
-  return { ...m, candidates, judge };
+  // The week count of each fill the AI ports were built for.
+  const builtFor: number[] = [];
+  m.ports.ai = ({ weeks }) => {
+    builtFor.push(weeks);
+    return { candidates, judge };
+  };
+  return { ...m, candidates, judge, builtFor };
 }
 
 /** Log and warning lines, in order. */
@@ -942,14 +948,43 @@ test('an opted-in week keeps its AI picks beside the weekly playlist', async (t)
   });
 });
 
+test('the AI ports are built once per fill, for its week count', async (t) => {
+  const { ports, judge, builtFor } = aiPorts(PICK_G, [
+    { id: 'pl-old', name: TWO_FRIDAYS_AGO, trackCount: 3 },
+  ]);
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+
+  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+
+  assert.deepEqual(builtFor, [2]);
+  assert.equal(judge.requests.length, 2);
+});
+
+test('the production fill ports build the Deezer source and the Claude judge', (t) => {
+  const dataDir = tmpDataDir(t);
+  const ports = fillPorts(fixtureCtx({ userId: 'user-1' }), {
+    userId: 'user-1',
+    dataDir,
+    storage: memoryStorage(),
+    cache: createDurableCache({ userId: 'user-1', dataDir, redis: null }),
+  });
+
+  const ai = ports.ai?.({ weeks: 1 });
+
+  assert.equal(typeof ai?.candidates.candidates, 'function');
+  assert.equal(typeof ai?.judge.judge, 'function');
+});
+
 test('a user who has not opted in gets no AI input, record or log lines', async (t) => {
-  const { ports, judge, candidates } = aiPorts(PICK_G);
+  const { ports, judge, candidates, builtFor } = aiPorts(PICK_G);
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_P1);
   const log = recordingLog();
 
   await runFill(w.options({ aiFindsAvailable: true, handlers: log.handlers }));
 
+  assert.deepEqual(builtFor, []);
   assert.equal(candidates.requests.length, 0);
   assert.equal(judge.requests.length, 0);
   assert.equal(await w.cache.load(AI_PICKS), null);

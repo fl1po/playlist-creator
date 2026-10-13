@@ -26,7 +26,7 @@ await runFill({
   userConfig: await new UserConfigStore().load(),
   storage,
   cache,
-  ports: fillPorts(ctx, { userId, dataDir: DATA_DIR, storage }),
+  ports: fillPorts(ctx, { userId, dataDir: DATA_DIR, storage, cache }),
   handlers: consoleHandlers(),
   syncHandlers: consoleSyncHandlers(),
   fresh: freshMode,

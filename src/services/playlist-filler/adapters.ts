@@ -1,5 +1,9 @@
+import { anthropicKeyFromEnv } from '../../lib/anthropic-key.js';
+import type { DurableCache } from '../../lib/durable-cache.js';
 import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import type { BatchCache } from '../../lib/types.js';
+import { claudeTasteJudge } from '../ai-finds/claude-taste-judge.js';
+import { deezerCandidateSource } from '../ai-finds/deezer-candidate-source.js';
 import { promotionReads } from '../promotion-sync/adapters.js';
 import { spotifyRecalculationPorts } from '../recalculation/adapters.js';
 import { deezerPopularitySource } from '../week-collection/adapters.js';
@@ -51,20 +55,34 @@ export function batchCacheCheckpoints(storage: FillStorage): CheckpointStore {
 /**
  * The production port set for one user's fill. `dataDir` is where that
  * user's unprocessed-playlists cache lives; `storage` is where week progress
- * is persisted.
+ * is persisted; `cache` keeps the Deezer artist lookups AI finds reuse.
  */
 export function fillPorts(
   ctx: SpotifyGateway,
-  user: { userId: string; dataDir: string; storage: FillStorage },
+  user: {
+    userId: string;
+    dataDir: string;
+    storage: FillStorage;
+    cache: DurableCache;
+  },
 ): FillPorts {
+  const checkAbort = () => ctx.signal?.throwIfAborted();
   return {
     week: {
       reads: spotifyReleaseReads(ctx),
-      popularity: deezerPopularitySource(() => ctx.signal?.throwIfAborted()),
+      popularity: deezerPopularitySource(checkAbort),
       checkpoints: batchCacheCheckpoints(user.storage),
     },
     weekly: spotifyWeeklyPlaylistStore(ctx),
     history: promotionReads(ctx),
     recalculation: spotifyRecalculationPorts(ctx, user),
+    ai: ({ weeks }) => ({
+      candidates: deezerCandidateSource({ cache: user.cache, checkAbort }),
+      judge: claudeTasteJudge({
+        apiKey: anthropicKeyFromEnv(),
+        fillWeeks: weeks,
+        signal: ctx.signal,
+      }),
+    }),
   };
 }
