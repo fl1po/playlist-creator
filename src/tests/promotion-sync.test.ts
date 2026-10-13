@@ -225,7 +225,103 @@ test('addition: backfills the in-window release, excluding AW and existing track
   assert.deepEqual(writes.added.get('pl1'), ['t1']); // out-of-window, t2, t3 all excluded
   assert.equal(writes.removed.size, 0);
   assert.equal(result.added, 1);
-  assert.ok(result.decisions.some((d) => d.kind === 'release-found'));
+  assert.deepEqual(
+    result.decisions.filter((d) => d.kind === 'release-found'),
+    [{ kind: 'release-found', artist: 'Delta', release: 'X', type: 'album' }],
+  );
+});
+
+test('addition: a release whose tracks are all already in the playlist is not reported found', async () => {
+  // An AI find (or editorial find) already put Delta's whole release in the
+  // week before Delta was promoted: the backfill has nothing left to add.
+  const catalog: Catalog = {
+    artists: [
+      {
+        id: 'art-d',
+        name: 'Delta',
+        albums: [
+          {
+            id: 'alb-x',
+            name: 'X',
+            type: 'album',
+            release_date: IN_WINDOW,
+            tracks: [
+              { id: 't1', name: 'One', key: 'delta::one' },
+              { id: 't2', name: 'Two', key: 'delta::two' },
+            ],
+          },
+        ],
+      },
+    ],
+    playlists: [
+      {
+        id: 'pl1',
+        name: WEEK,
+        tracks: [
+          { id: 't1', name: 'One', artistNames: ['Delta'], albumId: 'alb-x' },
+          { id: 't2', name: 'Two', artistNames: ['Delta'], albumId: 'alb-x' },
+        ],
+      },
+    ],
+  };
+  const writes = recordingWrites();
+
+  const result = await syncPriorityChanges(
+    [{ artist: 'Delta', from: null, to: 1 }],
+    input({
+      unprocessedPlaylists: playlistList(catalog),
+      trustedArtists: trusted({ Delta: ac(1, 100, 'art-d') }),
+    }),
+    ports(fixtureReads(catalog), writes, { 'alb-x': 70 }),
+  );
+
+  assert.equal(writes.added.size, 0);
+  assert.equal(result.added, 0);
+  assert.deepEqual(kinds(result.decisions), []);
+});
+
+test('addition: releases dropped by the popularity or variant filters show only their drop decision', async () => {
+  const catalog: Catalog = {
+    artists: [
+      {
+        id: 'art-d',
+        name: 'Delta',
+        albums: [
+          {
+            id: 'alb-low',
+            name: 'Quiet',
+            type: 'album',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 'q1', name: 'Hush', key: 'delta::hush' }],
+          },
+          {
+            id: 'alb-sped',
+            name: 'Loud (Sped Up)',
+            type: 'single',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 's1', name: 'Loud', key: 'delta::loud-sped' }],
+          },
+        ],
+      },
+    ],
+    playlists: [{ id: 'pl1', name: WEEK, tracks: [] }],
+  };
+  const writes = recordingWrites();
+
+  const result = await syncPriorityChanges(
+    [{ artist: 'Delta', from: null, to: 1 }],
+    input({
+      unprocessedPlaylists: playlistList(catalog),
+      trustedArtists: trusted({ Delta: ac(1, 100, 'art-d') }),
+    }),
+    ports(fixtureReads(catalog), writes, { 'alb-low': 10, 'alb-sped': 70 }),
+  );
+
+  assert.equal(writes.added.size, 0);
+  assert.deepEqual(kinds(result.decisions).sort(), [
+    'low-popularity',
+    'variant-stripped',
+  ]);
 });
 
 test('addition: the lenient minPopularity bar decides whether a release survives', async () => {

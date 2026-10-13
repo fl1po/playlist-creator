@@ -282,12 +282,6 @@ export async function syncPriorityChanges(
             priority: data.priority ?? 0,
             score: data.score,
           });
-          additionDecisions.push({
-            kind: 'release-found',
-            artist: name,
-            release: r.name,
-            type: r.type,
-          });
         }
       }
 
@@ -325,6 +319,16 @@ export async function syncPriorityChanges(
       const exclude = new Set<string>([...awTrackIds, ...existing]);
       const { collected } = await collectTracks(run, foundReleases, exclude);
       const trackIds = collected.flatMap((c) => c.trackIds);
+      // Reported only once a release adds tracks: one filtered out above, or
+      // whose tracks are all already present, is not a find for this backfill.
+      for (const { release } of collected) {
+        additionDecisions.push({
+          kind: 'release-found',
+          artist: release.artistName,
+          release: release.name,
+          type: release.type,
+        });
+      }
 
       if (trackIds.length > 0) {
         await writes.addTracks(pl.id, trackIds);
