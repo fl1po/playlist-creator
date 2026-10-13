@@ -1,11 +1,11 @@
-import fs from "node:fs";
-import type { TrustedArtistsFile } from "../lib/types.js";
-import { UserConfigStore, secondaryLabel } from "../lib/user-config.js";
+import fs from 'node:fs';
+import type { TrustedArtistsFile } from '../lib/types.js';
+import { secondaryLabel, UserConfigStore } from '../lib/user-config.js';
 
-const TRUSTED_ARTISTS_PATH = "./trusted-artists.json";
+const TRUSTED_ARTISTS_PATH = './trusted-artists.json';
 
 const data: TrustedArtistsFile = JSON.parse(
-  fs.readFileSync(TRUSTED_ARTISTS_PATH, "utf8"),
+  fs.readFileSync(TRUSTED_ARTISTS_PATH, 'utf8'),
 );
 const artists = data.artistCounts;
 const userConfig = new UserConfigStore().load();
@@ -14,13 +14,13 @@ const t = userConfig.scoring.priorityThresholds;
 
 const args = process.argv.slice(2);
 const filterPriorities = new Set<number>();
-let sortBy: "score" | "alpha" = "score";
+let sortBy: 'score' | 'alpha' = 'score';
 
 for (const arg of args) {
   if (/^p[1-4]$/i.test(arg)) {
-    filterPriorities.add(Number.parseInt(arg[1]));
-  } else if (arg === "--alpha") {
-    sortBy = "alpha";
+    filterPriorities.add(Number.parseInt(arg[1], 10));
+  } else if (arg === '--alpha') {
+    sortBy = 'alpha';
   }
 }
 
@@ -33,16 +33,34 @@ if (filterPriorities.size === 0) {
 const filtered = Object.entries(artists)
   .filter(([, d]) => d.priority !== null && filterPriorities.has(d.priority))
   .sort((a, b) => {
-    if (sortBy === "alpha") return a[0].localeCompare(b[0]);
-    if (a[1].priority !== b[1].priority) return (a[1].priority ?? 99) - (b[1].priority ?? 99);
+    if (sortBy === 'alpha') return a[0].localeCompare(b[0]);
+    if (a[1].priority !== b[1].priority)
+      return (a[1].priority ?? 99) - (b[1].priority ?? 99);
     return b[1].score - a[1].score;
   });
 
-const grouped = new Map<number, Array<{ name: string; score: number; allWeekly: number; bestOfAllWeekly: number }>>();
+const grouped = new Map<
+  number,
+  Array<{
+    name: string;
+    score: number;
+    allWeekly: number;
+    bestOfAllWeekly: number;
+  }>
+>();
 for (const [name, d] of filtered) {
   if (d.priority === null) continue;
-  if (!grouped.has(d.priority)) grouped.set(d.priority, []);
-  grouped.get(d.priority)!.push({ name, score: d.score, allWeekly: d.allWeekly, bestOfAllWeekly: d.bestOfAllWeekly });
+  let list = grouped.get(d.priority);
+  if (!list) {
+    list = [];
+    grouped.set(d.priority, list);
+  }
+  list.push({
+    name,
+    score: d.score,
+    allWeekly: d.allWeekly,
+    bestOfAllWeekly: d.bestOfAllWeekly,
+  });
 }
 
 const priorityLabels: Record<number, string> = {
@@ -55,12 +73,14 @@ const priorityLabels: Record<number, string> = {
 let totalShown = 0;
 
 for (const p of [1, 2, 3, 4]) {
-  if (!grouped.has(p)) continue;
-  const list = grouped.get(p)!;
+  const list = grouped.get(p);
+  if (!list) continue;
   console.log(`\n=== ${priorityLabels[p]} — ${list.length} artists ===\n`);
 
   for (const a of list) {
-    console.log(`  [${String(a.score).padStart(3)}] ${a.name}  (AW:${a.allWeekly} ${sl}:${a.bestOfAllWeekly})`);
+    console.log(
+      `  [${String(a.score).padStart(3)}] ${a.name}  (AW:${a.allWeekly} ${sl}:${a.bestOfAllWeekly})`,
+    );
   }
   totalShown += list.length;
 }

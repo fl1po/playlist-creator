@@ -14,8 +14,8 @@ import { type Cluster, clusterOf } from './genre-map.js';
 import {
   type ArtistProfile,
   type RosterArtist,
-  TIER_WEIGHT,
   type TasteProfile,
+  TIER_WEIGHT,
 } from './index.js';
 
 /** Spotify's cap on the batched artist endpoint. */

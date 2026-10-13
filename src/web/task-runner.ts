@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import type express from 'express';
-import { createDurableCache } from '../lib/durable-cache.js';
 import type { DurableCache } from '../lib/durable-cache.js';
+import { createDurableCache } from '../lib/durable-cache.js';
 import { describeSpotifyEvent } from '../lib/spotify/events.js';
 import {
   type SpotifyEvent,

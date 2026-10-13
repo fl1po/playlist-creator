@@ -1,9 +1,9 @@
 import {
-  type RawRelease,
   getBaseAlbumName,
   groupReleases,
   isAllInstrumental,
   isDeluxeRelease,
+  type RawRelease,
   releaseDateCouldMatch,
   releaseDateFallbackMatch,
 } from '../../domain/releases.js';

@@ -1,7 +1,7 @@
 import {
+  computeArtistData,
   type PriorityThresholds,
   type ScoringWeights,
-  computeArtistData,
 } from '../domain/artists.js';
 import type { PlaylistArtistData, PlaylistScanResult } from '../lib/types.js';
 

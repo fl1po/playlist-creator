@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  MIN_LASTFM_LISTENERS,
   applyFloor,
+  MIN_LASTFM_LISTENERS,
   scoreAcclaim,
 } from '../services/year-collection/acclaim.js';
 import {
-  FailureLog,
   degradedPhases,
   emptyCheckpoint,
+  FailureLog,
 } from '../services/year-collection/checkpoint.js';
 import { clusterOf } from '../services/year-collection/genre-map.js';
 import { monthOf } from '../services/year-collection/plan.js';

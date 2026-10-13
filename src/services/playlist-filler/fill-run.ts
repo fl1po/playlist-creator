@@ -7,9 +7,9 @@ import {
 } from '../../lib/service-events.js';
 import { sleep } from '../../lib/spotify/clock.js';
 import {
+  isAbort,
   SpotifyAuthLost,
   type SpotifyGateway,
-  isAbort,
 } from '../../lib/spotify/gateway.js';
 import type { DateResult, TrustedArtistsFile } from '../../lib/types.js';
 import type { UserConfig } from '../../lib/user-config.js';
@@ -28,10 +28,10 @@ import {
 import { syncProgressTo } from '../recalculation/subscribers.js';
 import {
   type CollectionDecision,
+  collectWeek,
   type WeekCollection,
   type WeekCollectionPorts,
   type WeekProgressEvent,
-  collectWeek,
 } from '../week-collection/index.js';
 import {
   type WeeklyPlaylistStore,

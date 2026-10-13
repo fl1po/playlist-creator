@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  DEFAULT_FEATURED_MULTIPLIER,
   computeArtistData,
+  DEFAULT_FEATURED_MULTIPLIER,
 } from '../domain/artists.js';
 import type { PlaylistArtistData, PlaylistScanResult } from '../lib/types.js';
 import { scoreArtist, simulate } from '../services/featured-simulation.js';

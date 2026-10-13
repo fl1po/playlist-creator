@@ -5,7 +5,7 @@ import type {
   PlaylistScanResult,
   TrustedArtistsFile,
 } from '../../lib/types.js';
-import { type UserConfig, secondarySourceName } from '../../lib/user-config.js';
+import { secondarySourceName, type UserConfig } from '../../lib/user-config.js';
 
 function sourceScan(d: PlaylistArtistData | undefined) {
   return d

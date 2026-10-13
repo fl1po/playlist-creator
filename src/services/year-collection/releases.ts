@@ -34,7 +34,7 @@ const REISSUE =
 const COMPILATION =
   /\b(greatest hits|best of|the collection|anthology|essentials|retrospective|singles collection)\b/i;
 const LIVE =
-  /\b(live at|live from|live in|live session|unplugged|in concert)\b|[\(\[]\s*live\s*[\)\]]/i;
+  /\b(live at|live from|live in|live session|unplugged|in concert)\b|[([]\s*live\s*[)\]]/i;
 const REMIX_PACK = /\bremix(es|ed)?\b/i;
 
 export interface RawAlbum {

@@ -17,8 +17,7 @@
  * complete, so writing one requires `--allow-degraded`.
  */
 
-import { readFileSync } from 'node:fs';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { FileConfigStore } from '../lib/config.js';
 import { lastfmKeyFromEnv } from '../lib/lastfm-client.js';
 import { createCliGateway } from '../lib/spotify/gateway.js';

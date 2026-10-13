@@ -1,0 +1,2 @@
+# Biome enforces LF; keep LF in the working copy on Windows too
+* text=auto eol=lf

@@ -1,6 +1,6 @@
 import {
-  type EventHandlers,
   broadcastEvents,
+  type EventHandlers,
 } from '../../lib/service-events.js';
 import { describeChange } from '../recalculation/subscribers.js';
 import type { PlaylistFillerEventMap } from './events.js';

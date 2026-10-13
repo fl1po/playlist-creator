@@ -16,7 +16,11 @@ function fakeSpotify(playlists: Array<{ name: string; albumIds: string[] }>) {
   const calls: string[] = [];
   const api = {
     playlists: {
-      getUsersPlaylists: async (_user: string, limit: number, offset: number) => {
+      getUsersPlaylists: async (
+        _user: string,
+        limit: number,
+        offset: number,
+      ) => {
         calls.push('list');
         return {
           items: playlists.slice(offset, offset + limit).map((p, i) => ({
@@ -142,4 +146,3 @@ test('a deleted weekly playlist reads as gone, without reading tracks', async ()
   assert.deepEqual(week, { exists: false });
   assert.deepEqual(calls, ['list']);
 });
-

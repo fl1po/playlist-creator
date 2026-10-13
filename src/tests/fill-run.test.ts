@@ -10,7 +10,7 @@ import {
   RECALCULATION_STATE,
   TRUSTED_ARTISTS,
 } from '../lib/cache-files.js';
-import { type DurableCache, createDurableCache } from '../lib/durable-cache.js';
+import { createDurableCache, type DurableCache } from '../lib/durable-cache.js';
 import type { EventHandlers } from '../lib/service-events.js';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
 import { type SpotifyGateway, TaskAborted } from '../lib/spotify/gateway.js';

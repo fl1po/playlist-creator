@@ -5,9 +5,9 @@
   "scripts": {
     "build": "tsc",
     "lint": "biome check --diagnostic-level=warn --error-on-warnings",
-    "lint:fix": "biome check --write --unsafe --organize-imports-enabled=true",
+    "lint:fix": "biome check --write --unsafe",
     "typecheck": "tsc --noEmit",
-    "test": "tsc && node --test 'build/tests/**/*.test.js'",
+    "test": "tsc && node --test \"build/tests/**/*.test.js\"",
     "fill": "tsc && node build/cli/fill.js",
     "fill:fresh": "tsc && node build/cli/fill.js --fresh",
     "recalculate": "tsc && node build/cli/recalculate.js",
@@ -39,6 +39,9 @@
     "url": "https://github.com/fl1po/playlist-creator.git"
   },
   "description": "Automated weekly playlist generation driven by your listening history",
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
     "@spotify/web-api-ts-sdk": "^1.2.0",

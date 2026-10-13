@@ -9,9 +9,9 @@ import type {
   TrustedArtistsFile,
 } from '../../lib/types.js';
 import {
-  type Run,
   collectTracks,
   getArtistWindowReleases,
+  type Run,
 } from '../week-collection/engine.js';
 import type {
   CollectionDecision,

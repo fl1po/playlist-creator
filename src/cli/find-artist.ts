@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { FileConfigStore } from '../lib/config.js';
 import { createCliGateway } from '../lib/spotify/gateway.js';
 import type { TrustedArtistsFile } from '../lib/types.js';
-import { UserConfigStore, secondaryLabel } from '../lib/user-config.js';
+import { secondaryLabel, UserConfigStore } from '../lib/user-config.js';
 import { ArtistLookupService } from '../services/artist-lookup.js';
 
 const TRUSTED_ARTISTS_PATH = './trusted-artists.json';

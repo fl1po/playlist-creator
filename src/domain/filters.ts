@@ -1,15 +1,46 @@
 // Genre gate for editorial-playlist artists not in the trusted roster.
 
 export const acceptedGenres = [
-  "hip-hop", "rap", "r&b", "soul", "electronic", "house", "techno", "trap",
-  "dancehall", "reggaeton", "latin", "afrobeat", "grime", "drill", "dance",
-  "pop", "urban", "uk", "bass", "dubstep", "garage", "funky", "afrobeats",
-  "reggae", "dub", "edm", "phonk",
+  'hip-hop',
+  'rap',
+  'r&b',
+  'soul',
+  'electronic',
+  'house',
+  'techno',
+  'trap',
+  'dancehall',
+  'reggaeton',
+  'latin',
+  'afrobeat',
+  'grime',
+  'drill',
+  'dance',
+  'pop',
+  'urban',
+  'uk',
+  'bass',
+  'dubstep',
+  'garage',
+  'funky',
+  'afrobeats',
+  'reggae',
+  'dub',
+  'edm',
+  'phonk',
 ];
 
 export const rejectedGenres = [
-  "rock", "folk", "indie folk", "classical", "post-punk", "emo", "country",
-  "metal", "jazz", "blues",
+  'rock',
+  'folk',
+  'indie folk',
+  'classical',
+  'post-punk',
+  'emo',
+  'country',
+  'metal',
+  'jazz',
+  'blues',
 ];
 
 export interface GenreFilterLists {
@@ -50,14 +81,13 @@ export function hasRejectedGenre(
 // Variant detection patterns (instrumental / clean / acoustic / sped up / slowed),
 // anchored to the end of a release name. instrumentalTrackPattern is for track names.
 export const instrumentalPattern =
-  /[\s\-]*[\(\[]?\s*(instrumental|instrumentals|instrumental version)\s*[\)\]]?\s*$/i;
+  /[\s-]*[([]?\s*(instrumental|instrumentals|instrumental version)\s*[)\]]?\s*$/i;
 export const cleanPattern =
-  /[\s\-]*[\(\[]?\s*(clean|clean version|clean edit)\s*[\)\]]?\s*$/i;
+  /[\s-]*[([]?\s*(clean|clean version|clean edit)\s*[)\]]?\s*$/i;
 export const acousticPattern =
-  /[\s\-]*[\(\[]?\s*(acoustic|acoustic version|acoustics)\s*[\)\]]?\s*$/i;
-export const instrumentalTrackPattern =
-  /[\s\-]+(instrumental|inst\.?)$/i;
+  /[\s-]*[([]?\s*(acoustic|acoustic version|acoustics)\s*[)\]]?\s*$/i;
+export const instrumentalTrackPattern = /[\s-]+(instrumental|inst\.?)$/i;
 export const spedUpPattern =
-  /[\s\-]*[\(\[]?\s*(sped up|sped[-\s]?up version|speed up)\s*[\)\]]?\s*$/i;
+  /[\s-]*[([]?\s*(sped up|sped[-\s]?up version|speed up)\s*[)\]]?\s*$/i;
 export const slowedPattern =
-  /[\s\-]*[\(\[]?\s*(slowed|slowed\s*(\+|&|and)\s*reverb|slowed down|slowed version|chopped\s*(\+|&|and)\s*screwed)\s*[\)\]]?\s*$/i;
+  /[\s-]*[([]?\s*(slowed|slowed\s*(\+|&|and)\s*reverb|slowed down|slowed version|chopped\s*(\+|&|and)\s*screwed)\s*[)\]]?\s*$/i;

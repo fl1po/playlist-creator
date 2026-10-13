@@ -1,13 +1,14 @@
 {
-  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
   "files": {
     "ignoreUnknown": false,
-    "ignore": [
-      "**/pnpm-lock.yaml",
-      "node_modules",
-      "public",
+    "includes": [
+      "**",
+      "!**/pnpm-lock.yaml",
+      "!**/node_modules",
+      "!**/public",
       // Agent worktrees are full repo copies with their own (stale) state
-      ".claude/worktrees"
+      "!**/.claude/worktrees"
     ]
   },
   "vcs": {
@@ -28,7 +29,7 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "a11y": {
         "useHtmlLang": "warn", // Not in recommended ruleset, turning on manually
         "noHeaderScope": "warn", // Not in recommended ruleset, turning on manually
@@ -43,10 +44,11 @@
         "noSvgWithoutTitle": "off", // We do not intend to adhere to this rule
         "useMediaCaption": "off", // We would need a cultural change to turn this on
         "noAutofocus": "off", // We're highly intentional about when we use autofocus
-        "noBlankTarget": "off",
         "useFocusableInteractive": "off",
         "useAriaPropsForRole": "off",
-        "useKeyWithClickEvents": "off"
+        "useKeyWithClickEvents": "off",
+        "noStaticElementInteractions": "warn",
+        "useValidAutocomplete": "warn"
       },
       "complexity": {
         "noUselessStringConcat": "warn",
@@ -56,17 +58,17 @@
         "noUselessTernary": "error",
         "useFlatMap": "error",
         "useOptionalChain": "error",
-        "useSimplifiedLogicExpression": "error"
+        "useSimplifiedLogicExpression": "error",
+        "noUselessContinue": "off" // Turned off due to developer preferences
       },
       "correctness": {
         "noUnusedImports": "error",
-        "useArrayLiterals": "warn", // Not in recommended ruleset, turning on manually
-        "noNewSymbol": "warn", // Not in recommended ruleset, turning on manually
-        "noUnnecessaryContinue": "off", // Turned off due to developer preferences
-        "noUnusedVariables": "error"
+        "noUnusedVariables": "error",
+        "noInvalidBuiltinInstantiation": "warn" // Not in recommended ruleset, turning on manually
       },
       "security": {
-        "noDangerouslySetInnerHtml": "error"
+        "noDangerouslySetInnerHtml": "error",
+        "noBlankTarget": "off"
       },
       "style": {
         "useFragmentSyntax": "warn",
@@ -83,18 +85,26 @@
             "filenameCases": ["kebab-case", "export"],
             "requireAscii": true
           }
-        }
+        },
+        "useArrayLiterals": "warn", // Not in recommended ruleset, turning on manually
+        // Recommended (as errors) in Biome 1.x; kept on after the 2.x migration
+        "noParameterAssign": "error",
+        "useEnumInitializers": "error",
+        "noInferrableTypes": "error",
+        "useSingleVarDeclarator": "error",
+        "useAsConstAssertion": "error",
+        "useNumberNamespace": "error",
+        "useTemplate": "error",
+        "useNodejsImportProtocol": "error"
       },
       "suspicious": {
-        "noExplicitAny": "off"
-      },
-      "nursery": {
-        "noStaticElementInteractions": "warn",
+        "noExplicitAny": "off",
         "noHeadImportInDocument": "warn",
         "noDocumentImportInPage": "warn",
         "noDuplicateElseIf": "warn",
-        "noIrregularWhitespace": "warn",
-        "useValidAutocomplete": "warn",
+        "noIrregularWhitespace": "warn"
+      },
+      "nursery": {
         "useSortedClasses": "error"
       }
     }
@@ -125,5 +135,5 @@
     "formatter": { "enabled": false },
     "linter": { "enabled": false }
   },
-  "organizeImports": { "enabled": true }
+  "assist": { "actions": { "source": { "organizeImports": "on" } } }
 }

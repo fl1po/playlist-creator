@@ -5,11 +5,11 @@ import type { Clock } from '../lib/spotify/clock.js';
 import { HttpError, RateLimitError } from '../lib/spotify/errors.js';
 import type { SpotifyEvent } from '../lib/spotify/events.js';
 import {
+  createSpotifyGateway,
   type GatewayOptions,
   RequestPacer,
   SpotifyAuthLost,
   TaskAborted,
-  createSpotifyGateway,
 } from '../lib/spotify/gateway.js';
 import type { RefreshOutcome } from '../lib/spotify/tokens.js';
 import type { ConfigStore, SpotifyConfig } from '../lib/types.js';

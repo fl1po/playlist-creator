@@ -8,7 +8,7 @@ import {
   PENDING_PRIORITY_CHANGES,
   TRUSTED_ARTISTS,
 } from '../lib/cache-files.js';
-import { type DurableCache, createDurableCache } from '../lib/durable-cache.js';
+import { createDurableCache, type DurableCache } from '../lib/durable-cache.js';
 import type { PlaylistTrackWithArtists } from '../lib/pagination.js';
 import {
   type PlaylistScanResult,
@@ -19,9 +19,9 @@ import { DEFAULT_USER_CONFIG, type UserConfig } from '../lib/user-config.js';
 import type { PlaylistWrites } from '../services/promotion-sync/index.js';
 import {
   type RecalculationDeps,
+  recalculate,
   type Source,
   type SourceReads,
-  recalculate,
   syncPending,
 } from '../services/recalculation/index.js';
 import { fixedPopularitySource } from '../services/week-collection/adapters.js';

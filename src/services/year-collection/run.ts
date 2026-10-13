@@ -25,36 +25,36 @@ import { LastfmClient } from '../../lib/lastfm-client.js';
 import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import type { TrustedArtistsFile } from '../../lib/types.js';
 import {
+  applyFloor,
   CRITIC_WEIGHT,
   FLOOR_PERCENTILE,
-  MIN_LASTFM_LISTENERS,
-  STREAMING_WEIGHT,
-  applyFloor,
   fetchDeezerAcclaim,
   fetchLastfmAcclaim,
+  MIN_LASTFM_LISTENERS,
+  STREAMING_WEIGHT,
   scoreAcclaim,
 } from './acclaim.js';
 import {
   type DegradedPhase,
-  FLUSH_EVERY,
-  FailureLog,
   degradedPhases,
   emptyCheckpoint,
+  FailureLog,
+  FLUSH_EVERY,
   loadCheckpoint,
   saveCheckpoint,
 } from './checkpoint.js';
 import {
-  type RawCandidate,
   cutByCoCitation,
   expandFromSeeds,
+  type RawCandidate,
 } from './expansion.js';
 import type { Cluster } from './genre-map.js';
 import { type ArtistProfile, type Candidate, SEED_TIERS } from './index.js';
 import {
+  monthOf,
   PLAN_VERSION,
   type PlannedRelease,
   type YearPlan,
-  monthOf,
 } from './plan.js';
 import {
   buildTasteProfile,
@@ -65,11 +65,11 @@ import {
 } from './profile.js';
 import {
   type AlbumDetail,
-  type Rejection,
-  type YearRelease,
   fetchAlbumDetails,
   fetchArtistAlbums,
+  type Rejection,
   selectYearReleases,
+  type YearRelease,
 } from './releases.js';
 import { scoreAndCut } from './relevance.js';
 

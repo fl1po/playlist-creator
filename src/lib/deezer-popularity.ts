@@ -21,7 +21,7 @@ export interface DeezerPopularityOptions {
 function normalize(s: string): string {
   return s
     .toLowerCase()
-    .replace(/\s*[\(\[].*?[\)\]]\s*/g, '')
+    .replace(/\s*[([].*?[)\]]\s*/g, '')
     .replace(/[‘’]/g, "'")
     .replace(/[^\w\s']/g, '')
     .replace(/\s+/g, ' ')

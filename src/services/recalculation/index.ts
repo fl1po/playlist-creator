@@ -7,15 +7,15 @@ import {
 import type { DurableCache } from '../../lib/durable-cache.js';
 import {
   type CachedScanResult,
+  isRoleTaggedCache,
   type PlaylistScanResult,
   type RecalculationState,
   type SimplePlaylist,
   type TrustedArtistsFile,
-  isRoleTaggedCache,
   toCachedScanResult,
   toScanResult,
 } from '../../lib/types.js';
-import { type UserConfig, secondarySourceName } from '../../lib/user-config.js';
+import { secondarySourceName, type UserConfig } from '../../lib/user-config.js';
 import {
   type PriorityChange,
   type PromotionProgressEvent,

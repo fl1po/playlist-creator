@@ -16,7 +16,7 @@ import type {
   TrustedArtistsFile,
 } from '../../lib/types.js';
 import { containPickFailures, landAiPicks, runAiPhase } from './ai-finds.js';
-import { type Run, collectTracks, getArtistWindowReleases } from './engine.js';
+import { collectTracks, getArtistWindowReleases, type Run } from './engine.js';
 
 // ── Ports (the seam) ─────────────────────────────────────────────────────────
 

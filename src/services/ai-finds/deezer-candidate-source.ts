@@ -244,8 +244,9 @@ export function deezerCandidateSource(
       .map((seed) => ({ seed, key: seedKey(seed) }))
       .filter(({ key }) => {
         const entry = graph[key];
-        return (
-          !lookedUp.has(key) && !(entry && fresh(entry.fetchedAt, GRAPH_TTL_MS))
+        return !(
+          lookedUp.has(key) ||
+          (entry && fresh(entry.fetchedAt, GRAPH_TTL_MS))
         );
       });
     if (due.length === 0) return;

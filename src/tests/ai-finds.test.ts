@@ -10,11 +10,11 @@ import {
 } from '../services/week-collection/adapters.js';
 import {
   type Candidate,
+  collectWeek,
   type ReleaseReads,
   type TasteJudgeOutcome,
   type WeekCollectionInput,
   type WeekProgressEvent,
-  collectWeek,
 } from '../services/week-collection/index.js';
 import {
   type FixtureAlbum,

@@ -23,7 +23,7 @@ function fakeSpotify(codes: Record<string, string | null>, failBody = '') {
   globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
     const u = String(url);
     if (u.endsWith('/v1/me')) {
-      const auth = (init?.headers as Record<string, string>).Authorization;
+      const auth = new Headers(init?.headers).get('Authorization') ?? '';
       return Response.json({ id: auth.replace('Bearer access-', '') });
     }
     const code = new URLSearchParams(String(init?.body)).get('code') ?? '';

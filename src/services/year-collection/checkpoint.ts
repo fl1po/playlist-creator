@@ -16,8 +16,13 @@
  * rebuilds the plan from it, refetching only earlier failures and misses.
  */
 
-import { existsSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { readFileSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import type { AcclaimSignals } from './acclaim.js';
 import type { RawCandidate } from './expansion.js';

@@ -7,10 +7,10 @@ import {
 } from '../services/week-collection/adapters.js';
 import {
   type CollectionDecision,
+  collectWeek,
   type ReleaseReads,
   type WeekCollectionInput,
   type WeekCollectionPorts,
-  collectWeek,
 } from '../services/week-collection/index.js';
 import { fixtureReads } from './fixtures/release-catalog.js';
 

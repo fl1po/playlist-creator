@@ -2,24 +2,24 @@ import { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import type { ConfigStore, UserTokens } from '../types.js';
 import { type Clock, systemClock, untilAborted } from './clock.js';
 import {
-  RateLimitError,
-  SpotifyAuthLost,
   classifyError,
   isAbort,
+  RateLimitError,
+  SpotifyAuthLost,
 } from './errors.js';
-import { type SpotifyEvent, logSpotifyEventToConsole } from './events.js';
+import { logSpotifyEventToConsole, type SpotifyEvent } from './events.js';
 import { type Lane, RequestPacer } from './pacer.js';
 import { RetryAfterResponseValidator } from './response-validator.js';
 import {
   type RefreshGrant,
-  TokenState,
   spotifyRefreshGrant,
+  TokenState,
 } from './tokens.js';
 
-export { SpotifyAuthLost, TaskAborted, isAbort } from './errors.js';
+export { isAbort, SpotifyAuthLost, TaskAborted } from './errors.js';
 export type { SpotifyEvent } from './events.js';
-export { RequestPacer } from './pacer.js';
 export type { Lane } from './pacer.js';
+export { RequestPacer } from './pacer.js';
 
 /**
  * Why a call failed after the gateway's own retries. `rate_limited` only

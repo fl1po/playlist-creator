@@ -1,8 +1,8 @@
 import {
-  type GenreFilterLists,
   acceptedGenres,
   acousticPattern,
   cleanPattern,
+  type GenreFilterLists,
   hasRejectedGenre,
   instrumentalPattern,
   slowedPattern,
@@ -13,14 +13,14 @@ import {
   releaseDateFallbackMatch,
 } from '../../domain/releases.js';
 import { foldName } from '../../lib/deezer-client.js';
-import { SpotifyAuthLost, isAbort } from '../../lib/spotify/errors.js';
+import { isAbort, SpotifyAuthLost } from '../../lib/spotify/errors.js';
 import type { FoundRelease, PlaylistAlbumInfo } from '../../lib/types.js';
 import {
   type Collected,
-  type Run,
-  type WindowRelease,
   chooseVariant,
   getArtistInWindow,
+  type Run,
+  type WindowRelease,
 } from './engine.js';
 import type {
   AiFindsConfig,

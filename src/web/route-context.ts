@@ -2,25 +2,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type express from 'express';
 import { TRUSTED_ARTISTS } from '../lib/cache-files.js';
+import type { IAppConfigStore } from '../lib/config.js';
 import {
   BridgedConfigStore,
   InMemoryTokenStore,
   UserTokenStore,
 } from '../lib/config.js';
-import type { IAppConfigStore } from '../lib/config.js';
 import { createDurableCache } from '../lib/durable-cache.js';
 import {
+  createSpotifyGateway,
   type RequestPacer,
   type SessionGateway,
-  createSpotifyGateway,
 } from '../lib/spotify/gateway.js';
 import type { AppConfig, TrustedArtistsFile } from '../lib/types.js';
 import { type IUserConfigStore, UserConfigStore } from '../lib/user-config.js';
 import type { AuthManager } from './auth.js';
 import type { Broadcaster } from './broadcast.js';
 import {
-  RedisUserConfigStore,
   isRedisConfigured,
+  RedisUserConfigStore,
 } from './redis-config-store.js';
 import {
   getBearerToken,

@@ -10,7 +10,7 @@ import type {
   DeezerArtistAlbum,
   DeezerTopTrack,
 } from '../lib/deezer-client.js';
-import { type DurableCache, createDurableCache } from '../lib/durable-cache.js';
+import { createDurableCache, type DurableCache } from '../lib/durable-cache.js';
 import { TaskAborted } from '../lib/spotify/errors.js';
 import {
   type DeezerReads,

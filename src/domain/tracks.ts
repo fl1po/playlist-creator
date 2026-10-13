@@ -6,7 +6,7 @@ export function trackKey(
   const artistNames = artists
     .map((a) => a.name.toLowerCase())
     .sort()
-    .join("|");
+    .join('|');
   return `${artistNames}::${trackName.toLowerCase()}`;
 }
 
@@ -26,25 +26,29 @@ export function formatHm(ms: number): string {
 
 /** Parse DD.MM.YY (local time). Two-digit years pivot at 50: 00–49 → 20xx. */
 export function parseDate(dateStr: string): Date {
-  const [day, month, year] = dateStr.split(".");
+  const [day, month, year] = dateStr.split('.');
   const fullYear =
-    Number.parseInt(year) < 50
-      ? 2000 + Number.parseInt(year)
-      : 1900 + Number.parseInt(year);
-  return new Date(fullYear, Number.parseInt(month) - 1, Number.parseInt(day));
+    Number.parseInt(year, 10) < 50
+      ? 2000 + Number.parseInt(year, 10)
+      : 1900 + Number.parseInt(year, 10);
+  return new Date(
+    fullYear,
+    Number.parseInt(month, 10) - 1,
+    Number.parseInt(day, 10),
+  );
 }
 
 /** Format Date to YYYY-MM-DD in local time (not toISOString's UTC). */
 export function formatDateISO(date: Date): string {
   const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 
 export function formatDdMmYy(d: Date): string {
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
   const yy = String(d.getFullYear()).slice(-2);
   return `${dd}.${mm}.${yy}`;
 }
@@ -70,10 +74,7 @@ export function getValidDates(fridayDate: Date): string[] {
 }
 
 /** Generate all Friday date strings (DD.MM.YY) from start to end. */
-export function generateFridayDates(
-  startDate: Date,
-  endDate: Date,
-): string[] {
+export function generateFridayDates(startDate: Date, endDate: Date): string[] {
   const fridays: string[] = [];
   const current = new Date(startDate);
 

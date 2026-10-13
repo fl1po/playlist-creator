@@ -6,7 +6,7 @@ import {
 } from '../lib/pagination.js';
 import { createCliGateway } from '../lib/spotify/gateway.js';
 import type { TrustedArtistsFile } from '../lib/types.js';
-import { UserConfigStore, secondarySourceName } from '../lib/user-config.js';
+import { secondarySourceName, UserConfigStore } from '../lib/user-config.js';
 import {
   type ReportContext,
   renderReport,

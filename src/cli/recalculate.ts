@@ -1,7 +1,7 @@
 import { FileConfigStore } from '../lib/config.js';
 import { createDurableCache } from '../lib/durable-cache.js';
 import { createCliGateway } from '../lib/spotify/gateway.js';
-import { UserConfigStore, secondaryLabel } from '../lib/user-config.js';
+import { secondaryLabel, UserConfigStore } from '../lib/user-config.js';
 import { consoleSyncHandlers } from '../services/promotion-sync/subscribers.js';
 import { spotifyRecalculationPorts } from '../services/recalculation/adapters.js';
 import { recalculate, syncPending } from '../services/recalculation/index.js';

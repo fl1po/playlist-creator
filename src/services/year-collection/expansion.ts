@@ -150,5 +150,4 @@ export function cutByCoCitation(
     .sort((a, b) => b.coCitations - a.coCitations);
 }
 
-export type { RawCandidate };
-export type { Candidate };
+export type { Candidate, RawCandidate };

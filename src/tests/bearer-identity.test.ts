@@ -22,7 +22,7 @@ function fakeSpotify(opts: {
     calls.push(u);
     if (opts.transient) return new Response('', { status: 503 });
     if (u.endsWith('/v1/me')) {
-      const auth = (init?.headers as Record<string, string>).Authorization;
+      const auth = new Headers(init?.headers).get('Authorization') ?? '';
       const owner = opts.owners[auth.replace('Bearer ', '')];
       return owner
         ? Response.json({ id: owner })

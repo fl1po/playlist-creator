@@ -37,8 +37,10 @@ export function configRoutes(ctx: RouteContext): Router {
     if (!config.sourcePlaylists?.allWeeklyId)
       errors.push('All Weekly playlist ID required');
     if (
-      !config.sourcePlaylists?.useLikedSongs &&
-      !config.sourcePlaylists?.bestOfAllWeeklyId
+      !(
+        config.sourcePlaylists?.useLikedSongs ||
+        config.sourcePlaylists?.bestOfAllWeeklyId
+      )
     )
       errors.push(
         'Best of All Weekly playlist ID required (or enable Liked Songs)',

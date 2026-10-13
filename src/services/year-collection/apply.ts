@@ -14,7 +14,7 @@
 
 import { getAllUserPlaylists } from '../../lib/pagination.js';
 import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
-import { type YearPlan, months, orderedForMonth } from './plan.js';
+import { months, orderedForMonth, type YearPlan } from './plan.js';
 
 /** Spotify's cap per add-items request. */
 const ADD_BATCH = 100;

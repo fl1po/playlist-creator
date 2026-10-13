@@ -16,8 +16,8 @@ import type { Cluster } from './genre-map.js';
 import {
   type ArtistProfile,
   type Candidate,
-  TIER_WEIGHT,
   type TasteProfile,
+  TIER_WEIGHT,
 } from './index.js';
 import { affinity, dominantCluster, modalCluster } from './profile.js';
 

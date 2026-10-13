@@ -7,7 +7,10 @@ import type { AiPicksRecord } from './week-collection/index.js';
 import { spotifyWeeklyPlaylistStore } from './weekly-playlists/adapters.js';
 import { findWeeklyPlaylist } from './weekly-playlists/index.js';
 
-export type AiPick = Extract<AiPicksRecord, { picks: unknown }>['picks'][number];
+export type AiPick = Extract<
+  AiPicksRecord,
+  { picks: unknown }
+>['picks'][number];
 
 /**
  * Keep a week's AI-picks record, keyed by its weekly playlist's date. Any

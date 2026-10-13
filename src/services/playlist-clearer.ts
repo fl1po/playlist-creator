@@ -1,6 +1,5 @@
 import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
-import type { SpotifyGateway } from '../lib/spotify/gateway.js';
-import type { ApiResult } from '../lib/spotify/gateway.js';
+import type { ApiResult, SpotifyGateway } from '../lib/spotify/gateway.js';
 
 export type PlaylistClearerEventMap = {
   playlistFound: [name: string, trackCount: number];

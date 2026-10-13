@@ -16,7 +16,10 @@ import { FileConfigStore } from '../lib/config.js';
 import { fetchDeezerPopularities } from '../lib/deezer-popularity.js';
 import { createCliGateway } from '../lib/spotify/gateway.js';
 import type { FoundRelease, TrustedArtistsFile } from '../lib/types.js';
-import { type Run, getArtistWindowReleases } from '../services/week-collection/engine.js';
+import {
+  getArtistWindowReleases,
+  type Run,
+} from '../services/week-collection/engine.js';
 import { spotifyReleaseReads } from '../services/week-collection/spotify-reads.js';
 
 const numArtists = Number(process.argv[2] ?? 50) || 50;
@@ -28,12 +31,17 @@ const reads = spotifyReleaseReads(ctx);
 const trusted: TrustedArtistsFile = JSON.parse(
   fs.readFileSync('./trusted-artists.json', 'utf8'),
 );
-const roster = filterByPriority(trusted.artistCounts, [1, 2]).slice(0, numArtists);
+const roster = filterByPriority(trusted.artistCounts, [1, 2]).slice(
+  0,
+  numArtists,
+);
 
 // The last numWeeks Fridays up to today.
 const fridays = generateFridayDates(new Date(2025, 0, 1), new Date());
 const weeks = fridays.slice(-numWeeks);
-const validDates = [...new Set(weeks.flatMap((w) => getValidDates(parseDate(w))))];
+const validDates = [
+  ...new Set(weeks.flatMap((w) => getValidDates(parseDate(w)))),
+];
 
 console.log('=== Popularity probe (read-only) ===');
 console.log(
@@ -45,7 +53,9 @@ const found = new Map<string, FoundRelease>();
 
 for (let i = 0; i < roster.length; i++) {
   const [name, data] = roster[i];
-  process.stdout.write(`\r  searching ${i + 1}/${roster.length}: ${name}`.padEnd(70));
+  process.stdout.write(
+    `\r  searching ${i + 1}/${roster.length}: ${name}`.padEnd(70),
+  );
   const artist = data.spotifyId
     ? { id: data.spotifyId, name }
     : await reads.searchArtist(name);
@@ -66,7 +76,9 @@ for (let i = 0; i < roster.length; i++) {
     });
   }
 }
-console.log(`\n\nFound ${found.size} releases. Fetching Deezer popularity...\n`);
+console.log(
+  `\n\nFound ${found.size} releases. Fetching Deezer popularity...\n`,
+);
 
 const notFound: string[] = [];
 const pops = await fetchDeezerPopularities(found, {
@@ -87,7 +99,9 @@ const noPop = found.size - withPop;
 
 console.log('── Releases with a Deezer match (sorted by popularity) ──');
 for (const { r, pop } of rows) {
-  console.log(`  ${String(pop).padStart(3)}  ${r.artistName} — ${r.name} (${r.type})`);
+  console.log(
+    `  ${String(pop).padStart(3)}  ${r.artistName} — ${r.name} (${r.type})`,
+  );
 }
 
 console.log('\n── Histogram ──');
@@ -100,30 +114,42 @@ for (let b = 0; b < 10; b++) {
   console.log(`  ${label}  ${'█'.repeat(buckets[b])} ${buckets[b]}`);
 }
 
-console.log('\n── Survivors at candidate thresholds (of releases WITH popularity) ──');
+console.log(
+  '\n── Survivors at candidate thresholds (of releases WITH popularity) ──',
+);
 for (const t of [60, 55, 50, 45, 40, 35, 30, 20]) {
   const pass = values.filter((v) => v >= t).length;
   const pct = withPop ? Math.round((pass / withPop) * 100) : 0;
-  console.log(`  >= ${String(t).padStart(2)}:  ${String(pass).padStart(3)}/${withPop}  (${pct}%)`);
+  console.log(
+    `  >= ${String(t).padStart(2)}:  ${String(pass).padStart(3)}/${withPop}  (${pct}%)`,
+  );
 }
 
 const sorted = [...values].sort((a, b) => a - b);
 const median = withPop
   ? sorted.length % 2
     ? sorted[(sorted.length - 1) / 2]
-    : Math.round((sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2)
+    : Math.round(
+        (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2,
+      )
   : 0;
-const mean = withPop ? Math.round(values.reduce((a, b) => a + b, 0) / withPop) : 0;
+const mean = withPop
+  ? Math.round(values.reduce((a, b) => a + b, 0) / withPop)
+  : 0;
 
 console.log('\n── Summary ──');
 console.log(`  releases found:          ${found.size}`);
 console.log(`  with Deezer popularity:  ${withPop}`);
-console.log(`  NOT found on Deezer:     ${noPop}  (these BYPASS the gate entirely)`);
+console.log(
+  `  NOT found on Deezer:     ${noPop}  (these BYPASS the gate entirely)`,
+);
 console.log(`  median popularity:       ${median}`);
 console.log(`  mean popularity:         ${mean}`);
 if (noPop > 0) {
   console.log(
     `\n  Note: ${noPop} unmatched releases are admitted regardless of threshold,`,
   );
-  console.log('  so effective admits at a threshold = (survivors above) + these.');
+  console.log(
+    '  so effective admits at a threshold = (survivors above) + these.',
+  );
 }
