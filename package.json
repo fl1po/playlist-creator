@@ -17,6 +17,7 @@
     "year-playlist": "tsc && node --env-file=.env build/cli/year-playlist.js",
     "simulate-featured": "tsc && node build/cli/simulate-featured.js",
     "probe-popularity": "tsc && node build/cli/probe-popularity.js",
+    "eval:taste-judge": "tsc && node --env-file-if-exists=.env build/cli/eval-taste-judge.js",
     "import-from-redis": "tsc && node build/cli/import-from-redis.js",
     "web": "tsc && cp -r src/web/public build/web/public && node build/web/server.js",
     "web:dev": "tsc --watch & node build/web/server.js"
@@ -39,6 +40,7 @@
   },
   "description": "Automated weekly playlist generation driven by your listening history",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
     "@spotify/web-api-ts-sdk": "^1.2.0",
     "@upstash/redis": "^1.39.0",
     "compression": "^1.8.2",
