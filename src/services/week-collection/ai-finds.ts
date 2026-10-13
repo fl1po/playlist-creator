@@ -1,4 +1,5 @@
 import { groupReleases } from '../../domain/releases.js';
+import { SpotifyAuthLost, isAbort } from '../../lib/spotify/errors.js';
 import type { FoundRelease } from '../../lib/types.js';
 import {
   type Collected,
@@ -16,6 +17,8 @@ import type {
   JudgePick,
   TasteContext,
   TasteJudge,
+  TasteJudgeOutcome,
+  TasteJudgeRequest,
   WeekCollectionInput,
 } from './index.js';
 
@@ -32,8 +35,14 @@ export interface AiPhase {
   picks: Array<{ release: FoundRelease; candidate: Candidate }>;
   candidates: number;
   spendUsd: number;
-  skipped?: 'no-api-key' | 'over-budget' | 'failed';
+  /** The judge hit the spend cap. */
+  exhausted: boolean;
+  skipped?: WeekSkipReason;
+  /** Picks whose track reads threw: album id → message. */
+  trackFailures: Map<string, string>;
 }
+
+type WeekSkipReason = 'no-api-key' | 'over-budget' | 'failed';
 
 const releaseKey = (artist: string, title: string) =>
   `${artist.toLowerCase().trim()}|${title.toLowerCase().trim()}`;
@@ -110,46 +119,55 @@ export async function runAiPhase(
   validDates: string[],
   foundReleases: Map<string, FoundRelease>,
 ): Promise<AiPhase> {
+  const phase: AiPhase = {
+    picks: [],
+    candidates: 0,
+    spendUsd: 0,
+    exhausted: false,
+    trackFailures: new Map(),
+  };
+  // No budget left, or none passed: no pool, no judge call.
+  const budgetUsd = ai.budgetUsd ?? 0;
+  if (!(budgetUsd > 0)) return skipPhase(run, phase, 'over-budget');
+
   const roster = Object.entries(input.trustedArtists.artistCounts);
-  const raw = await ports.candidates.candidates({
-    seeds: input.roster.map(([name, data]) => ({
-      name,
-      spotifyId: data.spotifyId ?? null,
-    })),
-    rosterArtists: roster
-      .filter(([, a]) => a.priority !== 1 && a.priority !== 2)
-      .map(([name, a]) => ({
+  // Candidate source trouble leaves a smaller pool, not a failed week.
+  const raw = await ports.candidates
+    .candidates({
+      seeds: input.roster.map(([name, data]) => ({
         name,
-        priority: a.priority,
-        spotifyId: a.spotifyId,
+        spotifyId: data.spotifyId ?? null,
       })),
-    scouting: [],
-    rejects: [],
-    window: validDates,
-  });
+      rosterArtists: roster
+        .filter(([, a]) => a.priority !== 1 && a.priority !== 2)
+        .map(([name, a]) => ({
+          name,
+          priority: a.priority,
+          spotifyId: a.spotifyId,
+        })),
+      scouting: [],
+      rejects: [],
+      window: validDates,
+    })
+    .catch(degrade(() => []));
   const pool = assemblePool(raw, {
     window: validDates,
     seedNames: input.roster.map(([name]) => name),
     foundReleases,
   });
 
-  const outcome = await ports.judge.judge({
+  phase.candidates = pool.length;
+
+  const outcome = await askJudge(ports.judge, {
     taste: tasteContext(input, foundReleases),
     candidates: pool,
-    budgetUsd: ai.budgetUsd,
+    budgetUsd,
   });
-  const phase: AiPhase = {
-    picks: [],
-    candidates: pool.length,
-    spendUsd: outcome.spendUsd,
-  };
+  phase.spendUsd = outcome.spendUsd;
   if (!outcome.ok) {
-    phase.skipped =
-      outcome.failure === 'spend-cap' ? 'failed' : outcome.failure;
-    skip(run, phase.skipped, undefined, {
-      message: outcome.failure === 'failed' ? outcome.message : undefined,
-    });
-    return phase;
+    const failure = weekFailure(outcome);
+    phase.exhausted = failure.exhausted;
+    return skipPhase(run, phase, failure.reason, failure.message);
   }
 
   for (const { pick, candidate } of applyThreshold(
@@ -157,7 +175,14 @@ export async function runAiPhase(
     pool,
     ai.threshold,
   )) {
-    const resolved = await resolvePick(run, candidate, validDates);
+    let resolved: Awaited<ReturnType<typeof resolvePick>>;
+    try {
+      resolved = await resolvePick(run, candidate, validDates);
+    } catch (e) {
+      if (escapesPhase(e)) throw e;
+      skip(run, 'failed', candidate, { message: errorMessage(e) });
+      continue;
+    }
     if (!resolved) {
       skip(run, 'not on Spotify', candidate);
       continue;
@@ -186,6 +211,85 @@ export async function runAiPhase(
     });
   }
   return phase;
+}
+
+/** Only stopping the fill and Spotify auth loss get out of the AI phase. */
+function escapesPhase(e: unknown): boolean {
+  return isAbort(e) || e instanceof SpotifyAuthLost;
+}
+
+const errorMessage = (e: unknown) =>
+  e instanceof Error ? e.message : String(e);
+
+/** A `.catch` handler that rethrows what escapes the phase, else falls back. */
+function degrade<T>(fallback: (e: unknown) => T): (e: unknown) => T {
+  return (e) => {
+    if (escapesPhase(e)) throw e;
+    return fallback(e);
+  };
+}
+
+/** The judge's outcome; a throw is taken as a failed call that spent nothing. */
+function askJudge(
+  port: TasteJudge,
+  request: TasteJudgeRequest,
+): Promise<TasteJudgeOutcome> {
+  return port.judge(request).catch(
+    degrade((e) => ({
+      ok: false as const,
+      failure: 'failed' as const,
+      message: errorMessage(e),
+      spendUsd: 0,
+    })),
+  );
+}
+
+/**
+ * How a failed judge call lands on the week. The spend cap is a failed call
+ * that also exhausts the judge for the rest of the fill.
+ */
+function weekFailure(outcome: Extract<TasteJudgeOutcome, { ok: false }>): {
+  reason: WeekSkipReason;
+  message?: string;
+  exhausted: boolean;
+} {
+  switch (outcome.failure) {
+    case 'spend-cap':
+      return {
+        reason: 'failed',
+        message: 'AI spend cap reached; no more AI finds this fill',
+        exhausted: true,
+      };
+    case 'failed':
+      return { reason: 'failed', message: outcome.message, exhausted: false };
+    default:
+      return { reason: outcome.failure, exhausted: false };
+  }
+}
+
+function skipPhase(
+  run: Run,
+  phase: AiPhase,
+  reason: WeekSkipReason,
+  message?: string,
+): AiPhase {
+  phase.skipped = reason;
+  skip(run, reason, undefined, { message });
+  return phase;
+}
+
+/**
+ * For `collectTracks`: a pick whose reads throw (other than abort or auth
+ * loss) is dropped and noted for `landAiPicks`; anything else propagates.
+ */
+export function containPickFailures(
+  phase: AiPhase,
+): (release: FoundRelease, error: unknown) => boolean {
+  return (release, error) => {
+    if (!release.aiFind || escapesPhase(error)) return false;
+    phase.trackFailures.set(release.id, errorMessage(error));
+    return true;
+  };
 }
 
 /**
@@ -259,6 +363,11 @@ export function landAiPicks(
   const landed = new Set(collected.map((c) => c.release.id));
   const picks: Extract<AiPicksRecord, { picks: unknown }>['picks'] = [];
   for (const { release, candidate } of phase.picks) {
+    const failure = phase.trackFailures.get(release.id);
+    if (failure !== undefined) {
+      skip(run, 'failed', candidate, { message: failure });
+      continue;
+    }
     if (!(landed.has(release.id) && release.aiFind)) {
       skip(run, 'no tracks left', candidate);
       continue;

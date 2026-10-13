@@ -7,7 +7,7 @@ import {
   releaseDateCouldMatch,
   releaseDateFallbackMatch,
 } from '../../domain/releases.js';
-import type { FoundRelease } from '../../lib/types.js';
+import type { AlbumTrack, FoundRelease } from '../../lib/types.js';
 import type {
   CollectionDecision,
   RawAlbum,
@@ -141,11 +141,14 @@ export async function chooseVariant(
  * title-track-only, and album/single dedup rules. `exclude` holds track ids
  * removed outright (the listening history for a week collection; the All Weekly
  * ids plus the playlist's existing tracks for a promotion sync).
+ * A release whose reads throw fails the collection, unless `contain` returns
+ * true for it: then that release is dropped and collection goes on.
  */
 export async function collectTracks(
   run: Run,
   foundReleases: Map<string, FoundRelease>,
   exclude: Set<string>,
+  contain?: (release: FoundRelease, error: unknown) => boolean,
 ): Promise<{ collected: Collected[]; skippedCount: number }> {
   const collected: Collected[] = [];
   let skippedCount = 0;
@@ -169,7 +172,15 @@ export async function collectTracks(
       release: release.name,
     });
     done++;
-    const albumTracks = await run.reads.albumTracks(albumId);
+    let fetched: ReleaseReadings;
+    try {
+      fetched = await readRelease(run, albumId, release, previousKeysByArtist);
+    } catch (error) {
+      if (contain?.(release, error)) continue;
+      throw error;
+    }
+    const { albumTracks, originalTrackKeys, titleTrack, previousKeys } =
+      fetched;
 
     if (albumTracks.length > 0 && isAllInstrumental(albumTracks)) {
       run.decisions.push({
@@ -181,46 +192,22 @@ export async function collectTracks(
       continue;
     }
 
-    // Deluxe release: only tracks absent from the base album qualify.
-    let originalTrackKeys: Set<string> | null = null;
-    if (isDeluxeRelease(release.name)) {
-      const baseName = getBaseAlbumName(release.name);
-      originalTrackKeys = await getOriginalAlbumTrackKeys(
-        run,
-        release.artistSpotifyId,
-        baseName,
-      );
-    }
-
     // Title-track-only: single promotion disguised as an album.
     let titleTrackOnly: string | null = null;
-    if (albumTracks.length > 1) {
-      const titleTrack = albumTracks.find(
-        (t) => t.name.toLowerCase() === release.name.toLowerCase(),
-      );
-      if (titleTrack) {
-        const previousKeys = await getArtistPreviousTrackKeys(
-          run,
-          release.artistSpotifyId,
-          release.release_date,
-          previousKeysByArtist,
-        );
-        if (previousKeys.size > 0) {
-          const otherTracks = albumTracks.filter((t) => t.id !== titleTrack.id);
-          const oldCount = otherTracks.filter((t) =>
-            previousKeys.has(t.key),
-          ).length;
-          if (oldCount > otherTracks.length / 2) {
-            titleTrackOnly = titleTrack.id;
-            run.decisions.push({
-              kind: 'title-track-only',
-              release: release.name,
-              track: titleTrack.name,
-              oldTracks: oldCount,
-              otherTracks: otherTracks.length,
-            });
-          }
-        }
+    if (titleTrack && previousKeys && previousKeys.size > 0) {
+      const otherTracks = albumTracks.filter((t) => t.id !== titleTrack.id);
+      const oldCount = otherTracks.filter((t) =>
+        previousKeys.has(t.key),
+      ).length;
+      if (oldCount > otherTracks.length / 2) {
+        titleTrackOnly = titleTrack.id;
+        run.decisions.push({
+          kind: 'title-track-only',
+          release: release.name,
+          track: titleTrack.name,
+          oldTracks: oldCount,
+          otherTracks: otherTracks.length,
+        });
       }
     }
 
@@ -272,6 +259,57 @@ export async function collectTracks(
   }
 
   return { collected, skippedCount };
+}
+
+interface ReleaseReadings {
+  albumTracks: AlbumTrack[];
+  /** Deluxe release: the base album's track keys; null otherwise. */
+  originalTrackKeys: Set<string> | null;
+  /** A track named after the release, on a multi-track release. */
+  titleTrack: AlbumTrack | null;
+  /** The artist's earlier track keys; fetched only with a title track. */
+  previousKeys: Set<string> | null;
+}
+
+/** Every Spotify read one release's track rules need, done up front. */
+async function readRelease(
+  run: Run,
+  albumId: string,
+  release: FoundRelease,
+  previousKeysByArtist: Map<string, Set<string>>,
+): Promise<ReleaseReadings> {
+  const albumTracks = await run.reads.albumTracks(albumId);
+  if (albumTracks.length > 0 && isAllInstrumental(albumTracks)) {
+    return {
+      albumTracks,
+      originalTrackKeys: null,
+      titleTrack: null,
+      previousKeys: null,
+    };
+  }
+  // Deluxe release: only tracks absent from the base album qualify.
+  const originalTrackKeys = isDeluxeRelease(release.name)
+    ? await getOriginalAlbumTrackKeys(
+        run,
+        release.artistSpotifyId,
+        getBaseAlbumName(release.name),
+      )
+    : null;
+  const titleTrack =
+    albumTracks.length > 1
+      ? (albumTracks.find(
+          (t) => t.name.toLowerCase() === release.name.toLowerCase(),
+        ) ?? null)
+      : null;
+  const previousKeys = titleTrack
+    ? await getArtistPreviousTrackKeys(
+        run,
+        release.artistSpotifyId,
+        release.release_date,
+        previousKeysByArtist,
+      )
+    : null;
+  return { albumTracks, originalTrackKeys, titleTrack, previousKeys };
 }
 
 /** Track keys of the non-deluxe base album matching `baseAlbumName`. */

@@ -14,7 +14,7 @@ import type {
   PlaylistAlbumInfo,
   TrustedArtistsFile,
 } from '../../lib/types.js';
-import { landAiPicks, runAiPhase } from './ai-finds.js';
+import { containPickFailures, landAiPicks, runAiPhase } from './ai-finds.js';
 import { type Run, collectTracks, getArtistWindowReleases } from './engine.js';
 
 // ── Ports (the seam) ─────────────────────────────────────────────────────────
@@ -361,8 +361,11 @@ export interface AiFindsConfig {
   /** Lowest confidence (0–100) a pick needs to land. */
   threshold: number;
   scoutingPlaylists: Array<{ id: string; name: string }>;
-  /** What's left of the fill's AI spend ceiling, in USD. */
-  budgetUsd: number;
+  /**
+   * What's left of the fill's AI spend ceiling, in USD. None left, or none
+   * passed: the week is `over-budget` without a judge call.
+   */
+  budgetUsd?: number;
 }
 
 /** What a week's AI phase came to, for the AI-picks record. */
@@ -393,8 +396,10 @@ export interface WeekCollection {
   skippedCount: number;
   /** The AI phase's outcome; absent when it didn't run. */
   aiPicks?: AiPicksRecord;
-  /** What the AI phase spent, in USD; 0 when it didn't run. */
+  /** What the AI phase spent in USD, failed calls included; 0 if not run. */
   aiSpendUsd: number;
+  /** The judge hit the provider's spend cap: the fill should stop calling it. */
+  aiExhausted: boolean;
 }
 
 const CHECKPOINT_EVERY = 50;
@@ -413,6 +418,10 @@ const CHECKPOINT_EVERY = 50;
  * after the popularity gate, the judge picks from a pool of candidates the
  * search didn't cover. Picks at or above the threshold resolve to Spotify,
  * skip the gate, and go through the same variant strip and track rules.
+ * Nothing about AI finds fails the week: a judge failure, no budget, or a
+ * pick's failing Spotify reads become `ai-skipped` decisions, and a throwing
+ * candidate source a smaller pool. Only an abort or `SpotifyAuthLost`
+ * propagates.
  *
  * Error mode: any throw during the artist search phase checkpoints week
  * progress first, then propagates — a later call with the same week resumes
@@ -599,6 +608,7 @@ export async function collectWeek(
     run,
     foundReleases,
     listeningHistory,
+    aiPhase ? containPickFailures(aiPhase) : undefined,
   );
 
   const releases = collected.map((c) => ({
@@ -633,6 +643,7 @@ export async function collectWeek(
     skippedCount,
     aiPicks,
     aiSpendUsd: aiPhase?.spendUsd ?? 0,
+    aiExhausted: aiPhase?.exhausted ?? false,
   };
 }
 
