@@ -392,12 +392,13 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
         cleared.add(targetDate);
       }
 
-      // Re-score between weeks, never half-way through one: an in-flight
-      // artist search must keep the roster it started with. A change skipped
-      // here still registers on the next date.
+      // Re-score between weeks, never half-way through one: a checkpointed
+      // week, whether mid-search or searched but unwritten, must keep the
+      // roster it started with. A change skipped here still registers on the
+      // next date.
       const progress = await ports.week.checkpoints.load(targetDate);
-      const midSearch = progress !== null && progress.artistsSearched > 0;
-      if (!midSearch) {
+      const checkpointed = progress !== null && progress.artistsSearched > 0;
+      if (!checkpointed) {
         const recalc = await recalculate(userConfig, recalculation, {
           onProgress: (e) => {
             if (e.phase === 'recalculating') emitter.emit('recalculating');
@@ -431,6 +432,15 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
       for (const d of week.decisions) emitDecision(emitter, d);
 
       const written = await weekly.write(targetDate, week.tracks);
+      // Only a written week is done with its search; any earlier stop
+      // resumes from the completed checkpoint. A failed clear mustn't fail a
+      // written week: the Friday is filled now, so the next fill skips it.
+      try {
+        await ports.week.checkpoints.clear(targetDate);
+      } catch (clearErr) {
+        if (isAbort(clearErr)) throw clearErr;
+        emitter.emit('log', `Could not clear week progress for ${targetDate}`);
+      }
       emitWrite(emitter, written);
       const result = toDateResult(week, written);
       results.push(result);
@@ -444,7 +454,7 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
       const err = error instanceof Error ? error : new Error(String(error));
       emitter.emit('dateError', targetDate, err);
       // The gateway already tried a refresh and a login; week progress lets
-      // the next fill resume this week mid-search.
+      // the next fill resume this week where it stopped.
       if (err instanceof SpotifyAuthLost) throw err;
       results.push({ date: targetDate, error: err.message } as DateResult);
       // Back off before the next date; there's nothing to wait for after the last.

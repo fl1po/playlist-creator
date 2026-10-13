@@ -76,8 +76,9 @@ export interface PopularitySource {
 
 /**
  * Week-progress persistence. The module owns checkpoint cadence (every
- * `CHECKPOINT_EVERY` searched artists, and on any throw mid-search) and
- * resume; the store only decides where progress lives.
+ * `CHECKPOINT_EVERY` searched artists, on any throw mid-search, and on
+ * completing the search) and resume; the caller clears a week's checkpoint
+ * once it is written. The store only decides where progress lives.
  */
 export interface CheckpointStore {
   load(week: string): Promise<WeekProgress | null>;
@@ -224,8 +225,13 @@ const CHECKPOINT_EVERY = 50;
  * Error mode: any throw during the artist search phase checkpoints week
  * progress first, then propagates — a later call with the same week resumes
  * from the checkpoint. Auth errors always propagate. A per-artist search
- * failure skips that artist. On completing the search phase the checkpoint
- * is cleared.
+ * failure skips that artist.
+ *
+ * Checkpoint lifetime: on completing the search phase the checkpoint is
+ * saved as completed (`artistsSearched` = roster length), not cleared. The
+ * caller clears it once the week is written; until then a later call with
+ * the same week skips the search and reuses its found releases. A completed
+ * checkpoint left by a week that never got written has no expiry.
  */
 export async function collectWeek(
   input: WeekCollectionInput,
@@ -245,6 +251,12 @@ export async function collectWeek(
   // ── Search P1/P2 artists (resuming from checkpoint) ───────────────────────
   const foundReleases = new Map<string, FoundRelease>();
   let artistsSearched = 0;
+  const saveProgress = () =>
+    checkpoints.save({
+      week,
+      artistsSearched,
+      foundReleases: Object.fromEntries(foundReleases),
+    });
   const saved = await checkpoints.load(week);
   if (saved && saved.artistsSearched > 0) {
     artistsSearched = saved.artistsSearched;
@@ -313,11 +325,7 @@ export async function collectWeek(
         artist: name,
       });
       if (artistsSearched % CHECKPOINT_EVERY === 0) {
-        await checkpoints.save({
-          week,
-          artistsSearched,
-          foundReleases: Object.fromEntries(foundReleases),
-        });
+        await saveProgress();
         onProgress?.({
           phase: 'checkpoint',
           searched: artistsSearched,
@@ -326,15 +334,13 @@ export async function collectWeek(
       }
     }
   } catch (e) {
-    await checkpoints.save({
-      week,
-      artistsSearched,
-      foundReleases: Object.fromEntries(foundReleases),
-    });
+    await saveProgress();
     throw e;
   }
 
-  await checkpoints.clear(week);
+  // The completed search outlives this call: the caller clears it once the
+  // week is written, so a later stop resumes past the search.
+  await saveProgress();
 
   // ── Editorial merge ────────────────────────────────────────────────────────
   await mergeEditorial(

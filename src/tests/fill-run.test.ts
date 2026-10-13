@@ -713,3 +713,96 @@ test('--fresh drops the checkpoint: every artist is searched again', async (t) =
   assert.deepEqual(reads.searchCalls, ['Alpha', 'Beta']);
   assert.deepEqual(weekly.added.get('pl-1'), ['t1', 't2']);
 });
+
+test('the checkpoint is cleared once the weekly playlist is written', async (t) => {
+  const { ports, checkpoints } = memoryPorts(alphaCatalog(), [
+    { id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 },
+  ]);
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+
+  await runFill(w.options());
+
+  assert.equal(checkpoints.current, null);
+});
+
+test('a failed write leaves the completed search checkpoint in place', async (t) => {
+  const { ports, weekly, checkpoints } = memoryPorts(alphaCatalog(), [
+    { id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 },
+  ]);
+  weekly.failAddWith = new Error('rate limited');
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+
+  await runFill(w.options());
+
+  assert.equal(checkpoints.current?.week, THIS_FRIDAY);
+  assert.equal(checkpoints.current?.artistsSearched, 1);
+  assert.deepEqual(Object.keys(checkpoints.current?.foundReleases ?? {}), [
+    'alb-x',
+  ]);
+});
+
+test('a completed checkpoint resumes the week with no search and no recalculation', async (t) => {
+  const { ports, reads, calls, weekly, checkpoints } = memoryPorts(
+    alphaBetaCatalog(),
+    [{ id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 }],
+  );
+  checkpoints.current = {
+    week: THIS_FRIDAY,
+    artistsSearched: 2,
+    foundReleases: {
+      'alb-x': {
+        id: 'alb-x',
+        name: 'X',
+        type: 'album',
+        release_date: IN_WINDOW,
+        artistName: 'Alpha',
+        artistSpotifyId: 'art-a',
+        priority: 1,
+        score: 100,
+      },
+      'alb-y': {
+        id: 'alb-y',
+        name: 'Y',
+        type: 'single',
+        release_date: IN_WINDOW,
+        artistName: 'Beta',
+        artistSpotifyId: 'art-b',
+        priority: 1,
+        score: 90,
+      },
+    },
+  };
+  const w = memoryWorld(t, ports);
+  // Both sources changed since the roster was scored: a re-score would be due.
+  await w.cache.save(TRUSTED_ARTISTS, ALPHA_BETA_P1);
+  await w.cache.save(RECALCULATION_STATE, {
+    allWeeklySnapshot: 'aw-0',
+    bestOfAllWeeklySnapshot: 'boaw-0',
+  });
+
+  await runFill(w.options());
+
+  assert.deepEqual(reads.searchCalls, []);
+  assert.ok(!calls.includes('scan'), 'the sources were re-scanned');
+  assert.deepEqual(weekly.added.get('pl-1'), ['t1', 't2']);
+  assert.equal(checkpoints.current, null);
+});
+
+test('--fresh drops a completed checkpoint too', async (t) => {
+  const { ports, reads, checkpoints } = memoryPorts(alphaBetaCatalog(), [
+    { id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 },
+  ]);
+  checkpoints.current = {
+    week: THIS_FRIDAY,
+    artistsSearched: 2,
+    foundReleases: {},
+  };
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_BETA_P1);
+
+  await runFill(w.options({ fresh: true }));
+
+  assert.deepEqual(reads.searchCalls, ['Alpha', 'Beta']);
+});

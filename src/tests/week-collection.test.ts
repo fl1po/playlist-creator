@@ -568,7 +568,99 @@ test('resumes from a checkpoint: already-searched artists are not re-searched', 
 
   assert.deepEqual(reads.searchCalls, ['Beta']);
   assert.deepEqual(week.tracks, ['s1']);
-  assert.equal(checkpoints.current, null); // cleared on completion
+});
+
+test('completing the search saves a completed checkpoint instead of clearing it', async () => {
+  const reads = fixtureReads({
+    artists: [
+      {
+        id: 'art-a',
+        name: 'Alpha',
+        albums: [
+          {
+            id: 'alb-x',
+            name: 'X',
+            type: 'album',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 't1', name: 'One', key: 'alpha::one' }],
+          },
+        ],
+      },
+      { id: 'art-b', name: 'Beta', albums: [] },
+    ],
+  });
+  const checkpoints = memoryCheckpoints();
+
+  await collectWeek(
+    input({
+      roster: [
+        ['Alpha', P1],
+        ['Beta', P2],
+      ],
+    }),
+    { reads, popularity: fixedPopularitySource({ 'alb-x': 70 }), checkpoints },
+  );
+
+  assert.equal(checkpoints.current?.week, WEEK);
+  assert.equal(checkpoints.current?.artistsSearched, 2);
+  assert.deepEqual(Object.keys(checkpoints.current?.foundReleases ?? {}), [
+    'alb-x',
+  ]);
+});
+
+test('resuming a completed checkpoint searches no artists and finds the same releases', async () => {
+  const catalog = {
+    artists: [
+      {
+        id: 'art-a',
+        name: 'Alpha',
+        albums: [
+          {
+            id: 'alb-x',
+            name: 'X',
+            type: 'album',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 't1', name: 'One', key: 'alpha::one' }],
+          },
+        ],
+      },
+      {
+        id: 'art-b',
+        name: 'Beta',
+        albums: [
+          {
+            id: 'alb-y',
+            name: 'Y',
+            type: 'single',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 's1', name: 'Solo', key: 'beta::solo' }],
+          },
+        ],
+      },
+    ],
+  };
+  const roster: WeekCollectionInput['roster'] = [
+    ['Alpha', P1],
+    ['Beta', P2],
+  ];
+  const scores = { 'alb-x': 80, 'alb-y': 70 };
+  const checkpoints = memoryCheckpoints();
+  const first = await collectWeek(input({ roster }), {
+    reads: fixtureReads(catalog),
+    popularity: fixedPopularitySource(scores),
+    checkpoints,
+  });
+
+  const reads = fixtureReads(catalog);
+  const resumed = await collectWeek(input({ roster }), {
+    reads,
+    popularity: fixedPopularitySource(scores),
+    checkpoints,
+  });
+
+  assert.deepEqual(reads.searchCalls, []);
+  assert.deepEqual(resumed.releases, first.releases);
+  assert.deepEqual(resumed.tracks, ['t1', 's1']);
 });
 
 test('a throw mid-search checkpoints week progress before propagating', async () => {
