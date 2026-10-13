@@ -46,7 +46,7 @@ export interface DeezerAlbumDetail {
  * drops real artists — "Sinéad Harnett", "Lila Iké", "Chlöe", "thủy" and
  * "Lolo Zouaï" all failed to resolve before this.
  */
-function foldName(name: string): string {
+export function foldName(name: string): string {
   return name
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')

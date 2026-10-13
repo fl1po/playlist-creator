@@ -1,5 +1,6 @@
 import {
   type GenreFilterLists,
+  hasRejectedGenre,
   isGenreAcceptable,
 } from '../../domain/filters.js';
 import {
@@ -108,7 +109,7 @@ export type CandidateProvenance =
   | { kind: 'roster'; priority: number | null }
   | { kind: 'scouting'; playlist: string }
   | { kind: 'editorial-reject'; reason: string; playlists: string[] }
-  | { kind: 'low-popularity'; popularity: number };
+  | { kind: 'low-popularity'; popularity: number; playlists: string[] };
 
 /** One release the judge may pick, in Deezer shape. */
 export interface Candidate {
@@ -130,14 +131,22 @@ export interface Candidate {
   spotifyAlbumId?: string;
 }
 
-/** A release the week's gates turned away, kept for a second look. */
+/**
+ * A release the week's gates turned away, kept for a second look: an
+ * editorial-gate reject (reason e.g. `popularity 6`), or an editorial find
+ * the release popularity gate dropped. Never a reject-list hit.
+ */
 export interface CandidateReject {
+  /** The Spotify album id, kept so a pick needs no search. */
   albumId: string;
   artist: string;
   title: string;
-  /** The gate reason, e.g. `popularity 6`. */
-  reason: string;
-  playlists: string[];
+  type: string;
+  releaseDate: string;
+  provenance: Extract<
+    CandidateProvenance,
+    { kind: 'editorial-reject' | 'low-popularity' }
+  >;
 }
 
 export interface CandidateRequest {
@@ -244,6 +253,7 @@ export type CollectionDecision =
       kind: 'low-popularity';
       artist: string;
       release: string;
+      albumId: string;
       popularity: number;
     }
   | {
@@ -416,8 +426,10 @@ const CHECKPOINT_EVERY = 50;
  *
  * AI finds (only when `input.ai` is enabled and both AI ports are given):
  * after the popularity gate, the judge picks from a pool of candidates the
- * search didn't cover. Picks at or above the threshold resolve to Spotify,
- * skip the gate, and go through the same variant strip and track rules.
+ * search didn't cover, including the editorial gate's rejects and the
+ * editorial finds the popularity gate dropped. Picks at or above the
+ * threshold resolve to Spotify, skip the gate, and go through the same
+ * variant strip and track rules.
  * Nothing about AI finds fails the week: a judge failure, no budget, or a
  * pick's failing Spotify reads become `ai-skipped` decisions, and a throwing
  * candidate source a smaller pool. Only an abort or `SpotifyAuthLost`
@@ -544,7 +556,7 @@ export async function collectWeek(
   await saveProgress();
 
   // ── Editorial merge ────────────────────────────────────────────────────────
-  await mergeEditorial(
+  const { rejects, playlistsOf } = await mergeEditorial(
     run,
     week,
     validDates,
@@ -566,13 +578,30 @@ export async function collectWeek(
   for (const id of lowPop) {
     const r = foundReleases.get(id);
     if (!r) continue;
+    const releasePop = releasePopularity.get(id) ?? 0;
     run.decisions.push({
       kind: 'low-popularity',
       artist: r.artistName,
       release: r.name,
-      popularity: releasePopularity.get(id) ?? 0,
+      albumId: id,
+      popularity: releasePop,
     });
     foundReleases.delete(id);
+    // An editorial find the gate dropped gets a second look from the judge.
+    if (r.priority === 'editorial') {
+      rejects.push({
+        albumId: id,
+        artist: r.artistName,
+        title: r.name,
+        type: r.type,
+        releaseDate: r.release_date,
+        provenance: {
+          kind: 'low-popularity',
+          popularity: releasePop,
+          playlists: playlistsOf.get(id) ?? [],
+        },
+      });
+    }
   }
 
   // ── AI finds (picks skip the popularity gate) ─────────────────────────────
@@ -583,8 +612,7 @@ export async function collectWeek(
           input,
           input.ai,
           { candidates: ports.candidates, judge: ports.judge },
-          validDates,
-          foundReleases,
+          { window: validDates, foundReleases, rejects },
         )
       : null;
   for (const { release } of aiPhase?.picks ?? []) {
@@ -659,6 +687,11 @@ function formatExternalDate(week: string, dateFormat: string): string {
   return `${dd}.${mm}.20${yy}`;
 }
 
+/**
+ * Admit editorial finds into `foundReleases`. Returns the gate's rejects
+ * (never reject-list hits), each with the playlists it appeared in, and the
+ * playlists each admitted find appeared in.
+ */
 async function mergeEditorial(
   run: Run,
   week: string,
@@ -666,7 +699,10 @@ async function mergeEditorial(
   foundReleases: Map<string, FoundRelease>,
   trustedArtists: TrustedArtistsFile,
   editorial: EditorialConfig,
-): Promise<void> {
+): Promise<{
+  rejects: CandidateReject[];
+  playlistsOf: Map<string, string[]>;
+}> {
   const playlists = [...editorial.playlists];
 
   for (const source of editorial.externalSources) {
@@ -687,10 +723,19 @@ async function mergeEditorial(
     ),
   );
 
+  // Playlists each admitted find or reject appeared in, by album id.
+  const playlistsOf = new Map<string, string[]>();
+  const rejects = new Map<string, CandidateReject>();
+
   for (const playlist of playlists) {
     run.onProgress?.({ phase: 'editorial', playlist: playlist.name });
     const albums = await run.reads.playlistAlbums(playlist.id);
     for (const [albumId, albumInfo] of albums) {
+      const seenIn = playlistsOf.get(albumId);
+      if (seenIn) {
+        if (!seenIn.includes(playlist.name)) seenIn.push(playlist.name);
+        continue;
+      }
       if (foundReleases.has(albumId)) continue;
       const infoKey = `${albumInfo.artistName.toLowerCase()}|${albumInfo.name.toLowerCase().trim()}`;
       if (releaseKeys.has(infoKey)) continue;
@@ -719,6 +764,7 @@ async function mergeEditorial(
           priority,
           score,
         });
+        playlistsOf.set(albumId, [playlist.name]);
         releaseKeys.add(
           `${artistName.toLowerCase()}|${album.name.toLowerCase().trim()}`,
         );
@@ -746,14 +792,34 @@ async function mergeEditorial(
       } else {
         const profile = await run.reads.artistProfile(primaryArtist.id);
         if (!profile) continue;
+        const popular =
+          profile.popularity >= editorial.gate.minPopularity ||
+          profile.followers >= editorial.gate.minFollowers;
         if (
-          (profile.popularity >= editorial.gate.minPopularity ||
-            profile.followers >= editorial.gate.minFollowers) &&
+          popular &&
           isGenreAcceptable(profile.genres, editorial.genreFilters)
         ) {
           admit('editorial', 0);
+        } else if (!hasRejectedGenre(profile.genres, editorial.genreFilters)) {
+          const seenIn = [playlist.name];
+          playlistsOf.set(albumId, seenIn);
+          rejects.set(albumId, {
+            albumId,
+            artist: artistName,
+            title: album.name,
+            type: album.type,
+            releaseDate: album.release_date,
+            provenance: {
+              kind: 'editorial-reject',
+              reason: popular
+                ? 'no accepted genre'
+                : `popularity ${profile.popularity}`,
+              playlists: seenIn,
+            },
+          });
         }
       }
     }
   }
+  return { rejects: [...rejects.values()], playlistsOf };
 }

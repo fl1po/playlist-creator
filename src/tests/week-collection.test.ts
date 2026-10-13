@@ -160,6 +160,7 @@ test('low-popularity releases are gated out with a decision', async () => {
     kind: 'low-popularity',
     artist: 'Gamma',
     release: 'W',
+    albumId: 'alb-w',
     popularity: 5,
   });
 });

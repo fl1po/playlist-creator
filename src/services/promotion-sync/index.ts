@@ -302,6 +302,7 @@ export async function syncPriorityChanges(
             kind: 'low-popularity',
             artist: r.artistName,
             release: r.name,
+            albumId: rid,
             popularity: pops.get(rid) ?? 0,
           });
         }

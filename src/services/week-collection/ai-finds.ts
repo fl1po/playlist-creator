@@ -1,4 +1,18 @@
-import { groupReleases } from '../../domain/releases.js';
+import {
+  type GenreFilterLists,
+  acceptedGenres,
+  acousticPattern,
+  cleanPattern,
+  hasRejectedGenre,
+  instrumentalPattern,
+  slowedPattern,
+  spedUpPattern,
+} from '../../domain/filters.js';
+import {
+  groupReleases,
+  releaseDateFallbackMatch,
+} from '../../domain/releases.js';
+import { foldName } from '../../lib/deezer-client.js';
 import { SpotifyAuthLost, isAbort } from '../../lib/spotify/errors.js';
 import type { FoundRelease } from '../../lib/types.js';
 import {
@@ -13,12 +27,14 @@ import type {
   AiPicksRecord,
   AiSkipReason,
   Candidate,
+  CandidateReject,
   CandidateSource,
   JudgePick,
   TasteContext,
   TasteJudge,
   TasteJudgeOutcome,
   TasteJudgeRequest,
+  Tier,
   WeekCollectionInput,
 } from './index.js';
 
@@ -44,14 +60,39 @@ export interface AiPhase {
 
 type WeekSkipReason = 'no-api-key' | 'over-budget' | 'failed';
 
+/** Most candidates the judge sees, scouting-playlist candidates aside. */
+const POOL_CAP = 500;
+/** The taste context's slice of the roster below P1/P2: share and ceiling. */
+const TASTE_SLICE_SHARE = 0.05;
+const TASTE_SLICE_MAX = 300;
+
+/** A day-precise date in the window; a month or year one as editorial does. */
+const inWindow = (date: string, window: string[]) =>
+  date.length === 10
+    ? window.includes(date)
+    : releaseDateFallbackMatch(date, window);
+
+/** A title for comparison: folded, no featured artists, no punctuation. */
+const normaliseTitle = (title: string) =>
+  foldName(title)
+    .replace(/\s*[([](?:feat|ft|with)\.?\s[^)\]]*[)\]]/g, '')
+    .replace(/\s+-\s+(?:feat|ft)\.?\s.*$/, '')
+    .replace(/[‘’]/g, "'")
+    .replace(/[^\p{L}\p{N}\s']/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+/** Folded artist + normalised title: one release across sources. */
 const releaseKey = (artist: string, title: string) =>
-  `${artist.toLowerCase().trim()}|${title.toLowerCase().trim()}`;
+  `${foldName(artist)}|${normaliseTitle(title)}`;
 
 // ── Pure steps ───────────────────────────────────────────────────────────────
 
 /**
- * The pool the judge sees: in-window candidates by artists not searched as
- * P1/P2, minus releases the week already found (by id or artist|title).
+ * The pool the judge sees. In-window candidates by artists not searched as
+ * P1/P2, minus releases the week already found or admitted from editorial
+ * (by id or artist + title); the same release from several sources merged
+ * into one; rejected genres vetoed; variants collapsed; then the cap.
  */
 export function assemblePool(
   candidates: Candidate[],
@@ -59,36 +100,173 @@ export function assemblePool(
     window: string[];
     seedNames: string[];
     foundReleases: Map<string, FoundRelease>;
+    genreFilters?: GenreFilterLists;
   },
 ): Candidate[] {
-  const seeds = new Set(context.seedNames.map((n) => n.toLowerCase().trim()));
+  const seeds = new Set(context.seedNames.map(foldName));
   const found = new Set(
     [...context.foundReleases.values()].map((r) =>
       releaseKey(r.artistName, r.name),
     ),
   );
-  return candidates.filter(
+  const fresh = candidates.filter(
     (c) =>
-      context.window.includes(c.releaseDate) &&
-      !seeds.has(c.artist.toLowerCase().trim()) &&
+      inWindow(c.releaseDate, context.window) &&
+      !seeds.has(foldName(c.artist)) &&
       !(c.spotifyAlbumId && context.foundReleases.has(c.spotifyAlbumId)) &&
       !found.has(releaseKey(c.artist, c.title)),
   );
+  const allowed = mergeSources(fresh).filter(
+    (c) => !hasRejectedGenre(c.genres, context.genreFilters),
+  );
+  return capPool(collapseVariants(allowed));
 }
 
+/**
+ * One candidate per release: matched by UPC first, then by folded artist +
+ * normalised title. The first keeps its fields, gains every source and
+ * genre, and fills what it lacks from the others.
+ */
+function mergeSources(candidates: Candidate[]): Candidate[] {
+  const merged: Candidate[] = [];
+  const byUpc = new Map<string, Candidate>();
+  const byKey = new Map<string, Candidate>();
+  for (const c of candidates) {
+    const key = releaseKey(c.artist, c.title);
+    let into = (c.upc && byUpc.get(c.upc)) || byKey.get(key);
+    if (into) {
+      absorb(into, c);
+    } else {
+      into = { ...c, genres: [...c.genres], provenance: [...c.provenance] };
+      merged.push(into);
+    }
+    if (c.upc) byUpc.set(c.upc, into);
+    byKey.set(key, into);
+  }
+  return merged;
+}
+
+function absorb(into: Candidate, from: Candidate): void {
+  addSources(into, from);
+  for (const g of from.genres) {
+    if (!into.genres.includes(g)) into.genres.push(g);
+  }
+  into.upc ??= from.upc;
+  into.artistFans ??= from.artistFans;
+  into.relativePopularity ??= from.relativePopularity;
+  into.spotifyAlbumId ??= from.spotifyAlbumId;
+}
+
+/** Add the sources `into` lacks: the same source twice is still one. */
+function addSources(into: Candidate, from: Candidate): void {
+  const have = new Set(into.provenance.map((p) => JSON.stringify(p)));
+  for (const p of from.provenance) {
+    if (!have.has(JSON.stringify(p))) into.provenance.push(p);
+  }
+}
+
+const variantPatterns = [
+  instrumentalPattern,
+  cleanPattern,
+  acousticPattern,
+  spedUpPattern,
+  slowedPattern,
+];
+
+/**
+ * One candidate per release across its variants, as the engine's variant
+ * strip would keep it: the original when the pool has it, otherwise the
+ * first variant. Sped-up and slowed variants never land, so they never
+ * stay. A dropped variant's sources go to the one kept.
+ */
+function collapseVariants(candidates: Candidate[]): Candidate[] {
+  const kept = new Map<string, Candidate>();
+  const dropped: Array<{ group: string; candidate: Candidate }> = [];
+  for (const c of candidates) {
+    const base = variantPatterns.reduce((t, p) => t.replace(p, ''), c.title);
+    const group = releaseKey(c.artist, base);
+    const sped = spedUpPattern.test(c.title) || slowedPattern.test(c.title);
+    const current = kept.get(group);
+    if (!sped && (!current || (base === c.title && current.title !== base))) {
+      if (current) dropped.push({ group, candidate: current });
+      kept.set(group, c);
+    } else {
+      dropped.push({ group, candidate: c });
+    }
+  }
+  for (const { group, candidate } of dropped) {
+    const into = kept.get(group);
+    if (into && into !== candidate) addSources(into, candidate);
+  }
+  const keep = new Set(kept.values());
+  return candidates.filter((c) => keep.has(c));
+}
+
+const isScouting = (c: Candidate) =>
+  c.provenance.some((p) => p.kind === 'scouting');
+
+/**
+ * Over the cap, scouting-playlist candidates all stay and don't count; of
+ * the rest, multi-source candidates go first, then by relative popularity,
+ * highest first, with missing ratios after ≥0.6 and before <0.6.
+ */
+function capPool(pool: Candidate[]): Candidate[] {
+  const rest = pool.filter((c) => !isScouting(c));
+  if (rest.length <= POOL_CAP) return pool;
+  const band = (c: Candidate) =>
+    c.relativePopularity === null ? 1 : c.relativePopularity >= 0.6 ? 0 : 2;
+  const kept = new Set(
+    rest
+      .sort(
+        (a, b) =>
+          Number(b.provenance.length >= 2) - Number(a.provenance.length >= 2) ||
+          band(a) - band(b) ||
+          (b.relativePopularity ?? 0) - (a.relativePopularity ?? 0),
+      )
+      .slice(0, POOL_CAP),
+  );
+  return pool.filter((c) => isScouting(c) || kept.has(c));
+}
+
+const tierOf = (priority: number | null): Tier =>
+  priority === 1 || priority === 2 || priority === 3 || priority === 4
+    ? `P${priority}`
+    : 'unranked';
+
+/**
+ * The P1/P2 artists, then the top 5% of the whole roster by score from below
+ * P1/P2 (at most 300), each with its tier; the week's P1/P2 releases; and
+ * the accept list as a soft hint.
+ */
 export function tasteContext(
   input: WeekCollectionInput,
   foundReleases: Map<string, FoundRelease>,
 ): TasteContext {
+  const searched = new Set(input.roster.map(([name]) => name));
+  const roster = Object.entries(input.trustedArtists.artistCounts);
+  const sliceSize = Math.min(
+    TASTE_SLICE_MAX,
+    Math.round(roster.length * TASTE_SLICE_SHARE),
+  );
+  const slice = roster
+    .filter(
+      ([name, a]) =>
+        !searched.has(name) && a.priority !== 1 && a.priority !== 2,
+    )
+    .sort(([, a], [, b]) => b.score - a.score)
+    .slice(0, sliceSize);
   return {
-    roster: input.roster.map(([name, data]) => ({
-      name,
-      tier: data.priority === 1 ? 'P1' : 'P2',
-    })),
+    roster: [
+      ...input.roster.map(([name, data]) => ({
+        name,
+        tier: tierOf(data.priority),
+      })),
+      ...slice.map(([name, a]) => ({ name, tier: tierOf(a.priority) })),
+    ],
     weekReleases: [...foundReleases.values()]
       .filter((r) => r.priority === 1 || r.priority === 2)
       .map((r) => ({ artist: r.artistName, release: r.name })),
-    acceptGenres: input.editorial.genreFilters?.accepted ?? [],
+    acceptGenres: input.editorial.genreFilters?.accepted ?? acceptedGenres,
   };
 }
 
@@ -116,9 +294,14 @@ export async function runAiPhase(
   input: WeekCollectionInput,
   ai: AiFindsConfig,
   ports: { candidates: CandidateSource; judge: TasteJudge },
-  validDates: string[],
-  foundReleases: Map<string, FoundRelease>,
+  week: {
+    window: string[];
+    foundReleases: Map<string, FoundRelease>;
+    /** The editorial and popularity gates' rejects, for a second look. */
+    rejects: CandidateReject[];
+  },
 ): Promise<AiPhase> {
+  const { window: validDates, foundReleases } = week;
   const phase: AiPhase = {
     picks: [],
     candidates: 0,
@@ -146,7 +329,7 @@ export async function runAiPhase(
           spotifyId: a.spotifyId,
         })),
       scouting: [],
-      rejects: [],
+      rejects: week.rejects,
       window: validDates,
     })
     .catch(degrade(() => []));
@@ -154,6 +337,7 @@ export async function runAiPhase(
     window: validDates,
     seedNames: input.roster.map(([name]) => name),
     foundReleases,
+    genreFilters: input.editorial.genreFilters,
   });
 
   phase.candidates = pool.length;

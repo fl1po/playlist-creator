@@ -51,7 +51,11 @@ export function memoryCheckpoints(): CheckpointStore & {
   };
 }
 
-/** Fixed-list CandidateSource for tests. Records each request it's given. */
+/**
+ * Fixed-list CandidateSource for tests. Records each request it's given.
+ * Like the Deezer adapter, it hands back each reject it's given as a
+ * candidate (`reject-<albumId>`) with its gate provenance and album id.
+ */
 export function fixtureCandidates(
   candidates: Candidate[],
 ): CandidateSource & { requests: CandidateRequest[] } {
@@ -59,7 +63,25 @@ export function fixtureCandidates(
     requests: [],
     async candidates(request) {
       this.requests.push(request);
-      return candidates;
+      return [
+        ...candidates,
+        ...request.rejects.map(
+          (r): Candidate => ({
+            id: `reject-${r.albumId}`,
+            title: r.title,
+            artist: r.artist,
+            type: r.type,
+            trackCount: 1,
+            releaseDate: r.releaseDate,
+            genres: [],
+            artistFans: null,
+            upc: null,
+            relativePopularity: null,
+            provenance: [r.provenance],
+            spotifyAlbumId: r.albumId,
+          }),
+        ),
+      ];
     },
   };
 }

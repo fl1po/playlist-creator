@@ -26,18 +26,25 @@ export function isGenreAcceptable(
   lists?: GenreFilterLists,
 ): boolean {
   if (!genres || genres.length === 0) return false;
+  if (hasRejectedGenre(genres, lists)) return false;
   const genresLower = genres.map((g) => g.toLowerCase());
 
-  const rejected = lists?.rejected ?? rejectedGenres;
   const accepted = lists?.accepted ?? acceptedGenres;
 
-  for (const r of rejected) {
-    if (genresLower.some((g) => g.includes(r))) return false;
-  }
   for (const a of accepted) {
     if (genresLower.some((g) => g.includes(a))) return true;
   }
   return false;
+}
+
+/** Substring match against the reject list: the veto on its own. */
+export function hasRejectedGenre(
+  genres: string[],
+  lists?: GenreFilterLists,
+): boolean {
+  const genresLower = genres.map((g) => g.toLowerCase());
+  const rejected = lists?.rejected ?? rejectedGenres;
+  return rejected.some((r) => genresLower.some((g) => g.includes(r)));
 }
 
 // Variant detection patterns (instrumental / clean / acoustic / sped up / slowed),
