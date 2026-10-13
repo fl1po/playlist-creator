@@ -14,7 +14,7 @@ import {
 } from '../../domain/releases.js';
 import { foldName } from '../../lib/deezer-client.js';
 import { SpotifyAuthLost, isAbort } from '../../lib/spotify/errors.js';
-import type { FoundRelease } from '../../lib/types.js';
+import type { FoundRelease, PlaylistAlbumInfo } from '../../lib/types.js';
 import {
   type Collected,
   type Run,
@@ -28,6 +28,7 @@ import type {
   AiSkipReason,
   Candidate,
   CandidateReject,
+  CandidateRequest,
   CandidateSource,
   JudgePick,
   TasteContext,
@@ -88,36 +89,56 @@ const releaseKey = (artist: string, title: string) =>
 
 // ── Pure steps ───────────────────────────────────────────────────────────────
 
+/** What the week already covers, against which a release is new or not. */
+interface WeekCoverage {
+  window: string[];
+  seedNames: string[];
+  foundReleases: Map<string, FoundRelease>;
+}
+
 /**
- * The pool the judge sees. In-window candidates by artists not searched as
- * P1/P2, minus releases the week already found or admitted from editorial
- * (by id or artist + title); the same release from several sources merged
- * into one; rejected genres vetoed; variants collapsed; then the cap.
+ * In the window, by an artist not searched as P1/P2, and not a release the
+ * week already found or admitted from editorial (by id or artist + title).
  */
-export function assemblePool(
-  candidates: Candidate[],
-  context: {
-    window: string[];
-    seedNames: string[];
-    foundReleases: Map<string, FoundRelease>;
-    genreFilters?: GenreFilterLists;
-  },
-): Candidate[] {
-  const seeds = new Set(context.seedNames.map(foldName));
+function isNewRelease(
+  week: WeekCoverage,
+): (
+  r: Pick<Candidate, 'releaseDate' | 'artist' | 'title' | 'spotifyAlbumId'>,
+) => boolean {
+  const seeds = new Set(week.seedNames.map(foldName));
   const found = new Set(
-    [...context.foundReleases.values()].map((r) =>
+    [...week.foundReleases.values()].map((r) =>
       releaseKey(r.artistName, r.name),
     ),
   );
-  const fresh = candidates.filter(
-    (c) =>
-      inWindow(c.releaseDate, context.window) &&
-      !seeds.has(foldName(c.artist)) &&
-      !(c.spotifyAlbumId && context.foundReleases.has(c.spotifyAlbumId)) &&
-      !found.has(releaseKey(c.artist, c.title)),
-  );
-  const allowed = mergeSources(fresh).filter(
-    (c) => !hasRejectedGenre(c.genres, context.genreFilters),
+  return (r) =>
+    inWindow(r.releaseDate, week.window) &&
+    !seeds.has(foldName(r.artist)) &&
+    !(r.spotifyAlbumId && week.foundReleases.has(r.spotifyAlbumId)) &&
+    !found.has(releaseKey(r.artist, r.title));
+}
+
+/**
+ * The pool's first step: the new candidates, with the same release from
+ * several sources merged into one.
+ */
+export function newCandidates(
+  candidates: Candidate[],
+  week: WeekCoverage,
+): Candidate[] {
+  return mergeSources(candidates.filter(isNewRelease(week)));
+}
+
+/**
+ * The pool the judge sees, from the new candidates: rejected genres vetoed,
+ * variants collapsed, then the cap.
+ */
+export function finishPool(
+  candidates: Candidate[],
+  genreFilters?: GenreFilterLists,
+): Candidate[] {
+  const allowed = candidates.filter(
+    (c) => !hasRejectedGenre(c.genres, genreFilters),
   );
   return capPool(collapseVariants(allowed));
 }
@@ -314,6 +335,12 @@ export async function runAiPhase(
   const { budgetUsd } = ai;
   if (!(budgetUsd > 0)) return skipPhase(run, phase, 'over-budget');
 
+  const coverage: WeekCoverage = {
+    window: validDates,
+    seedNames: input.roster.map(([name]) => name),
+    foundReleases,
+  };
+  const scouting = await readScouting(run, input, ai, coverage);
   const roster = Object.entries(input.trustedArtists.artistCounts);
   // Candidate source trouble leaves a smaller pool, not a failed week.
   const raw = await ports.candidates
@@ -330,19 +357,17 @@ export async function runAiPhase(
             priority: a.priority,
             spotifyId: a.spotifyId,
           })),
-        scouting: [],
+        scouting,
         rejects: week.rejects,
         window: validDates,
       },
       run.onProgress,
     )
     .catch(degrade(() => []));
-  const pool = assemblePool(raw, {
-    window: validDates,
-    seedNames: input.roster.map(([name]) => name),
-    foundReleases,
-    genreFilters: input.editorial.genreFilters,
-  });
+  const pool = finishPool(
+    await withSpotifyGenres(run, newCandidates(raw, coverage), scouting),
+    input.editorial.genreFilters,
+  );
 
   phase.candidates = pool.length;
 
@@ -399,6 +424,76 @@ export async function runAiPhase(
     });
   }
   return phase;
+}
+
+/**
+ * The current contents of the user's scouting playlists, as `{playlist,
+ * album}` items: only new releases, and none by a P1/P2 artist's Spotify
+ * id either. A playlist that can't be read adds nothing.
+ */
+async function readScouting(
+  run: Run,
+  input: WeekCollectionInput,
+  ai: AiFindsConfig,
+  week: WeekCoverage,
+): Promise<CandidateRequest['scouting']> {
+  const isNew = isNewRelease(week);
+  const seedIds = new Set(
+    input.roster.flatMap(([, data]) => data.spotifyId ?? []),
+  );
+  const items: CandidateRequest['scouting'] = [];
+  for (const playlist of ai.scoutingPlaylists) {
+    const albums = await run.reads
+      .playlistAlbums(playlist.id)
+      .catch(degrade(() => new Map<string, PlaylistAlbumInfo>()));
+    for (const album of albums.values()) {
+      if (
+        !seedIds.has(album.artistIds[0]) &&
+        isNew({
+          releaseDate: album.releaseDate,
+          artist: album.artistName,
+          title: album.name,
+          spotifyAlbumId: album.id,
+        })
+      ) {
+        items.push({ playlist: playlist.name, album });
+      }
+    }
+  }
+  return items;
+}
+
+/**
+ * A candidate only scouting playlists brought in, with no genres from
+ * Deezer, takes its artist's Spotify genres (one `artistProfile` call each)
+ * so the genre veto still holds; one whose profile can't be read is
+ * dropped. A candidate with another source keeps that source's standing.
+ */
+async function withSpotifyGenres(
+  run: Run,
+  candidates: Candidate[],
+  scouting: CandidateRequest['scouting'],
+): Promise<Candidate[]> {
+  const artistOf = new Map(
+    scouting.map(({ album }) => [album.id, album.artistIds[0]]),
+  );
+  const kept: Candidate[] = [];
+  for (const c of candidates) {
+    const artistId = c.spotifyAlbumId && artistOf.get(c.spotifyAlbumId);
+    const unchecked =
+      artistId &&
+      c.genres.length === 0 &&
+      c.provenance.every((p) => p.kind === 'scouting');
+    if (!unchecked) {
+      kept.push(c);
+      continue;
+    }
+    const profile = await run.reads
+      .artistProfile(artistId)
+      .catch(degrade(() => null));
+    if (profile) kept.push({ ...c, genres: profile.genres });
+  }
+  return kept;
 }
 
 /** Only stopping the fill and Spotify auth loss get out of the AI phase. */

@@ -25,7 +25,9 @@ import type {
 // The production CandidateSource (ADR-0005), on Deezer. Roster artists below
 // P1/P2 are never searched on Spotify: Deezer decides whether they released
 // anything this week. Related artists come from the P1/P2 seeds' related-artist
-// graph, cached per seed and topped up on the first call of a fill.
+// graph, cached per seed and topped up on the first call of a fill. Rejects
+// and scouting-playlist albums the week knows from Spotify are looked up by
+// artist and title, and come back with their Spotify album id, matched or not.
 // Deezer failures shrink the pool instead of throwing; only abort gets out.
 
 /** The Deezer reads the source needs; `DeezerClient` in production. */
@@ -266,36 +268,39 @@ export function deezerCandidateSource(
     if (failed) onProgress({ phase: 'related-artists-failed', seeds: failed });
   }
 
-  /** The reject as a candidate, with Deezer's data when Deezer has it. */
-  async function enrichReject(
+  /**
+   * A release the week knows from Spotify (a reject or a scouting-playlist
+   * album) with Deezer's data when Deezer has it: an album search matched on
+   * the artist and a loose title, then the album itself.
+   */
+  async function withDeezerData(
     cache: DeezerArtistCache,
-    reject: CandidateReject,
+    known: Candidate,
   ): Promise<Candidate> {
-    const known = bareReject(reject);
-    const artist = await resolveArtist(cache, reject.artist);
-    const hits = await deezer.searchAlbum(`${reject.artist} ${reject.title}`);
+    const artist = await resolveArtist(cache, known.artist);
+    const hits = await deezer.searchAlbum(`${known.artist} ${known.title}`);
     const hit = hits.find(
       (h) =>
         (artist
           ? h.artist.id === artist.id
-          : sameName(h.artist.name, reject.artist)) &&
-        sameTitle(h.title, reject.title),
+          : sameName(h.artist.name, known.artist)) &&
+        sameTitle(h.title, known.title),
     );
     const fans = artist?.fans ?? null;
     if (!hit) return { ...known, artistFans: fans };
     const album = await albumDetail(hit.id);
     const deezerData = await candidate(
       cache,
-      { name: reject.artist, id: hit.artist.id, fans },
+      { name: known.artist, id: hit.artist.id, fans },
       album,
     );
     // Spotify's title, type and date stay: they're what a pick lands as.
     return {
       ...known,
       ...deezerData,
-      title: reject.title,
-      type: reject.type,
-      releaseDate: reject.releaseDate,
+      title: known.title,
+      type: known.type,
+      releaseDate: known.releaseDate,
     };
   }
 
@@ -339,16 +344,18 @@ export function deezerCandidateSource(
             ),
           );
         }
-        const rejects: Candidate[] = [];
-        for (const reject of request.rejects) {
+        // Releases the week knows from Spotify come back even unmatched.
+        const spotifyKnown: Candidate[] = [];
+        for (const bare of [
+          ...request.rejects.map(bareReject),
+          ...bareScouting(request.scouting),
+        ]) {
           checkAbort();
-          rejects.push(
-            await enrichReject(cache, reject).catch(
-              unlessAbort(() => bareReject(reject)),
-            ),
+          spotifyKnown.push(
+            await withDeezerData(cache, bare).catch(unlessAbort(() => bare)),
           );
         }
-        return [...byId.values(), ...rejects];
+        return [...byId.values(), ...spotifyKnown];
       } finally {
         await artistStore.save();
         await graphStore.save();
@@ -447,6 +454,41 @@ function bareReject(reject: CandidateReject): Candidate {
     provenance: [reject.provenance],
     spotifyAlbumId: reject.albumId,
   };
+}
+
+/**
+ * Scouting-playlist albums as the week knows them, before any Deezer data:
+ * one per album, with every playlist it's in.
+ */
+function bareScouting(items: CandidateRequest['scouting']): Candidate[] {
+  const byAlbum = new Map<string, Candidate>();
+  for (const { playlist, album } of items) {
+    const seen = byAlbum.get(album.id);
+    const source: CandidateProvenance = { kind: 'scouting', playlist };
+    if (!seen) {
+      byAlbum.set(album.id, {
+        id: `scout-${album.id}`,
+        title: album.name,
+        artist: album.artistName,
+        type: album.albumType,
+        trackCount: album.totalTracks,
+        releaseDate: album.releaseDate,
+        genres: [],
+        artistFans: null,
+        upc: null,
+        relativePopularity: null,
+        provenance: [source],
+        spotifyAlbumId: album.id,
+      });
+    } else if (
+      !seen.provenance.some(
+        (p) => p.kind === 'scouting' && p.playlist === playlist,
+      )
+    ) {
+      seen.provenance.push(source);
+    }
+  }
+  return [...byAlbum.values()];
 }
 
 /** The upper median, as the prototype took it. */

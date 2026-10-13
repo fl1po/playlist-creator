@@ -57,6 +57,8 @@ export interface Catalog {
 export function fixtureReads(catalog: Catalog): PromotionReads & {
   searchCalls: string[];
   upcCalls: string[];
+  playlistCalls: string[];
+  profileCalls: string[];
 } {
   const findAlbum = (albumId: string) => {
     for (const artist of catalog.artists) {
@@ -71,6 +73,8 @@ export function fixtureReads(catalog: Catalog): PromotionReads & {
   return {
     searchCalls: [],
     upcCalls: [],
+    playlistCalls: [],
+    profileCalls: [],
     async searchArtist(name) {
       this.searchCalls.push(name);
       const artist = catalog.artists.find(
@@ -122,6 +126,7 @@ export function fixtureReads(catalog: Catalog): PromotionReads & {
       return findAlbum(albumId)?.album.tracks ?? [];
     },
     async playlistAlbums(playlistId) {
+      this.playlistCalls.push(playlistId);
       const albums = new Map<string, PlaylistAlbumInfo>();
       for (const albumId of catalog.playlistAlbums?.[playlistId] ?? []) {
         const hit = findAlbum(albumId);
@@ -142,6 +147,7 @@ export function fixtureReads(catalog: Catalog): PromotionReads & {
       return [];
     },
     async artistProfile(artistId) {
+      this.profileCalls.push(artistId);
       return catalog.profiles?.[artistId] ?? null;
     },
     async playlistTracksWithArtists(playlistId) {

@@ -455,6 +455,112 @@ test('a reject Deezer lacks still comes back, unenriched', async () => {
   ]);
 });
 
+// ── Scouting playlists ──────────────────────────────────────────────────────
+
+const scouted = (
+  playlist: string,
+  over: Partial<CandidateRequest['scouting'][number]['album']> = {},
+): CandidateRequest['scouting'][number] => ({
+  playlist,
+  album: {
+    id: 'sp-10',
+    name: 'Night Bus',
+    artistName: 'Nova',
+    artistIds: ['art-nova'],
+    releaseDate: '2026-06-05',
+    albumType: 'single',
+    totalTracks: 2,
+    ...over,
+  },
+});
+
+test('a scouting release is looked up on Deezer and keeps its Spotify album id', async () => {
+  const deezer = fixtureDeezer([nova]);
+  const source = deezerCandidateSource({ deezer, cache: tempCache() });
+
+  const candidates = await source.candidates(
+    request({
+      rosterArtists: [],
+      scouting: [scouted('Fresh Finds'), scouted('Lorem')],
+    }),
+  );
+
+  assert.deepEqual(candidates, [
+    {
+      id: 'scout-sp-10',
+      title: 'Night Bus',
+      artist: 'Nova',
+      type: 'single',
+      trackCount: 2,
+      releaseDate: '2026-06-05',
+      genres: ['Rap/Hip Hop'],
+      artistFans: 1200,
+      upc: '0602445000010',
+      relativePopularity: 0.75,
+      provenance: [
+        { kind: 'scouting', playlist: 'Fresh Finds' },
+        { kind: 'scouting', playlist: 'Lorem' },
+      ],
+      spotifyAlbumId: 'sp-10',
+    },
+  ]);
+  assert.equal(
+    deezer.calls.filter((c) => c.startsWith('searchAlbum')).length,
+    1,
+  );
+});
+
+test('a scouting release Deezer lacks stays Spotify-only', async () => {
+  const deezer = fixtureDeezer([nova]);
+  const candidates = await deezerCandidateSource({
+    deezer,
+    cache: tempCache(),
+  }).candidates(
+    request({
+      rosterArtists: [],
+      scouting: [
+        scouted('Lorem', {
+          id: 'sp-77',
+          name: 'Elsewhere',
+          artistName: 'Stranger',
+          albumType: 'album',
+          totalTracks: 9,
+          releaseDate: '2026-06',
+        }),
+      ],
+    }),
+  );
+
+  assert.deepEqual(candidates, [
+    {
+      id: 'scout-sp-77',
+      title: 'Elsewhere',
+      artist: 'Stranger',
+      type: 'album',
+      trackCount: 9,
+      releaseDate: '2026-06',
+      genres: [],
+      artistFans: null,
+      upc: null,
+      relativePopularity: null,
+      provenance: [{ kind: 'scouting', playlist: 'Lorem' }],
+      spotifyAlbumId: 'sp-77',
+    },
+  ]);
+});
+
+test('a failed scouting lookup still returns the Spotify-only release', async () => {
+  const deezer = fixtureDeezer([nova]);
+  deezer.fail('getAlbum', 'Nova');
+  const candidates = await deezerCandidateSource({
+    deezer,
+    cache: tempCache(),
+  }).candidates(request({ rosterArtists: [], scouting: [scouted('Lorem')] }));
+  assert.equal(candidates[0]?.id, 'scout-sp-10');
+  assert.equal(candidates[0]?.upc, null);
+  assert.deepEqual(candidates[0]?.genres, []);
+});
+
 // ── Failures and abort ──────────────────────────────────────────────────────
 
 for (const what of ['searchArtist', 'artistAlbums', 'getAlbum'] as const) {

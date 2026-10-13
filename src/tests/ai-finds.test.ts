@@ -1184,3 +1184,205 @@ test('the taste slice is capped at 300 artists; the accept list defaults', async
   assert.deepEqual(roster[0], { name: 'Artist 9999', tier: 'P4' });
   assert.ok(acceptGenres.includes('hip-hop'));
 });
+
+// ── Scouting playlists ───────────────────────────────────────────────────────
+
+const LOREM = { id: 'pl-lorem', name: 'Lorem' };
+const IPSUM = { id: 'pl-ipsum', name: 'Ipsum' };
+const scoutingAi = { ...AI, scoutingPlaylists: [LOREM, IPSUM] };
+const profileWith = (genres: string[]) => ({
+  popularity: 5,
+  followers: 10,
+  genres,
+});
+
+test('scouting playlists are read only when AI finds are on', async () => {
+  for (const [ai, read] of [
+    [undefined, false],
+    [{ ...scoutingAi, enabled: false }, false],
+    [scoutingAi, true],
+  ] as const) {
+    const reads = fixtureReads({
+      artists: [smallArtist('sc')],
+      playlistAlbums: { 'pl-lorem': ['alb-sc'] },
+    });
+    const { ports } = aiPorts(reads, [], {
+      ok: true,
+      picks: [],
+      spendUsd: 0.01,
+    });
+
+    await collectWeek(input({ ai }), ports);
+
+    assert.equal(reads.playlistCalls.includes('pl-lorem'), read);
+  }
+});
+
+test('in-window scouting releases by non-P1/P2 artists reach the judge with their playlists', async () => {
+  const reads = fixtureReads({
+    artists: [
+      alpha,
+      smallArtist('sc'),
+      smallArtist('old', { release_date: '2026-05-01' }),
+      editorialArtist('ed', 'Edith'),
+    ],
+    playlistAlbums: {
+      'pl-ff': ['alb-ed'],
+      // Found by the search, too old, admitted from editorial: all skipped.
+      'pl-lorem': ['alb-x', 'alb-sc', 'alb-old', 'alb-ed'],
+      'pl-ipsum': ['alb-sc'],
+    },
+    profiles: {
+      'art-ed': { popularity: 80, followers: 1000, genres: ['pop'] },
+      'art-sc': profileWith(['pop']),
+    },
+  });
+  const { source, judge, ports } = aiPorts(
+    reads,
+    [],
+    { ok: true, picks: [], spendUsd: 0.01 },
+    { 'alb-x': 70, 'alb-ed': 70 },
+  );
+
+  await collectWeek(
+    input({
+      roster: [['Alpha', P1]],
+      editorial: {
+        ...input().editorial,
+        playlists: [{ id: 'pl-ff', name: 'Fresh Finds' }],
+      },
+      ai: scoutingAi,
+    }),
+    ports,
+  );
+
+  assert.deepEqual(
+    source.requests[0].scouting.map((s) => [s.playlist, s.album.id]),
+    [
+      ['Lorem', 'alb-sc'],
+      ['Ipsum', 'alb-sc'],
+    ],
+  );
+  assert.deepEqual(
+    judge.requests[0].candidates.map((c) => [
+      c.id,
+      c.provenance,
+      c.spotifyAlbumId,
+    ]),
+    [
+      [
+        'scout-alb-sc',
+        [
+          { kind: 'scouting', playlist: 'Lorem' },
+          { kind: 'scouting', playlist: 'Ipsum' },
+        ],
+        'alb-sc',
+      ],
+    ],
+  );
+});
+
+test('a scouting release Deezer also found is one candidate listing both sources', async () => {
+  const related = { kind: 'related' as const, to: ['Alpha', 'Beta'] };
+  const reads = fixtureReads({
+    artists: [smallArtist('sc')],
+    playlistAlbums: { 'pl-lorem': ['alb-sc'] },
+  });
+  const { judge, ports } = aiPorts(
+    reads,
+    [
+      candidate('dz-sc', {
+        artist: 'Artist sc',
+        title: 'Title sc',
+        genres: ['Pop'],
+        provenance: [related],
+      }),
+    ],
+    { ok: true, picks: [], spendUsd: 0.01 },
+  );
+
+  await collectWeek(input({ ai: scoutingAi }), ports);
+
+  assert.deepEqual(
+    judge.requests[0].candidates.map((c) => [
+      c.id,
+      c.provenance,
+      c.spotifyAlbumId,
+    ]),
+    [['dz-sc', [related, { kind: 'scouting', playlist: 'Lorem' }], 'alb-sc']],
+  );
+  // Deezer's genres were enough for the veto.
+  assert.deepEqual(reads.profileCalls, []);
+});
+
+test("a scouting release Deezer lacks takes its artist's Spotify genres, and the veto holds", async () => {
+  const reads = fixtureReads({
+    artists: [smallArtist('sc'), smallArtist('metal'), smallArtist('ghost')],
+    playlistAlbums: { 'pl-lorem': ['alb-sc', 'alb-metal', 'alb-ghost'] },
+    // No profile for the ghost: its genres can't be checked, so it's dropped.
+    profiles: {
+      'art-sc': profileWith(['indie pop']),
+      'art-metal': profileWith(['death metal']),
+    },
+  });
+  const { judge, ports } = aiPorts(reads, [], {
+    ok: true,
+    picks: [],
+    spendUsd: 0.01,
+  });
+
+  await collectWeek(input({ ai: scoutingAi }), ports);
+
+  assert.deepEqual(
+    judge.requests[0].candidates.map((c) => [c.id, c.genres]),
+    [['scout-alb-sc', ['indie pop']]],
+  );
+  assert.deepEqual(reads.profileCalls, ['art-sc', 'art-metal', 'art-ghost']);
+});
+
+test('scouting releases land only as picks, resolved by album id without a search', async () => {
+  const reads = fixtureReads({
+    artists: [alpha, smallArtist('sc'), smallArtist('other')],
+    playlistAlbums: { 'pl-lorem': ['alb-sc', 'alb-other'] },
+    profiles: {
+      'art-sc': profileWith(['pop']),
+      'art-other': profileWith(['pop']),
+    },
+  });
+  const { ports } = aiPorts(reads, [], {
+    ok: true,
+    picks: [pick('scout-alb-sc', 80)],
+    spendUsd: 0.01,
+  });
+
+  const week = await collectWeek(
+    input({ roster: [['Alpha', P1]], ai: scoutingAi }),
+    ports,
+  );
+
+  assert.deepEqual(week.tracks, ['t1', 'sc-t1']);
+  assert.deepEqual(reads.upcCalls, []);
+  assert.deepEqual(reads.searchCalls, ['Alpha']);
+});
+
+test('a scouting release merged with another source keeps it without a Spotify genre check', async () => {
+  const roster = { kind: 'roster' as const, priority: 3 };
+  const reads = fixtureReads({
+    artists: [smallArtist('sc')],
+    playlistAlbums: { 'pl-lorem': ['alb-sc'] },
+    // No profile: a failed read must not cost the roster candidate.
+  });
+  const { judge, ports } = aiPorts(
+    reads,
+    [candidate('dz-sc', { artist: 'Artist sc', title: 'Title sc' })],
+    { ok: true, picks: [], spendUsd: 0.01 },
+  );
+
+  await collectWeek(input({ ai: scoutingAi }), ports);
+
+  assert.deepEqual(
+    judge.requests[0].candidates.map((c) => [c.id, c.provenance]),
+    [['dz-sc', [roster, { kind: 'scouting', playlist: 'Lorem' }]]],
+  );
+  assert.deepEqual(reads.profileCalls, []);
+});

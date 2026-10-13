@@ -70,14 +70,27 @@ function candidateRow(c: Candidate): string {
     c.relativePopularity === null
       ? '?'
       : `${c.relativePopularity.toFixed(1)}x artist's usual`,
-    c.provenance.map(sourceLabel).join('; '),
+    sources(c.provenance),
   ].join(' | ');
+}
+
+/** Every source once; the scouting playlists as one `in A, B`. */
+function sources(provenance: CandidateProvenance[]): string {
+  const scouting = provenance.flatMap((p) =>
+    p.kind === 'scouting' ? [p.playlist] : [],
+  );
+  return [
+    ...provenance.filter((p) => p.kind !== 'scouting').map(sourceLabel),
+    ...(scouting.length ? [`in ${scouting.join(', ')}`] : []),
+  ].join('; ');
 }
 
 /** Most related seeds named before the rest are counted. */
 const SEEDS_SHOWN = 4;
 
-function sourceLabel(p: CandidateProvenance): string {
+function sourceLabel(
+  p: Exclude<CandidateProvenance, { kind: 'scouting' }>,
+): string {
   switch (p.kind) {
     case 'related': {
       const more = p.to.length - SEEDS_SHOWN;
@@ -86,8 +99,6 @@ function sourceLabel(p: CandidateProvenance): string {
     }
     case 'roster':
       return `roster ${p.priority ? `P${p.priority}` : 'unranked'}`;
-    case 'scouting':
-      return `in ${p.playlist}`;
     case 'editorial-reject':
       return `editorial reject (${p.reason})${playlists(p.playlists)}`;
     case 'low-popularity':

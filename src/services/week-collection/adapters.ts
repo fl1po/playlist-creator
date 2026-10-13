@@ -54,7 +54,9 @@ export function memoryCheckpoints(): CheckpointStore & {
 /**
  * Fixed-list CandidateSource for tests. Records each request it's given.
  * Like the Deezer adapter, it hands back each reject it's given as a
- * candidate (`reject-<albumId>`) with its gate provenance and album id.
+ * candidate (`reject-<albumId>`) with its gate provenance and album id, and
+ * each scouting album as one Spotify-only candidate (`scout-<albumId>`)
+ * listing every playlist it's in, as when Deezer has no match.
  */
 export function fixtureCandidates(
   candidates: Candidate[],
@@ -81,6 +83,29 @@ export function fixtureCandidates(
             spotifyAlbumId: r.albumId,
           }),
         ),
+        ...request.scouting
+          .filter(
+            (s, i, all) =>
+              all.findIndex((o) => o.album.id === s.album.id) === i,
+          )
+          .map(
+            ({ album }): Candidate => ({
+              id: `scout-${album.id}`,
+              title: album.name,
+              artist: album.artistName,
+              type: album.albumType,
+              trackCount: album.totalTracks,
+              releaseDate: album.releaseDate,
+              genres: [],
+              artistFans: null,
+              upc: null,
+              relativePopularity: null,
+              provenance: request.scouting
+                .filter((s) => s.album.id === album.id)
+                .map((s) => ({ kind: 'scouting', playlist: s.playlist })),
+              spotifyAlbumId: album.id,
+            }),
+          ),
       ];
     },
   };
