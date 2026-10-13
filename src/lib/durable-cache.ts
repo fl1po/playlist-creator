@@ -20,6 +20,11 @@ export interface CacheDescriptor<T> {
    * `value == null`.
    */
   isEmpty?(value: T): boolean;
+  /**
+   * Whether saves reach `onSave` (the browser's localStorage mirror).
+   * Defaults to true; off for large data the UI never reads.
+   */
+  readonly browserMirror?: boolean;
 }
 
 export interface DurableCache {
@@ -154,7 +159,9 @@ export function createDurableCache(opts: {
         /* redis optional */
       }
     }
-    onSave?.(descriptor as CacheDescriptor<unknown>, value);
+    if (descriptor.browserMirror !== false) {
+      onSave?.(descriptor as CacheDescriptor<unknown>, value);
+    }
   }
 
   async function del(descriptor: CacheDescriptor<unknown>): Promise<void> {

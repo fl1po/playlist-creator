@@ -317,22 +317,25 @@ export async function runAiPhase(
   const roster = Object.entries(input.trustedArtists.artistCounts);
   // Candidate source trouble leaves a smaller pool, not a failed week.
   const raw = await ports.candidates
-    .candidates({
-      seeds: input.roster.map(([name, data]) => ({
-        name,
-        spotifyId: data.spotifyId ?? null,
-      })),
-      rosterArtists: roster
-        .filter(([, a]) => a.priority !== 1 && a.priority !== 2)
-        .map(([name, a]) => ({
+    .candidates(
+      {
+        seeds: input.roster.map(([name, data]) => ({
           name,
-          priority: a.priority,
-          spotifyId: a.spotifyId,
+          spotifyId: data.spotifyId ?? null,
         })),
-      scouting: [],
-      rejects: week.rejects,
-      window: validDates,
-    })
+        rosterArtists: roster
+          .filter(([, a]) => a.priority !== 1 && a.priority !== 2)
+          .map(([name, a]) => ({
+            name,
+            priority: a.priority,
+            spotifyId: a.spotifyId,
+          })),
+        scouting: [],
+        rejects: week.rejects,
+        window: validDates,
+      },
+      run.onProgress,
+    )
     .catch(degrade(() => []));
   const pool = assemblePool(raw, {
     window: validDates,

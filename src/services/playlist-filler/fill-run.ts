@@ -110,6 +110,9 @@ type Emitter = ServiceEmitter<PlaylistFillerEventMap>;
 
 // ── Event translation ────────────────────────────────────────────────────────
 
+/** Seeds between "Related artists: done/total" lines. */
+const RELATED_LOG_EVERY = 25;
+
 /** Map week-collection liveness onto the existing event map. */
 function emitProgress(emitter: Emitter, e: WeekProgressEvent): void {
   switch (e.phase) {
@@ -130,6 +133,18 @@ function emitProgress(emitter: Emitter, e: WeekProgressEvent): void {
       break;
     case 'popularity':
       emitter.emit('log', `Checking popularity: ${e.done}/${e.total}`);
+      break;
+    case 'related-artists':
+      // A first build covers every P1/P2 seed: a line per batch, not per seed.
+      if (e.done % RELATED_LOG_EVERY === 0 || e.done === e.total) {
+        emitter.emit('log', `Related artists: ${e.done}/${e.total}`);
+      }
+      break;
+    case 'related-artists-failed':
+      emitter.emit(
+        'warning',
+        `Related artists: ${e.seeds} seeds unresolved/failed`,
+      );
       break;
     case 'ai-pick':
       emitter.emit(

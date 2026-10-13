@@ -1,6 +1,9 @@
 import {
   DEEZER_ARTISTS,
   type DeezerArtistCache,
+  RELATED_ARTIST_GRAPH,
+  type RelatedArtist,
+  type RelatedArtistEntry,
 } from '../../lib/cache-files.js';
 import {
   type DeezerAlbumDetail,
@@ -8,32 +11,40 @@ import {
   DeezerClient,
   foldName,
 } from '../../lib/deezer-client.js';
-import type { DurableCache } from '../../lib/durable-cache.js';
+import type { CacheDescriptor, DurableCache } from '../../lib/durable-cache.js';
 import { isAbort } from '../../lib/spotify/errors.js';
 import type {
   Candidate,
+  CandidateProgress,
   CandidateProvenance,
   CandidateReject,
+  CandidateRequest,
   CandidateSource,
 } from '../week-collection/index.js';
 
 // The production CandidateSource (ADR-0005), on Deezer. Roster artists below
 // P1/P2 are never searched on Spotify: Deezer decides whether they released
-// anything this week. Deezer failures shrink the pool instead of throwing;
-// only abort gets out.
+// anything this week. Related artists come from the P1/P2 seeds' related-artist
+// graph, cached per seed and topped up on the first call of a fill.
+// Deezer failures shrink the pool instead of throwing; only abort gets out.
 
 /** The Deezer reads the source needs; `DeezerClient` in production. */
 export type DeezerReads = Pick<
   DeezerClient,
-  'searchArtist' | 'searchAlbum' | 'artistAlbums' | 'getAlbum' | 'topTracks'
+  | 'searchArtist'
+  | 'searchAlbum'
+  | 'artistAlbums'
+  | 'getAlbum'
+  | 'topTracks'
+  | 'relatedArtists'
 >;
 
 export interface DeezerCandidateSourceOptions {
   /** Defaults to a fresh `DeezerClient`. */
   deezer?: DeezerReads;
-  /** Holds artist lookups and top tracks between fills. */
+  /** Holds artist lookups, top tracks and the related-artist graph between fills. */
   cache: DurableCache;
-  /** Cooperative cancellation: throws to abort. Called once per artist. */
+  /** Cooperative cancellation: throws to abort. Called once per seed and artist. */
   checkAbort?: () => void;
   now?: () => number;
 }
@@ -41,6 +52,10 @@ export interface DeezerCandidateSourceOptions {
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Who an artist is on Deezer barely changes; their fan count drifts. */
 const ARTIST_TTL_MS = 90 * DAY_MS;
+/** A seed's related artists drift slowly; the whole graph renews about quarterly. */
+const GRAPH_TTL_MS = 90 * DAY_MS;
+/** A related artist joins the pool once this many current seeds name it. */
+const MIN_CO_CITATIONS = 2;
 /** An artist's usual tracks move slowly; a month keeps the ratio honest. */
 const TOP_TRACKS_TTL_MS = 30 * DAY_MS;
 /** Saved every this many fetched artists, so a crash keeps most of a build. */
@@ -60,26 +75,18 @@ export function deezerCandidateSource(
   const now = opts.now ?? Date.now;
   const checkAbort = opts.checkAbort ?? (() => {});
   // Held for the adapter's life, so later weeks of a fill reuse them.
-  let store: DeezerArtistCache | null = null;
+  const artistStore = batchedStore(opts.cache, DEEZER_ARTISTS, () => ({
+    artists: {},
+    topTracks: {},
+  }));
+  const graphStore = batchedStore(opts.cache, RELATED_ARTIST_GRAPH, () => ({}));
   const albumLists = new Map<number, DeezerArtistAlbum[]>();
   const albumDetails = new Map<number, DeezerAlbumDetail>();
-  let unsaved = 0;
+  // Seeds looked up by this adapter, failed ones too: a failure is retried
+  // by the next fill, not by every later week of this one.
+  const lookedUp = new Set<string>();
 
   const fresh = (fetchedAt: number, ttl: number) => now() - fetchedAt < ttl;
-
-  async function save(): Promise<void> {
-    if (!(store && unsaved)) return;
-    unsaved = 0;
-    try {
-      await opts.cache.save(DEEZER_ARTISTS, store);
-    } catch {
-      /* the cache is a speed-up; losing it costs refetches, not the week */
-    }
-  }
-
-  async function markUnsaved(): Promise<void> {
-    if (++unsaved >= SAVE_EVERY) await save();
-  }
 
   /** The Deezer artist by this name; null when Deezer has none. */
   async function resolveArtist(
@@ -94,7 +101,7 @@ export function deezerCandidateSource(
     const ref =
       found === 'not-found' ? null : { id: found.id, fans: found.nb_fan };
     cache.artists[key] = { deezer: ref, fetchedAt: now() };
-    await markUnsaved();
+    await artistStore.changed();
     return ref;
   }
 
@@ -141,7 +148,7 @@ export function deezerCandidateSource(
       if (!tracks) return null;
       top = { tracks, fetchedAt: now() };
       cache.topTracks[key] = top;
-      await markUnsaved();
+      await artistStore.changed();
     }
     const usual = median(
       top.tracks
@@ -169,6 +176,26 @@ export function deezerCandidateSource(
     };
   }
 
+  /** One Deezer artist's in-window releases; all or none. */
+  async function artistReleases(
+    cache: DeezerArtistCache,
+    artist: RelatedArtist,
+    provenance: CandidateProvenance,
+    window: string[],
+  ): Promise<Candidate[]> {
+    const found: Candidate[] = [];
+    for (const listed of await artistAlbums(artist.id)) {
+      if (!window.includes(listed.release_date)) continue;
+      const album = await albumDetail(listed.id);
+      found.push({
+        id: `dz-${album.id}`,
+        ...(await candidate(cache, artist, album)),
+        provenance: [provenance],
+      });
+    }
+    return found;
+  }
+
   /** One roster artist's in-window releases; all or none. */
   async function rosterReleases(
     cache: DeezerArtistCache,
@@ -177,21 +204,66 @@ export function deezerCandidateSource(
   ): Promise<Candidate[]> {
     const artist = await resolveArtist(cache, roster.name);
     if (!artist) return [];
-    const provenance: CandidateProvenance = {
-      kind: 'roster',
-      priority: roster.priority,
+    return artistReleases(
+      cache,
+      { ...artist, name: roster.name },
+      { kind: 'roster', priority: roster.priority },
+      window,
+    );
+  }
+
+  /** The seed's graph entry, fetched now; throws when a lookup fails. */
+  async function fetchEntry(
+    cache: DeezerArtistCache,
+    seed: Seed,
+  ): Promise<RelatedArtistEntry> {
+    const artist = await resolveArtist(cache, seed.name);
+    if (!artist) return { deezerId: null, related: [], fetchedAt: now() };
+    const related = await deezer.relatedArtists(artist.id);
+    if (!related) throw new DeezerUnavailable(`related of ${seed.name}`);
+    return {
+      deezerId: artist.id,
+      related: related.map((a) => ({ id: a.id, name: a.name, fans: a.nb_fan })),
+      fetchedAt: now(),
     };
-    const found: Candidate[] = [];
-    for (const listed of await artistAlbums(artist.id)) {
-      if (!window.includes(listed.release_date)) continue;
-      const album = await albumDetail(listed.id);
-      found.push({
-        id: `dz-${album.id}`,
-        ...(await candidate(cache, { ...artist, name: roster.name }, album)),
-        provenance: [provenance],
+  }
+
+  /**
+   * Fetch the seeds with no entry or a stale one, unless this adapter
+   * already tried. A failed fetch keeps whatever entry was there.
+   */
+  async function topUpGraph(
+    cache: DeezerArtistCache,
+    graph: RelatedGraph,
+    seeds: Seed[],
+    onProgress: (e: CandidateProgress) => void,
+  ): Promise<void> {
+    const due = seeds
+      .map((seed) => ({ seed, key: seedKey(seed) }))
+      .filter(({ key }) => {
+        const entry = graph[key];
+        return (
+          !lookedUp.has(key) && !(entry && fresh(entry.fetchedAt, GRAPH_TTL_MS))
+        );
       });
+    if (due.length === 0) return;
+    let failed = 0;
+    onProgress({ phase: 'related-artists', done: 0, total: due.length });
+    for (const [i, { seed, key }] of due.entries()) {
+      checkAbort();
+      const entry = await fetchEntry(cache, seed).catch(
+        unlessAbort(() => null),
+      );
+      lookedUp.add(key);
+      if (entry) {
+        graph[key] = entry;
+        await graphStore.changed();
+      } else {
+        failed++;
+      }
+      onProgress({ phase: 'related-artists', done: i + 1, total: due.length });
     }
-    return found;
+    if (failed) onProgress({ phase: 'related-artists-failed', seeds: failed });
   }
 
   /** The reject as a candidate, with Deezer's data when Deezer has it. */
@@ -228,27 +300,44 @@ export function deezerCandidateSource(
   }
 
   return {
-    async candidates(request) {
-      store ??= (await opts.cache.load(DEEZER_ARTISTS)) ?? {
-        artists: {},
-        topTracks: {},
-      };
-      const cache = store;
+    async candidates(request, onProgress = () => {}) {
+      const cache = await artistStore.load();
+      const graph = await graphStore.load();
       const byId = new Map<string, Candidate>();
+      const add = (found: Candidate[]) => {
+        for (const c of found) {
+          // One album can arrive through two artist profiles.
+          const seen = byId.get(c.id);
+          if (seen) seen.provenance.push(...c.provenance);
+          else byId.set(c.id, c);
+        }
+      };
       try {
+        await topUpGraph(cache, graph, request.seeds, onProgress);
+        // Seeds and roster artists come through their own searches.
+        const known = new Set(
+          [...request.seeds, ...request.rosterArtists].map((a) =>
+            foldName(a.name),
+          ),
+        );
+        for (const related of coCited(graph, request.seeds, known)) {
+          checkAbort();
+          add(
+            await artistReleases(
+              cache,
+              related,
+              { kind: 'related', to: related.to },
+              request.window,
+            ).catch(unlessAbort(() => [])),
+          );
+        }
         for (const roster of request.rosterArtists) {
           checkAbort();
-          const found = await rosterReleases(
-            cache,
-            roster,
-            request.window,
-          ).catch(unlessAbort(() => []));
-          for (const c of found) {
-            // One album can arrive through two artist profiles.
-            const seen = byId.get(c.id);
-            if (seen) seen.provenance.push(...c.provenance);
-            else byId.set(c.id, c);
-          }
+          add(
+            await rosterReleases(cache, roster, request.window).catch(
+              unlessAbort(() => []),
+            ),
+          );
         }
         const rejects: Candidate[] = [];
         for (const reject of request.rejects) {
@@ -261,9 +350,70 @@ export function deezerCandidateSource(
         }
         return [...byId.values(), ...rejects];
       } finally {
-        await save();
+        await artistStore.save();
+        await graphStore.save();
       }
     },
+  };
+}
+
+type Seed = CandidateRequest['seeds'][number];
+type RelatedGraph = Record<string, RelatedArtistEntry>;
+
+/** A seed's graph key: its Spotify id, else its folded name. */
+const seedKey = (seed: Seed) => seed.spotifyId ?? foldName(seed.name);
+
+/**
+ * The related artists at least `MIN_CO_CITATIONS` of the current seeds
+ * name, each with those seeds in seed order. Entries of seeds no longer
+ * passed in don't count; `known` names are left out.
+ */
+function coCited(
+  graph: RelatedGraph,
+  seeds: Seed[],
+  known: Set<string>,
+): Array<RelatedArtist & { to: string[] }> {
+  const byId = new Map<number, RelatedArtist & { to: string[] }>();
+  for (const seed of seeds) {
+    for (const artist of graph[seedKey(seed)]?.related ?? []) {
+      if (known.has(foldName(artist.name))) continue;
+      const seen = byId.get(artist.id);
+      if (!seen) byId.set(artist.id, { ...artist, to: [seed.name] });
+      else if (!seen.to.includes(seed.name)) seen.to.push(seed.name);
+    }
+  }
+  return [...byId.values()].filter((a) => a.to.length >= MIN_CO_CITATIONS);
+}
+
+/**
+ * A cache entry held for the adapter's life: loaded on first use, saved
+ * every `SAVE_EVERY` changes and when asked.
+ */
+function batchedStore<T>(
+  cache: DurableCache,
+  descriptor: CacheDescriptor<T>,
+  empty: () => T,
+) {
+  let value: T | null = null;
+  let unsaved = 0;
+  async function save(): Promise<void> {
+    if (!(value && unsaved)) return;
+    unsaved = 0;
+    try {
+      await cache.save(descriptor, value);
+    } catch {
+      /* the cache is a speed-up; losing it costs refetches, not the week */
+    }
+  }
+  return {
+    async load(): Promise<T> {
+      value ??= (await cache.load(descriptor)) ?? empty();
+      return value;
+    },
+    async changed(): Promise<void> {
+      if (++unsaved >= SAVE_EVERY) await save();
+    },
+    save,
   };
 }
 

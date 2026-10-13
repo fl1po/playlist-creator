@@ -88,13 +88,43 @@ export interface DeezerArtistCache {
     string,
     { deezer: { id: number; fans: number } | null; fetchedAt: number }
   >;
-  topTracks: Record<
-    string,
-    { tracks: DeezerTopTrack[]; fetchedAt: number }
-  >;
+  topTracks: Record<string, { tracks: DeezerTopTrack[]; fetchedAt: number }>;
 }
 
 export const DEEZER_ARTISTS: CacheDescriptor<DeezerArtistCache> = {
   redisName: 'deezerArtists',
   file: 'deezer-artists.json',
+};
+
+/** A Deezer artist named as related to a seed; fans as of the fetch. */
+export interface RelatedArtist {
+  id: number;
+  name: string;
+  fans: number;
+}
+
+/**
+ * One P1/P2 seed's related artists on Deezer. `deezerId: null` means Deezer
+ * has no such artist. A failed lookup is never stored.
+ */
+export interface RelatedArtistEntry {
+  deezerId: number | null;
+  related: RelatedArtist[];
+  fetchedAt: number;
+}
+
+/**
+ * Owned by the Deezer CandidateSource: the related-artist graph, one entry
+ * per seed keyed by Spotify id (folded name when it has none). Co-citation
+ * is worked out on read from the current seeds; entries for seeds no longer
+ * P1/P2 stay put. Too large for the browser, and Redis may refuse it: the
+ * file is authoritative.
+ */
+export const RELATED_ARTIST_GRAPH: CacheDescriptor<
+  Record<string, RelatedArtistEntry>
+> = {
+  redisName: 'relatedArtistGraph',
+  file: 'related-artist-graph.json',
+  isEmpty: (v) => !v || Object.keys(v).length === 0,
+  browserMirror: false,
 };

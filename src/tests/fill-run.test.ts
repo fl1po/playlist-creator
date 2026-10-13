@@ -1153,6 +1153,39 @@ test('the Live Log shows each pick, a warning per skip, and the summary with cos
   ]);
 });
 
+test('the Live Log counts the related-artist top-up and sums up failed seeds', async (t) => {
+  const { ports, candidates } = aiPorts(PICK_G);
+  const inner = candidates.candidates.bind(candidates);
+  candidates.candidates = async (request, onProgress) => {
+    for (let done = 0; done <= 30; done++) {
+      onProgress?.({ phase: 'related-artists', done, total: 30 });
+    }
+    onProgress?.({ phase: 'related-artists-failed', seeds: 2 });
+    return inner(request, onProgress);
+  };
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+  const log = recordingLog();
+
+  await runFill(
+    w.options({
+      userConfig: AI_ON,
+      aiFindsAvailable: true,
+      handlers: log.handlers,
+    }),
+  );
+
+  assert.deepEqual(
+    log.lines.filter((l) => l.includes('Related artists')),
+    [
+      'Related artists: 0/30',
+      'Related artists: 25/30',
+      'Related artists: 30/30',
+      'warn: Related artists: 2 seeds unresolved/failed',
+    ],
+  );
+});
+
 test('a skipped week logs its reason as a warning', async (t) => {
   const { ports } = aiPorts({
     ok: false,

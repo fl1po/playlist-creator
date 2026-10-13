@@ -167,9 +167,19 @@ export interface CandidateRequest {
   window: string[];
 }
 
+/** The candidate source's liveness, passed on as week progress. */
+export type CandidateProgress =
+  /** The related-artist graph top-up: seeds fetched of those to fetch. */
+  | { phase: 'related-artists'; done: number; total: number }
+  /** Seeds whose lookup failed this time; their related artists are missing. */
+  | { phase: 'related-artists-failed'; seeds: number };
+
 /** The week's candidates. Prod = Deezer; test = fixed list. */
 export interface CandidateSource {
-  candidates(request: CandidateRequest): Promise<Candidate[]>;
+  candidates(
+    request: CandidateRequest,
+    onProgress?: (e: CandidateProgress) => void,
+  ): Promise<Candidate[]>;
 }
 
 export type Tier = 'P1' | 'P2' | 'P3' | 'P4' | 'unranked';
@@ -329,6 +339,7 @@ export type WeekProgressEvent =
       /** A failed judge call's message: for the log, never stored. */
       message?: string;
     }
+  | CandidateProgress
   | {
       phase: 'ai-summary';
       picks: number;
