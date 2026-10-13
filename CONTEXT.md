@@ -51,7 +51,7 @@ A record of one choice made during week collection — variant picked, deluxe tr
 ### Syncing
 
 **Promotion sync**:
-Reconciling already-published weekly playlists with a recalculation's priority changes — removing the tracks of artists demoted out of P1/P2, and backfilling in-window releases from artists promoted into P1/P2. Runs after recalculation, over unprocessed (non-listened) weekly playlists only — whether that recalculation happened standalone or mid-fill. Shares the release-discovery and track-collection engine with week collection, but has no editorial merge, no checkpoints, and no Friday window of its own (it matches each playlist's own date). Returns its own collection decisions, removal included.
+Reconciling already-published weekly playlists with a recalculation's priority changes — removing the tracks of artists demoted out of P1/P2, and backfilling in-window releases from artists promoted into P1/P2. Runs after recalculation, over unprocessed (non-listened) weekly playlists only — whether that recalculation happened standalone or mid-fill. Shares the release-discovery and track-collection engine with week collection, but has no editorial merge, no checkpoints, and no Friday window of its own (it matches each playlist's own date). Never produces AI finds, and treats an existing AI find like any other track: backfill skips it by track, and album-unit removal can remove it. Returns its own collection decisions, removal included.
 _Avoid_: playlist sync, priority diff, backfill
 
 **Priority change**:
@@ -88,13 +88,41 @@ A release that is really single promotion — more than half of its non-title tr
 **Editorial playlist**:
 A hand-curated source of releases. Artists unknown to the trusted roster must pass popularity/follower and genre gates to qualify.
 
+**AI find**:
+A release from the week's date window, by an artist the P1/P2 search doesn't cover (outside the trusted roster, or below P1/P2 in it), chosen by an LLM from a candidate pool because it fits the user's taste. Joins the weekly playlist alongside artist-search and editorial releases; how many land is decided by the LLM's confidence, not a fixed count.
+_Avoid_: discovery (clashes with release discovery), recommendation
+
+**Candidate pool**:
+The deterministic set of a week's in-window releases by artists not searched as P1/P2 — related artists of P1/P2, lower-priority roster artists, editorial-gate rejects, and releases in scouting playlists — that the LLM judges for AI finds. Each candidate keeps every source it came from. The LLM chooses from it and never invents releases.
+_Avoid_: shortlist, suggestions
+
+**Related-artist graph**:
+The artists Deezer considers related to each P1/P2 artist, kept per P1/P2 artist and refreshed when it goes stale. The related artists named by at least two current P1/P2 artists feed the candidate pool. The graph doesn't depend on the week, and a change in who is P1/P2 changes which part of it is read, not the graph itself.
+_Avoid_: similar artists, neighbours
+
+**Relative popularity**:
+How a release is doing against its own artist's usual tracks, rather than against everyone's. It separates an artist's weak side release from their real one, and it doesn't penalise small artists the way a fan count does. It decides which candidates survive when the candidate pool is too big.
+_Avoid_: popularity (that's the absolute Spotify/Deezer figure the editorial gate uses)
+
+**Taste context**:
+What the LLM judges the candidate pool against: the P1/P2 artists plus the highest-scoring slice of the rest of the trusted roster, each labelled with its priority; the user's accepted genres as a soft preference; and the week's own P1/P2 releases, as "what you're already getting". Names and tiers only, with no scores or genre vectors.
+_Avoid_: taste profile (that's year collection's genre vector), user profile
+
+**AI pick**:
+The collection decision recording an AI find — the release chosen and the LLM's one-line reason. Also covers the week's AI finds being skipped when the user has opted in but the AI phase couldn't run (no API key, over budget, failed). A user who hasn't opted in gets no AI pick at all. Unlike other collection decisions, a week's AI picks are kept with its weekly playlist, so the user can see after the fill why each AI find is there.
+
 **External playlist source**:
 A pattern (user + name pattern + date format) for discovering another user's date-named playlists as editorial input for a given week.
+
+**Scouting playlist**:
+A playlist the user follows for discovery, read only when AI finds are on. Its releases enter the candidate pool and tell the LLM where they were seen, but never join the weekly playlist directly — unlike an editorial playlist, nothing passes a gate to qualify.
+_Avoid_: signal playlist, discovery playlist
 
 ## Flagged ambiguities
 
 - **"Weekly"** is overloaded: *All Weekly* is the listening-history source; a *weekly playlist* is an output. Never shorten either to just "weekly".
 - **"Fill" vs "week collection"**: fill is the multi-week operation; week collection is one Friday's gathering. The code historically blurred these inside `date-pipeline.ts`.
+- **"Taste"** is overloaded: year collection's *taste profile* is a genre/cluster vector; AI finds' *taste context* is a tiered list of artist names. Always say which.
 - **"Unprocessed"** belongs to promotion sync: an *unprocessed weekly playlist* is published but not yet listened to. A Friday the fill still has to build is an *unfilled Friday*, never "unprocessed".
 
 ## Example dialogue
