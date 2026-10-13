@@ -4,7 +4,8 @@ import type { SimplePlaylist } from '../../lib/types.js';
 /**
  * Weekly playlists — the date-named (`DD.MM.YY`) playlists holding one
  * Friday's week collection each. This module owns what makes a playlist a
- * weekly playlist, when a Friday counts as unfilled, and the write itself:
+ * weekly playlist, which playlist is a date's, when a Friday counts as
+ * unfilled, and the write itself:
  * reuse the date's empty playlist or create it, add the tracks, and drop the
  * unprocessed-playlists listing the write just staled.
  */
@@ -35,12 +36,33 @@ export function isWeeklyPlaylistName(name: string): boolean {
   return WEEKLY_NAME.test(name);
 }
 
+/** The date's weekly playlist among `playlists`, or null. */
+function weeklyPlaylistIn(
+  playlists: SimplePlaylist[],
+  date: string,
+): SimplePlaylist | null {
+  if (!isWeeklyPlaylistName(date)) return null;
+  return playlists.find((p) => p.name === date) ?? null;
+}
+
 /** The first Friday a fill covers for a user with no weekly playlists yet. */
 const DEFAULT_START = new Date(2025, 4, 23);
 
 const playlistUrl = (id: string) => `https://open.spotify.com/playlist/${id}`;
 
 // ── Interface ────────────────────────────────────────────────────────────────
+
+/**
+ * The user's weekly playlist for `date`, or null when there is none: never
+ * created, deleted, or renamed away from its date.
+ */
+export async function findWeeklyPlaylist(
+  store: WeeklyPlaylistStore,
+  userId: string,
+  date: string,
+): Promise<SimplePlaylist | null> {
+  return weeklyPlaylistIn(await store.list(userId), date);
+}
 
 export interface WeeklyWrite {
   date: string;
@@ -106,7 +128,7 @@ export function weeklyPlaylists(deps: WeeklyPlaylistsDeps): WeeklyPlaylists {
 
     async write(date, trackIds) {
       const all = await listing();
-      const existing = all.find((p) => p.name === date);
+      const existing = weeklyPlaylistIn(all, date);
       if (existing && existing.trackCount > 0) {
         return {
           date,

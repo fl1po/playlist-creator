@@ -1,12 +1,11 @@
 import { parseDate } from '../domain/tracks.js';
 import { AI_PICKS } from '../lib/cache-files.js';
 import type { DurableCache } from '../lib/durable-cache.js';
-import {
-  getAllUserPlaylists,
-  getPlaylistTracksWithArtists,
-} from '../lib/pagination.js';
+import { getPlaylistTracksWithArtists } from '../lib/pagination.js';
 import type { SpotifyGateway } from '../lib/spotify/gateway.js';
 import type { AiPicksRecord } from './week-collection/index.js';
+import { spotifyWeeklyPlaylistStore } from './weekly-playlists/adapters.js';
+import { findWeeklyPlaylist } from './weekly-playlists/index.js';
 
 export type AiPick = Extract<AiPicksRecord, { picks: unknown }>['picks'][number];
 
@@ -70,8 +69,11 @@ export async function readWeekPicks(
   date: string,
   picks: AiPick[],
 ): Promise<WeekPicks> {
-  const playlists = await getAllUserPlaylists(gateway, userId);
-  const playlist = playlists.find((p) => p.name === date);
+  const playlist = await findWeeklyPlaylist(
+    spotifyWeeklyPlaylistStore(gateway),
+    userId,
+    date,
+  );
   if (!playlist) return { exists: false };
 
   const tracks = await getPlaylistTracksWithArtists(gateway, playlist.id);
