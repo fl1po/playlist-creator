@@ -31,6 +31,7 @@ const IN_WINDOW = '2026-06-05';
 const P1 = { priority: 1, score: 100 };
 const AI = {
   enabled: true,
+  hasApiKey: true,
   threshold: 50,
   scoutingPlaylists: [],
   budgetUsd: 1,
@@ -570,8 +571,8 @@ test("a landed week is not exhausted and reports the judge's spend", async () =>
   assert.equal(judge.requests[0]?.budgetUsd, 0.4);
 });
 
-test('with no budget left or none passed, the week is over budget without a judge call', async () => {
-  for (const budgetUsd of [0, -0.01, undefined]) {
+test('with no budget left, the week is over budget without a judge call', async () => {
+  for (const budgetUsd of [0, -0.01]) {
     const reads = fixtureReads({ artists: [alpha, smallArtist('n')] });
     const { source, judge, ports } = aiPorts(reads, [candidate('n')], {
       ok: true,
@@ -594,6 +595,29 @@ test('with no budget left or none passed, the week is over budget without a judg
     );
     assert.equal(week.aiSpendUsd, 0);
   }
+});
+
+test('with no server key, the week is no-api-key without a pool or judge call', async () => {
+  const reads = fixtureReads({ artists: [alpha, smallArtist('n')] });
+  const { source, judge, ports } = aiPorts(reads, [candidate('n')], {
+    ok: true,
+    picks: [pick('n', 90)],
+    spendUsd: 0.05,
+  });
+
+  const week = await collectWeek(
+    input({ roster: [['Alpha', P1]], ai: { ...AI, hasApiKey: false } }),
+    ports,
+  );
+
+  assert.equal(judge.requests.length, 0);
+  assert.equal(source.requests.length, 0);
+  assert.deepEqual(week.tracks, ['t1']);
+  assert.deepEqual(week.aiPicks, { skipped: 'no-api-key' });
+  assert.deepEqual(
+    week.decisions.filter((d) => d.kind === 'ai-skipped'),
+    [{ kind: 'ai-skipped', reason: 'no-api-key' }],
+  );
 });
 
 test('a throwing judge is recorded as failed with its message', async () => {

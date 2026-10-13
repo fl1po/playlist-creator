@@ -13,6 +13,7 @@ import {
 } from '../../lib/spotify/gateway.js';
 import type { DateResult, TrustedArtistsFile } from '../../lib/types.js';
 import type { UserConfig } from '../../lib/user-config.js';
+import { saveAiPicks } from '../ai-picks.js';
 import type {
   PriorityChange,
   PromotionReads,
@@ -73,7 +74,19 @@ export interface FillRunOptions {
   syncHandlers: SyncHandlers;
   /** Ignore saved week progress: every week's artist search starts over. */
   fresh?: boolean;
+  /**
+   * The server has an Anthropic key (`aiFindsAvailable()`). An opted-in user
+   * on a server without one gets `no-api-key` weeks.
+   */
+  aiFindsAvailable: boolean;
 }
+
+/**
+ * What one fill may spend on AI finds, in USD. It decides whether the next
+ * judge call is made, so one call can overshoot it. Never stored: each fill
+ * starts with the whole of it.
+ */
+const AI_FILL_CEILING_USD = 1;
 
 export interface FillResult {
   results: DateResult[];
@@ -109,9 +122,34 @@ function emitProgress(emitter: Emitter, e: WeekProgressEvent): void {
     case 'popularity':
       emitter.emit('log', `Checking popularity: ${e.done}/${e.total}`);
       break;
+    case 'ai-pick':
+      emitter.emit(
+        'log',
+        `AI pick: ${e.artist} — ${e.release} (${e.confidence}) — ${e.reason}`,
+      );
+      break;
+    case 'ai-skip':
+      emitter.emit('warning', describeAiSkip(e));
+      break;
+    case 'ai-summary':
+      // The cost appears here and nowhere else.
+      emitter.emit(
+        'log',
+        `AI finds: ${e.picks} picks from ${e.candidates} candidates, $${e.spendUsd.toFixed(2)}`,
+      );
+      break;
     default:
       break;
   }
+}
+
+function describeAiSkip(
+  e: Extract<WeekProgressEvent, { phase: 'ai-skip' }>,
+): string {
+  const detail = e.message ? `: ${e.message}` : '';
+  return e.release
+    ? `AI pick skipped (${e.reason}): ${e.artist} — ${e.release}${detail}`
+    : `AI finds skipped (${e.reason})${detail}`;
 }
 
 /** Map collection decisions onto the existing event map. */
@@ -156,6 +194,10 @@ function emitDecision(emitter: Emitter, d: CollectionDecision): void {
       break;
     case 'single-skipped':
       emitter.emit('singleSkipped', d.release);
+      break;
+    case 'ai-pick':
+    case 'ai-skipped':
+      // Logged live via emitProgress, like release-found.
       break;
   }
 }
@@ -381,6 +423,8 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
   const startTime = Date.now();
   // `fresh` drops saved progress once per date, not on an auth retry of it.
   const cleared = new Set<string>();
+  // What's left of the AI spend ceiling; nothing once the judge is exhausted.
+  let aiBudgetUsd = AI_FILL_CEILING_USD;
 
   for (let i = 0; i < datesToProcess.length; i++) {
     const targetDate = datesToProcess[i];
@@ -425,13 +469,31 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
           trustedArtists,
           listeningHistory,
           editorial,
+          ai: userConfig.aiFinds.enabled
+            ? {
+                ...userConfig.aiFinds,
+                hasApiKey: opts.aiFindsAvailable,
+                budgetUsd: aiBudgetUsd,
+              }
+            : undefined,
         },
         ports.week,
         (e) => emitProgress(emitter, e),
       );
+      aiBudgetUsd = week.aiExhausted ? 0 : aiBudgetUsd - week.aiSpendUsd;
       for (const d of week.decisions) emitDecision(emitter, d);
 
       const written = await weekly.write(targetDate, week.tracks);
+      // The record goes with the playlist, so a week stopped before its
+      // write leaves none. A failed save mustn't fail a written week.
+      if (week.aiPicks && written.outcome !== 'skipped') {
+        try {
+          await saveAiPicks(cache, targetDate, week.aiPicks);
+        } catch (saveErr) {
+          if (isAbort(saveErr)) throw saveErr;
+          emitter.emit('warning', `Could not save AI picks for ${targetDate}`);
+        }
+      }
       // Only a written week is done with its search; any earlier stop
       // resumes from the completed checkpoint. A failed clear mustn't fail a
       // written week: the Friday is filled now, so the next fill skips it.

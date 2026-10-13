@@ -1,3 +1,4 @@
+import { aiFindsAvailable } from '../../lib/anthropic-key.js';
 import { fillPorts } from '../../services/playlist-filler/adapters.js';
 import { runFill } from '../../services/playlist-filler/fill-run.js';
 import { DurableFillStorage } from '../../services/playlist-filler/storage.js';
@@ -53,6 +54,7 @@ export const fillTask: TaskDefinition<FillEvents> = {
       handlers,
       syncHandlers: broadcastSyncHandlers(tc.broadcast),
       fresh: freshMode,
+      aiFindsAvailable: aiFindsAvailable(),
     });
   },
 

@@ -1,4 +1,5 @@
 import { broadcastEvents } from '../../lib/service-events.js';
+import { forgetAiPicks } from '../../services/ai-picks.js';
 import {
   type PlaylistClearerEventMap,
   PlaylistClearerService,
@@ -37,5 +38,7 @@ export const clearTask: TaskDefinition = {
       }),
     );
     await service.clear(name);
+    // A cleared weekly playlist is an unfilled Friday again: its AI picks go.
+    await forgetAiPicks(tc.cache, name);
   },
 };

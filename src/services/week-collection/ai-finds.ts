@@ -309,8 +309,9 @@ export async function runAiPhase(
     exhausted: false,
     trackFailures: new Map(),
   };
-  // No budget left, or none passed: no pool, no judge call.
-  const budgetUsd = ai.budgetUsd ?? 0;
+  // No key, or no budget left: no pool, no judge call.
+  if (!ai.hasApiKey) return skipPhase(run, phase, 'no-api-key');
+  const { budgetUsd } = ai;
   if (!(budgetUsd > 0)) return skipPhase(run, phase, 'over-budget');
 
   const roster = Object.entries(input.trustedArtists.artistCounts);

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { formatDateISO, formatDdMmYy } from '../domain/tracks.js';
 import {
+  AI_PICKS,
   PENDING_PRIORITY_CHANGES,
   RECALCULATION_STATE,
   TRUSTED_ARTISTS,
@@ -38,8 +39,16 @@ import type {
 } from '../services/recalculation/index.js';
 import {
   fixedPopularitySource,
+  fixtureCandidates,
+  fixtureJudge,
   memoryCheckpoints,
 } from '../services/week-collection/adapters.js';
+import type {
+  AiPicksRecord,
+  Candidate,
+  TasteJudgeOutcome,
+  TasteJudgeRequest,
+} from '../services/week-collection/index.js';
 import { memoryWeeklyPlaylistStore } from '../services/weekly-playlists/adapters.js';
 import {
   type Catalog,
@@ -234,6 +243,7 @@ function world(
         ports,
         handlers: {} as EventHandlers<PlaylistFillerEventMap>,
         syncHandlers: recordingSyncHandlers(),
+        aiFindsAvailable: false,
         fresh: true,
         ...overrides,
       };
@@ -503,6 +513,7 @@ function memoryWorld(t: { after: (fn: () => void) => void }, ports: FillPorts) {
         ports,
         handlers: {} as EventHandlers<PlaylistFillerEventMap>,
         syncHandlers: recordingSyncHandlers(),
+        aiFindsAvailable: false,
         ...overrides,
       };
     },
@@ -805,4 +816,329 @@ test('--fresh drops a completed checkpoint too', async (t) => {
   await runFill(w.options({ fresh: true }));
 
   assert.deepEqual(reads.searchCalls, ['Alpha', 'Beta']);
+});
+
+// ── AI finds ─────────────────────────────────────────────────────────────────
+// The fill drives the AI phase week to week: the spend ceiling, the AI-picks
+// record beside each weekly playlist, and the Live Log lines.
+
+const TWO_FRIDAYS_AGO = formatDdMmYy(
+  new Date(mostRecentFriday(new Date()).getTime() - 14 * 86_400_000),
+);
+const LAST_IN_WINDOW = formatDateISO(
+  new Date(mostRecentFriday(new Date()).getTime() - 7 * 86_400_000),
+);
+
+const AI_ON: UserConfig = {
+  ...USER_CONFIG,
+  aiFinds: { enabled: true, threshold: 50, scoutingPlaylists: [] },
+};
+
+/** Alpha (P1) plus Gamma, off the roster, with a single in each window. */
+function aiCatalog(): Catalog {
+  const catalog = alphaCatalog();
+  catalog.artists.push({
+    id: 'art-g',
+    name: 'Gamma',
+    albums: [
+      {
+        id: 'alb-g',
+        name: 'G',
+        type: 'single',
+        release_date: IN_WINDOW,
+        tracks: [{ id: 'tg', name: 'Gee', key: 'gamma::gee' }],
+      },
+      {
+        id: 'alb-g0',
+        name: 'G0',
+        type: 'single',
+        release_date: LAST_IN_WINDOW,
+        tracks: [{ id: 'tg0', name: 'Gee Zero', key: 'gamma::gee0' }],
+      },
+    ],
+  });
+  return catalog;
+}
+
+/** Gamma's release, known to Spotify by album id. */
+function gammaCandidate(
+  id: string,
+  album: { id: string; title: string; date: string },
+): Candidate {
+  return {
+    id,
+    title: album.title,
+    artist: 'Gamma',
+    type: 'single',
+    trackCount: 1,
+    releaseDate: album.date,
+    genres: [],
+    artistFans: 1000,
+    upc: null,
+    relativePopularity: 1,
+    provenance: [{ kind: 'related', to: ['Alpha'] }],
+    spotifyAlbumId: album.id,
+  };
+}
+
+const PICK_G: TasteJudgeOutcome = {
+  ok: true,
+  picks: [{ id: 'c-g', confidence: 80, reason: 'close to Alpha' }],
+  spendUsd: 0.05,
+};
+
+/** The week's record when PICK_G lands. */
+const PICK_RECORD_G: AiPicksRecord = {
+  picks: [
+    {
+      albumId: 'alb-g',
+      artist: 'Gamma',
+      title: 'G',
+      confidence: 80,
+      reason: 'close to Alpha',
+    },
+  ],
+};
+
+/** Memory fill ports with fixture AI ports on the week. */
+function aiPorts(
+  outcome: TasteJudgeOutcome | ((r: TasteJudgeRequest) => TasteJudgeOutcome),
+  weeklies: SimplePlaylist[] = [
+    { id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 },
+  ],
+) {
+  const m = memoryPorts(aiCatalog(), weeklies);
+  const candidates = fixtureCandidates([
+    gammaCandidate('c-g', { id: 'alb-g', title: 'G', date: IN_WINDOW }),
+    gammaCandidate('c-g0', { id: 'alb-g0', title: 'G0', date: IN_WINDOW }),
+  ]);
+  const judge = fixtureJudge(outcome);
+  m.ports.week = { ...m.ports.week, candidates, judge };
+  return { ...m, candidates, judge };
+}
+
+/** Log and warning lines, in order. */
+function recordingLog() {
+  const lines: string[] = [];
+  const handlers = {
+    onLog: (msg) => lines.push(msg),
+    onWarning: (msg) => lines.push(`warn: ${msg}`),
+  } as EventHandlers<PlaylistFillerEventMap>;
+  return { lines, handlers };
+}
+
+const aiLines = (lines: string[]) => lines.filter((l) => /\bAI\b/.test(l));
+
+test('an opted-in week keeps its AI picks beside the weekly playlist', async (t) => {
+  const { ports, weekly } = aiPorts(PICK_G);
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+
+  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+
+  assert.deepEqual(weekly.added.get('pl-1'), ['t1', 'tg']);
+  assert.deepEqual(await w.cache.load(AI_PICKS), {
+    [THIS_FRIDAY]: PICK_RECORD_G,
+  });
+});
+
+test('a user who has not opted in gets no AI input, record or log lines', async (t) => {
+  const { ports, judge, candidates } = aiPorts(PICK_G);
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+  const log = recordingLog();
+
+  await runFill(w.options({ aiFindsAvailable: true, handlers: log.handlers }));
+
+  assert.equal(candidates.requests.length, 0);
+  assert.equal(judge.requests.length, 0);
+  assert.equal(await w.cache.load(AI_PICKS), null);
+  assert.deepEqual(aiLines(log.lines), []);
+});
+
+test('opted in on a server with no API key: the week is recorded no-api-key', async (t) => {
+  const { ports, judge, weekly } = aiPorts(PICK_G);
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+
+  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: false }));
+
+  assert.equal(judge.requests.length, 0);
+  assert.deepEqual(weekly.added.get('pl-1'), ['t1']);
+  assert.deepEqual(await w.cache.load(AI_PICKS), {
+    [THIS_FRIDAY]: { skipped: 'no-api-key' },
+  });
+});
+
+test('a failed write leaves no AI-picks record', async (t) => {
+  const { ports, weekly } = aiPorts(PICK_G);
+  weekly.failAddWith = new Error('rate limited');
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+
+  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+
+  assert.equal(await w.cache.load(AI_PICKS), null);
+});
+
+test('the spend ceiling carries from week to week and is fresh on each fill', async (t) => {
+  const outcome: TasteJudgeOutcome = { ok: true, picks: [], spendUsd: 0.75 };
+  const first = aiPorts(outcome, [
+    { id: 'pl-old', name: TWO_FRIDAYS_AGO, trackCount: 3 },
+  ]);
+  const w = memoryWorld(t, first.ports);
+  await seedRoster(w.cache, ALPHA_P1);
+
+  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+
+  assert.deepEqual(
+    first.judge.requests.map((r) => r.budgetUsd),
+    [1, 0.25],
+  );
+
+  const second = aiPorts(outcome);
+  await runFill(
+    w.options({
+      userConfig: AI_ON,
+      aiFindsAvailable: true,
+      ports: second.ports,
+    }),
+  );
+
+  assert.deepEqual(
+    second.judge.requests.map((r) => r.budgetUsd),
+    [1],
+  );
+});
+
+test('weeks after the ceiling is spent are recorded over-budget without a judge call', async (t) => {
+  const { ports, judge } = aiPorts({ ok: true, picks: [], spendUsd: 1.1 }, [
+    { id: 'pl-old', name: TWO_FRIDAYS_AGO, trackCount: 3 },
+  ]);
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+
+  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+
+  assert.equal(judge.requests.length, 1);
+  assert.deepEqual(await w.cache.load(AI_PICKS), {
+    [LAST_FRIDAY]: { picks: [] },
+    [THIS_FRIDAY]: { skipped: 'over-budget' },
+  });
+});
+
+test('after the spend cap, later weeks are recorded over-budget', async (t) => {
+  const { ports, judge } = aiPorts(
+    { ok: false, failure: 'spend-cap', spendUsd: 0.01 },
+    [{ id: 'pl-old', name: TWO_FRIDAYS_AGO, trackCount: 3 }],
+  );
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+
+  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+
+  assert.equal(judge.requests.length, 1);
+  assert.deepEqual(await w.cache.load(AI_PICKS), {
+    [LAST_FRIDAY]: { skipped: 'failed' },
+    [THIS_FRIDAY]: { skipped: 'over-budget' },
+  });
+});
+
+test('a stop in the AI phase leaves no record; the resume skips the search and asks the judge again', async (t) => {
+  let calls = 0;
+  const { ports, reads, judge, weekly } = aiPorts(() => {
+    calls++;
+    if (calls === 1) throw new TaskAborted();
+    return PICK_G;
+  });
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+  const options = w.options({ userConfig: AI_ON, aiFindsAvailable: true });
+
+  await assert.rejects(runFill(options), /Stopped/);
+  assert.equal(await w.cache.load(AI_PICKS), null);
+  assert.deepEqual(weekly.created, []);
+
+  reads.searchCalls.length = 0;
+  await runFill(options);
+
+  assert.deepEqual(reads.searchCalls, []);
+  assert.equal(judge.requests.length, 2);
+  assert.deepEqual(weekly.added.get('pl-1'), ['t1', 'tg']);
+  assert.deepEqual(
+    (await w.cache.load(AI_PICKS))?.[THIS_FRIDAY],
+    PICK_RECORD_G,
+  );
+});
+
+test("a rebuilt empty Friday replaces that week's AI-picks record", async (t) => {
+  const { ports } = aiPorts(PICK_G, [
+    { id: 'pl-empty', name: THIS_FRIDAY, trackCount: 0 },
+  ]);
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+  await w.cache.save(AI_PICKS, {
+    [THIS_FRIDAY]: { skipped: 'failed' },
+    [LAST_FRIDAY]: { skipped: 'over-budget' },
+  });
+
+  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+
+  assert.deepEqual(await w.cache.load(AI_PICKS), {
+    [THIS_FRIDAY]: PICK_RECORD_G,
+    [LAST_FRIDAY]: { skipped: 'over-budget' },
+  });
+});
+
+test('the Live Log shows each pick, a warning per skip, and the summary with cost', async (t) => {
+  const { ports } = aiPorts({
+    ok: true,
+    picks: [
+      { id: 'c-g', confidence: 80, reason: 'close to Alpha' },
+      { id: 'c-g0', confidence: 70, reason: 'from last week' },
+    ],
+    spendUsd: 0.0612,
+  });
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+  const log = recordingLog();
+
+  await runFill(
+    w.options({
+      userConfig: AI_ON,
+      aiFindsAvailable: true,
+      handlers: log.handlers,
+    }),
+  );
+
+  assert.deepEqual(aiLines(log.lines), [
+    'warn: AI pick skipped (not on Spotify): Gamma — G0',
+    'AI pick: Gamma — G (80) — close to Alpha',
+    'AI finds: 1 picks from 2 candidates, $0.06',
+  ]);
+});
+
+test('a skipped week logs its reason as a warning', async (t) => {
+  const { ports } = aiPorts({
+    ok: false,
+    failure: 'failed',
+    message: 'timed out',
+    spendUsd: 0,
+  });
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+  const log = recordingLog();
+
+  await runFill(
+    w.options({
+      userConfig: AI_ON,
+      aiFindsAvailable: true,
+      handlers: log.handlers,
+    }),
+  );
+
+  assert.deepEqual(aiLines(log.lines), [
+    'warn: AI finds skipped (failed): timed out',
+    'AI finds: 0 picks from 2 candidates, $0.00',
+  ]);
 });

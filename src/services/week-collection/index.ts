@@ -368,14 +368,16 @@ export interface WeekCollectionInput {
 
 export interface AiFindsConfig {
   enabled: boolean;
+  /** The server has an Anthropic key. Without one the week is `no-api-key`. */
+  hasApiKey: boolean;
   /** Lowest confidence (0–100) a pick needs to land. */
   threshold: number;
   scoutingPlaylists: Array<{ id: string; name: string }>;
   /**
-   * What's left of the fill's AI spend ceiling, in USD. None left, or none
-   * passed: the week is `over-budget` without a judge call.
+   * What's left of the fill's AI spend ceiling, in USD. None left: the week
+   * is `over-budget` without a judge call.
    */
-  budgetUsd?: number;
+  budgetUsd: number;
 }
 
 /** What a week's AI phase came to, for the AI-picks record. */

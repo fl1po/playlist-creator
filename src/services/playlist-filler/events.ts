@@ -43,6 +43,8 @@ export type PlaylistFillerEventMap = {
   recalculated: [tierChanges: PriorityChange[]];
   pacerWait: [intervalMs: number];
   log: [message: string];
+  /** A log line that wants attention, e.g. a skipped AI phase. */
+  warning: [message: string];
 };
 
 export interface ExternalPlaylistSource {

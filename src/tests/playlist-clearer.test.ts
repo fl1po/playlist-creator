@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { type TestContext, test } from 'node:test';
+import { AI_PICKS } from '../lib/cache-files.js';
+import { createDurableCache } from '../lib/durable-cache.js';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
+import type { SpotifyGateway } from '../lib/spotify/gateway.js';
 import { PlaylistClearerService } from '../services/playlist-clearer.js';
+import type { TaskContext } from '../web/task-runner.js';
+import { clearTask } from '../web/tasks/clear.js';
 
 // ── Fixture: one playlist on a fake Spotify, with injectable failures ───────
 
@@ -118,4 +126,45 @@ test('a failed playlist listing throws instead of reporting "not found"', async 
 
   await assert.rejects(service.clear('Target'), /list playlists/);
   assert.equal(notFound, false);
+});
+
+// ── The clear task ──────────────────────────────────────────────────────────
+
+function clearTaskContext(t: TestContext, ctx: SpotifyGateway) {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clear-task-test-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const cache = createDurableCache({ userId: 'user-1', dataDir, redis: null });
+  const tc = {
+    ctx,
+    cache,
+    body: { name: 'Target' },
+    broadcast() {},
+    log() {},
+  } as unknown as TaskContext;
+  return { tc, cache };
+}
+
+test("the clear task deletes the cleared playlist's AI-picks record", async (t) => {
+  const { ctx } = fakeContext({ trackUris: uris(2) });
+  const { tc, cache } = clearTaskContext(t, ctx);
+  await cache.save(AI_PICKS, {
+    Target: { skipped: 'over-budget' },
+    Other: { picks: [] },
+  });
+
+  await clearTask.run(tc);
+
+  assert.deepEqual(await cache.load(AI_PICKS), { Other: { picks: [] } });
+});
+
+test('a failed clear keeps the AI-picks record', async (t) => {
+  const { ctx } = fakeContext({ trackUris: uris(2), failItems: true });
+  const { tc, cache } = clearTaskContext(t, ctx);
+  await cache.save(AI_PICKS, { Target: { skipped: 'over-budget' } });
+
+  await assert.rejects(clearTask.run(tc));
+
+  assert.deepEqual(await cache.load(AI_PICKS), {
+    Target: { skipped: 'over-budget' },
+  });
 });

@@ -1,4 +1,5 @@
 import type { PriorityChange } from '../services/promotion-sync/index.js';
+import type { AiPicksRecord } from '../services/week-collection/index.js';
 import type { CacheDescriptor } from './durable-cache.js';
 import type {
   BatchCache,
@@ -67,4 +68,11 @@ export const AW_BREAKDOWN: CacheDescriptor<unknown> = {
 export const NON_LISTENED: CacheDescriptor<unknown> = {
   redisName: 'nonListened',
   file: 'non-listened-cache.json',
+};
+
+/** Each opted-in week's AI picks or skip reason, keyed by weekly playlist date. */
+export const AI_PICKS: CacheDescriptor<Record<string, AiPicksRecord>> = {
+  redisName: 'aiPicks',
+  file: 'ai-picks.json',
+  isEmpty: (v) => !v || Object.keys(v).length === 0,
 };

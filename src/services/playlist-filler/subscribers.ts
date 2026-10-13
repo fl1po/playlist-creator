@@ -98,6 +98,7 @@ export function consoleHandlers(): EventHandlers<PlaylistFillerEventMap> {
       }
     },
     onLog: (msg) => console.log(msg),
+    onWarning: (msg) => console.warn(`  Warning: ${msg}`),
     // resumed: CLI doesn't need to restore any UI state.
   };
 }
@@ -204,6 +205,7 @@ export function broadcastHandlers(
       },
     },
     log: { log: (msg) => msg },
+    warning: { log: (msg) => msg, level: 'warn' },
   });
 
   // 'resumed' restores per-artist search state on the web UI. Hand-written

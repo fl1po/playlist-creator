@@ -1,3 +1,4 @@
+import { aiFindsAvailable } from '../lib/anthropic-key.js';
 import { FileConfigStore } from '../lib/config.js';
 import { createDurableCache } from '../lib/durable-cache.js';
 import { createCliGateway } from '../lib/spotify/gateway.js';
@@ -29,6 +30,7 @@ await runFill({
   handlers: consoleHandlers(),
   syncHandlers: consoleSyncHandlers(),
   fresh: freshMode,
+  aiFindsAvailable: aiFindsAvailable(),
 });
 
 console.log('\nResults saved to: batch-p1p2-progress.json');
