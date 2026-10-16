@@ -46,12 +46,16 @@ The resumable checkpoint of a partially-searched week, persisted so an aborted f
 _Avoid_: artist search progress
 
 **Collection decision**:
-A record of one choice made during week collection — variant picked, deluxe tracks stripped, title-track-only, single skipped as duplicate, low-popularity filtered. The audit trail the UI and logs render.
+A record of one choice made during week collection — variant picked, deluxe tracks stripped, title-track-only, single skipped as duplicate, low-popularity filtered. The audit trail the UI and logs render. A release counts as *found* only once it lands — adds at least one track to the weekly playlist. A release discovered but then filtered out, or whose tracks were all already there, records only the decision that dropped it.
+
+**Release qualification**:
+The shared rules that decide which of a set of found releases, and which of their tracks, qualify for a weekly playlist: the popularity gate, the variant strip, the deluxe and title-track-only rules, and listening-history exclusion. Week collection and promotion sync both run their releases through it, so a collection decision means the same thing in either.
+_Avoid_: release collection (the old module name), engine
 
 ### Syncing
 
 **Promotion sync**:
-Reconciling already-published weekly playlists with a recalculation's priority changes — removing the tracks of artists demoted out of P1/P2, and backfilling in-window releases from artists promoted into P1/P2. Runs after recalculation, over unprocessed (non-listened) weekly playlists only — whether that recalculation happened standalone or mid-fill. Shares the release-discovery and track-collection engine with week collection, but has no editorial merge, no checkpoints, and no Friday window of its own (it matches each playlist's own date). Never produces AI finds, and treats an existing AI find like any other track: backfill skips it by track, and album-unit removal can remove it. Returns its own collection decisions, removal included.
+Reconciling already-published weekly playlists with a recalculation's priority changes — removing the tracks of artists demoted out of P1/P2, and backfilling in-window releases from artists promoted into P1/P2. Runs after recalculation, over unprocessed (non-listened) weekly playlists only — whether that recalculation happened standalone or mid-fill. Shares release discovery and release qualification with week collection, but has no editorial merge, no checkpoints, and no Friday window of its own (it matches each playlist's own date). Never produces AI finds, and treats an existing AI find like any other track: backfill skips it by track, and album-unit removal can remove it. Returns its own collection decisions, removal included.
 _Avoid_: playlist sync, priority diff, backfill
 
 **Priority change**:
