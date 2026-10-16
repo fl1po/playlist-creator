@@ -72,6 +72,7 @@ function candidate(id: string, overrides: Partial<Candidate> = {}): Candidate {
     artistFans: 1000,
     upc: `upc-${id}`,
     relativePopularity: null,
+    popularity: null,
     provenance: [{ kind: 'roster', priority: 3 }],
     ...overrides,
   };
@@ -1160,7 +1161,7 @@ test('the taste context holds P1/P2, the top 5% of the rest, the week and the ac
       { name: 'Gamma', tier: 'P3' },
       { name: 'Epsilon', tier: 'unranked' },
     ],
-    weekReleases: [{ artist: 'Alpha', release: 'X' }],
+    weekReleases: [{ artist: 'Alpha', release: 'X', popularity: 70 }],
     acceptGenres: ['pop', 'house'],
   });
 });

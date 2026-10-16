@@ -197,6 +197,7 @@ function importWeek(promptFile: string, labelsFile: string): void {
           return {
             artist,
             release: rest.join(' – ').replace(/ \([a-z]+\)$/, ''),
+            popularity: null,
           };
         }),
     },
@@ -241,6 +242,7 @@ function candidate(line: string): Candidate {
     artistFans: Number(fans) || null,
     upc: null,
     relativePopularity: ratio === undefined ? null : Number(ratio),
+    popularity: null,
     provenance: [prototypeProvenance(provenance)],
   };
 }

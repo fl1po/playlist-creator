@@ -877,6 +877,7 @@ function gammaCandidate(
     artistFans: 1000,
     upc: null,
     relativePopularity: 1,
+    popularity: null,
     provenance: [{ kind: 'related', to: ['Alpha'] }],
     spotifyAlbumId: album.id,
   };

@@ -129,6 +129,11 @@ export interface Candidate {
    * releases; null when unknown.
    */
   relativePopularity: number | null;
+  /**
+   * Best track rank on the popularity gate's 0–100 scale, comparable with the
+   * week's other releases; null when unknown.
+   */
+  popularity: number | null;
   provenance: CandidateProvenance[];
   /** Known when the candidate came from Spotify (e.g. a scouting playlist). */
   spotifyAlbumId?: string;
@@ -187,8 +192,15 @@ export type Tier = 'P1' | 'P2' | 'P3' | 'P4' | 'unranked';
 /** What the judge weighs candidates against. Names and tiers, no scores. */
 export interface TasteContext {
   roster: Array<{ name: string; tier: Tier }>;
-  /** The week's P1/P2 releases: what the user is already getting. */
-  weekReleases: Array<{ artist: string; release: string }>;
+  /**
+   * The week's P1/P2 releases: what the user is already getting, with their
+   * popularity (null when unknown) to measure candidates against.
+   */
+  weekReleases: Array<{
+    artist: string;
+    release: string;
+    popularity: number | null;
+  }>;
   /** Accepted genres, as a soft preference. */
   acceptGenres: string[];
 }
@@ -628,7 +640,12 @@ export async function collectWeek(
           input,
           input.ai,
           { candidates: ports.candidates, judge: ports.judge },
-          { window: validDates, foundReleases, rejects },
+          {
+            window: validDates,
+            foundReleases,
+            rejects,
+            popularity: releasePopularity,
+          },
         )
       : null;
   for (const { release } of aiPhase?.picks ?? []) {

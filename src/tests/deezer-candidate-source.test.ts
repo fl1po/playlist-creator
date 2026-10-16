@@ -232,6 +232,7 @@ test('returns in-window roster releases in Deezer shape', async () => {
       artistFans: 1200,
       upc: '0602445000010',
       relativePopularity: 0.75,
+      popularity: 30,
       provenance: [{ kind: 'roster', priority: 3 }],
     },
   );
@@ -297,6 +298,20 @@ test("Deezer's 100k placeholder rank leaves relative popularity missing", async 
   }).candidates(request());
   assert.equal(c?.title, 'Paper');
   assert.equal(c?.relativePopularity, null);
+});
+
+test("popularity is the release's best rank on the gate's 0–100 scale", async () => {
+  const [nightBus] = await deezerCandidateSource({
+    deezer: fixtureDeezer([nova]),
+    cache: tempCache(),
+  }).candidates(request());
+  assert.equal(nightBus?.popularity, 30);
+
+  const [paper] = await deezerCandidateSource({
+    deezer: fixtureDeezer([quill]),
+    cache: tempCache(),
+  }).candidates(request());
+  assert.equal(paper?.popularity, null);
 });
 
 test("placeholder ranks don't count as the artist's usual", async () => {
@@ -417,6 +432,7 @@ test('rejects come back enriched with Deezer data and their gate provenance', as
       artistFans: 1200,
       upc: '0602445000010',
       relativePopularity: 0.75,
+      popularity: 30,
       provenance: [reject().provenance],
       spotifyAlbumId: 'sp-10',
     },
@@ -449,6 +465,7 @@ test('a reject Deezer lacks still comes back, unenriched', async () => {
       artistFans: null,
       upc: null,
       relativePopularity: null,
+      popularity: 3,
       provenance: [lowPop.provenance],
       spotifyAlbumId: 'sp-77',
     },
@@ -497,6 +514,7 @@ test('a scouting release is looked up on Deezer and keeps its Spotify album id',
       artistFans: 1200,
       upc: '0602445000010',
       relativePopularity: 0.75,
+      popularity: 30,
       provenance: [
         { kind: 'scouting', playlist: 'Fresh Finds' },
         { kind: 'scouting', playlist: 'Lorem' },
@@ -543,6 +561,7 @@ test('a scouting release Deezer lacks stays Spotify-only', async () => {
       artistFans: null,
       upc: null,
       relativePopularity: null,
+      popularity: null,
       provenance: [{ kind: 'scouting', playlist: 'Lorem' }],
       spotifyAlbumId: 'sp-77',
     },
@@ -701,6 +720,7 @@ test("co-cited related artists' in-window releases join the pool with the seeds 
     artistFans: 1200,
     upc: '0602445000010',
     relativePopularity: 0.75,
+    popularity: 30,
     provenance: [{ kind: 'related', to: ['Ada', 'Bex', 'Cy'] }],
   });
   assert.deepEqual(candidates.find((c) => c.title === 'Paper')?.provenance, [

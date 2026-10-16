@@ -8,7 +8,8 @@ import type {
 // Renders the structured taste context and candidate pool into prompt text.
 // Only the Claude TasteJudge does this (ADR-0005). Started from the AI-pick
 // prototype's v2 prompt (roster-first, relative popularity), extended with
-// the merged `sources` column; tune it against the eval script.
+// the merged `sources` column and popularity against the week's releases;
+// tune it against the eval script.
 
 export interface TastePrompt {
   /** Instructions, roster slice and accept list: the same for every week of a fill. */
@@ -32,7 +33,10 @@ The listener already gets every release this week by their core artists (P1/P2).
 - "in": the release is on a playlist the listener follows for discovery. Being seen there is evidence the release sits in their scenes, not a verdict.
 - "editorial reject" / "popularity-gate reject": an editorial playlist the listener follows carried the release, but a popularity or follower gate turned it away. The playlist counts in its favour; the gate's reason says how small it is.
 
-Weigh how big the release is for its artist. "popularity" compares the release's best track rank on Deezer with the artist's usual top tracks: around 1x or above is one of their bigger releases, well below 0.2x is a minor one (a remix, a filler single). Use it as evidence, not a gate: a modest release by a roster artist can still be wanted. Ignore absolute popularity across different artists.
+Weigh how big the release is, two ways:
+- "popularity" is the release's best Deezer track on a 0–100 scale, the same one shown for the releases already in this week's playlist. Compare it with them: those are what this week's listening sounds like. A candidate far below them is a small release however well it fits, and one from an artist the listener has never played (only "related to") rarely deserves a pick. A release near or above them has real weight.
+- "vs usual" compares that best track with the artist's own usual top tracks: around 1x or above is one of their bigger releases, well below 0.2x is a minor one (a remix, a filler single). An artist whose usual is itself small or long past its peak can reach 1x with a release few people play, so read it next to "popularity", never alone.
+Both are evidence, not gates: a modest release by a P3 roster artist can still be wanted.
 
 Score each candidate's chance the listener wants it, using the whole scale: 85+ = clearly wants it, 65 = probably, 50 = coin flip, 30 = probably not. Return every candidate you score 30 or more, with its id, the confidence, and a reason of at most 20 words that says why this listener specifically would want it (their history with the artist, which core artists it sits beside, how big the release is). Leave out candidates below 30.`;
 
@@ -48,12 +52,14 @@ ${taste.acceptGenres.join(', ')}`;
 }
 
 function renderWeek(taste: TasteContext, candidates: Candidate[]): string {
-  const collected = taste.weekReleases.map((r) => `${r.artist} – ${r.release}`);
+  const collected = taste.weekReleases.map(
+    (r) => `${r.artist} – ${r.release} (popularity ${r.popularity ?? '?'})`,
+  );
   return `## Already in this week's playlist
 ${collected.join('\n') || '(nothing)'}
 
 ## Candidates
-id | artist | title | type | tracks | date | Deezer genres | artist fans | popularity | sources
+id | artist | title | type | tracks | date | Deezer genres | artist fans | popularity | vs usual | sources
 ${candidates.map(candidateRow).join('\n')}`;
 }
 
@@ -67,6 +73,7 @@ function candidateRow(c: Candidate): string {
     c.releaseDate,
     c.genres.join('/') || '-',
     c.artistFans ?? '?',
+    c.popularity ?? '?',
     c.relativePopularity === null
       ? '?'
       : `${c.relativePopularity.toFixed(1)}x artist's usual`,

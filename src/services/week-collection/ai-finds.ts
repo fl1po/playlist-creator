@@ -175,6 +175,7 @@ function absorb(into: Candidate, from: Candidate): void {
   into.upc ??= from.upc;
   into.artistFans ??= from.artistFans;
   into.relativePopularity ??= from.relativePopularity;
+  into.popularity ??= from.popularity;
   into.spotifyAlbumId ??= from.spotifyAlbumId;
 }
 
@@ -256,12 +257,13 @@ const tierOf = (priority: number | null): Tier =>
 
 /**
  * The P1/P2 artists, then the top 5% of the whole roster by score from below
- * P1/P2 (at most 300), each with its tier; the week's P1/P2 releases; and
- * the accept list as a soft hint.
+ * P1/P2 (at most 300), each with its tier; the week's P1/P2 releases with
+ * their popularity; and the accept list as a soft hint.
  */
 export function tasteContext(
   input: WeekCollectionInput,
   foundReleases: Map<string, FoundRelease>,
+  popularity: Map<string, number>,
 ): TasteContext {
   const searched = new Set(input.roster.map(([name]) => name));
   const roster = Object.entries(input.trustedArtists.artistCounts);
@@ -286,7 +288,11 @@ export function tasteContext(
     ],
     weekReleases: [...foundReleases.values()]
       .filter((r) => r.priority === 1 || r.priority === 2)
-      .map((r) => ({ artist: r.artistName, release: r.name })),
+      .map((r) => ({
+        artist: r.artistName,
+        release: r.name,
+        popularity: popularity.get(r.id) ?? null,
+      })),
     acceptGenres: input.editorial.genreFilters?.accepted ?? acceptedGenres,
   };
 }
@@ -320,6 +326,8 @@ export async function runAiPhase(
     foundReleases: Map<string, FoundRelease>;
     /** The editorial and popularity gates' rejects, for a second look. */
     rejects: CandidateReject[];
+    /** The week's releases' popularity, as the popularity gate read it. */
+    popularity: Map<string, number>;
   },
 ): Promise<AiPhase> {
   const { window: validDates, foundReleases } = week;
@@ -372,7 +380,7 @@ export async function runAiPhase(
   phase.candidates = pool.length;
 
   const outcome = await askJudge(ports.judge, {
-    taste: tasteContext(input, foundReleases),
+    taste: tasteContext(input, foundReleases, week.popularity),
     candidates: pool,
     budgetUsd,
   });

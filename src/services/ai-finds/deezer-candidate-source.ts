@@ -11,6 +11,7 @@ import {
   DeezerClient,
   foldName,
 } from '../../lib/deezer-client.js';
+import { rankToPopularity } from '../../lib/deezer-popularity.js';
 import type { CacheDescriptor, DurableCache } from '../../lib/durable-cache.js';
 import { isAbort } from '../../lib/spotify/errors.js';
 import type {
@@ -165,6 +166,7 @@ export function deezerCandidateSource(
     artist: { name: string; id: number; fans: number | null },
     album: DeezerAlbumDetail,
   ): Promise<Omit<Candidate, 'id' | 'provenance'>> {
+    const best = Math.max(0, ...album.tracks.data.map((t) => t.rank));
     return {
       title: album.title,
       artist: artist.name,
@@ -175,6 +177,8 @@ export function deezerCandidateSource(
       artistFans: artist.fans,
       upc: album.upc ?? null,
       relativePopularity: await relativePopularity(cache, artist.id, album),
+      popularity:
+        best === 0 || best === PLACEHOLDER_RANK ? null : rankToPopularity(best),
     };
   }
 
@@ -452,6 +456,10 @@ function bareReject(reject: CandidateReject): Candidate {
     artistFans: null,
     upc: null,
     relativePopularity: null,
+    popularity:
+      reject.provenance.kind === 'low-popularity'
+        ? reject.provenance.popularity
+        : null,
     provenance: [reject.provenance],
     spotifyAlbumId: reject.albumId,
   };
@@ -478,6 +486,7 @@ function bareScouting(items: CandidateRequest['scouting']): Candidate[] {
         artistFans: null,
         upc: null,
         relativePopularity: null,
+        popularity: null,
         provenance: [source],
         spotifyAlbumId: album.id,
       });

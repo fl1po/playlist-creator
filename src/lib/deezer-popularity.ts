@@ -14,6 +14,9 @@ export interface DeezerPopularityOptions {
   checkAbort?: () => void;
 }
 
+/** A Deezer track rank (0–1,000,000) on the 0–100 popularity scale. */
+export const rankToPopularity = (rank: number) => Math.round(rank / 10_000);
+
 /**
  * Normalize a string for fuzzy comparison: lowercase, drop any parenthesized
  * or bracketed part (edition suffixes, "(feat. X)"), remove punctuation.
@@ -88,8 +91,7 @@ export async function fetchDeezerPopularities(
 
     // Best track, not average: one breakout single makes a release popular.
     const maxRank = Math.max(...album.tracks.data.map((t) => t.rank));
-    const normalized = Math.round(maxRank / 10_000);
-    popularities.set(id, normalized);
+    popularities.set(id, rankToPopularity(maxRank));
 
     done++;
     options?.onProgress?.(done, entries.length);

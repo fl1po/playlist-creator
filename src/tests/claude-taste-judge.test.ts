@@ -28,6 +28,7 @@ const CANDIDATE: Candidate = {
   artistFans: 1200,
   upc: null,
   relativePopularity: 0.8,
+  popularity: 31,
   provenance: [
     { kind: 'related', to: ['Seed A', 'Seed B'] },
     { kind: 'editorial-reject', reason: 'popularity 6', playlists: ['Fresh'] },
@@ -41,7 +42,9 @@ function request(over: Partial<TasteJudgeRequest> = {}): TasteJudgeRequest {
         { name: 'Seed A', tier: 'P1' },
         { name: 'Lower', tier: 'P3' },
       ],
-      weekReleases: [{ artist: 'Seed A', release: 'Big Album' }],
+      weekReleases: [
+        { artist: 'Seed A', release: 'Big Album', popularity: 54 },
+      ],
       acceptGenres: ['hip hop'],
     },
     candidates: [CANDIDATE],

@@ -79,6 +79,10 @@ export function fixtureCandidates(
             artistFans: null,
             upc: null,
             relativePopularity: null,
+            popularity:
+              r.provenance.kind === 'low-popularity'
+                ? r.provenance.popularity
+                : null,
             provenance: [r.provenance],
             spotifyAlbumId: r.albumId,
           }),
@@ -100,6 +104,7 @@ export function fixtureCandidates(
               artistFans: null,
               upc: null,
               relativePopularity: null,
+              popularity: null,
               provenance: request.scouting
                 .filter((s) => s.album.id === album.id)
                 .map((s) => ({ kind: 'scouting', playlist: s.playlist })),
