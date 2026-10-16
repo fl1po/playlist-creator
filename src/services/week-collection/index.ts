@@ -258,6 +258,7 @@ export type VariantStripReason =
 
 export type CollectionDecision =
   | {
+      /** The release landed: it added at least one track. */
       kind: 'release-found';
       artist: string;
       release: string;
@@ -328,7 +329,8 @@ export type WeekProgressEvent =
   | { phase: 'resumed'; searched: number; total: number; found: number }
   | { phase: 'searching'; searched: number; total: number; artist: string }
   | {
-      phase: 'release-found';
+      /** Found by the search or editorial merge; it may still not land. */
+      phase: 'release-discovered';
       artist: string;
       release: string;
       type: string;
@@ -516,14 +518,8 @@ export async function collectWeek(
       for (const release of releases ?? []) {
         if (!foundReleases.has(release.id)) {
           foundReleases.set(release.id, release);
-          run.decisions.push({
-            kind: 'release-found',
-            artist: name,
-            release: release.name,
-            type: release.type,
-          });
           onProgress?.({
-            phase: 'release-found',
+            phase: 'release-discovered',
             artist: name,
             release: release.name,
             type: release.type,
@@ -743,20 +739,14 @@ async function mergeEditorial(
           artistSpotifyId: primaryArtist.id,
           priority,
           score,
+          source: playlist.name,
         });
         playlistsOf.set(albumId, [playlist.name]);
         releaseKeys.add(
           `${artistName.toLowerCase()}|${album.name.toLowerCase().trim()}`,
         );
-        run.decisions.push({
-          kind: 'release-found',
-          artist: artistName,
-          release: album.name,
-          type: album.type,
-          source: playlist.name,
-        });
         run.onProgress?.({
-          phase: 'release-found',
+          phase: 'release-discovered',
           artist: artistName,
           release: album.name,
           type: album.type,

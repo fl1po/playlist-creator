@@ -125,7 +125,19 @@ export async function collect(
     });
   }
   const remaining = new Map([...releases].filter(([id]) => !filtered.has(id)));
-  return collectTracks(run, remaining, exclude, contain);
+  const result = await collectTracks(run, remaining, exclude, contain);
+  // A release is found only once it lands; one filtered out, or whose tracks
+  // were all excluded, records only the decision that dropped it.
+  for (const { release } of result.collected) {
+    run.decisions.push({
+      kind: 'release-found',
+      artist: release.artistName,
+      release: release.name,
+      type: release.type,
+      ...(release.source ? { source: release.source } : {}),
+    });
+  }
+  return result;
 }
 
 export type WindowRelease = RawRelease & { markets: number };

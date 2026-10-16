@@ -125,7 +125,7 @@ function emitProgress(emitter: Emitter, e: WeekProgressEvent): void {
     case 'searching':
       emitter.emit('artistSearchProgress', e.searched, e.total, e.artist);
       break;
-    case 'release-found':
+    case 'release-discovered':
       emitter.emit('releaseFound', e.artist, e.release, e.type, e.source);
       break;
     case 'checkpoint':
@@ -180,8 +180,8 @@ function describeAiSkip(
 function emitDecision(emitter: Emitter, d: CollectionDecision): void {
   switch (d.kind) {
     case 'release-found':
-      // Logged live during search/editorial via emitProgress; skip here so the
-      // end-of-date decision replay doesn't double-log each find.
+      // Each find was logged live when discovered (emitProgress); skip here so
+      // the end-of-date decision replay doesn't log it twice.
       break;
     case 'variant-picked':
       emitter.emit('variantPicked', d.release, d.variantCount, d.explicit);
@@ -221,7 +221,7 @@ function emitDecision(emitter: Emitter, d: CollectionDecision): void {
       break;
     case 'ai-pick':
     case 'ai-skipped':
-      // Logged live via emitProgress, like release-found.
+      // Logged live via emitProgress, like a discovered release.
       break;
   }
 }

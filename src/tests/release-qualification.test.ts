@@ -35,6 +35,11 @@ function kinds(decisions: CollectionDecision[]): string[] {
   return decisions.map((d) => d.kind);
 }
 
+/** The rule decisions, without the `release-found` each landed release gets. */
+function rules(decisions: CollectionDecision[]): CollectionDecision[] {
+  return decisions.filter((d) => d.kind !== 'release-found');
+}
+
 /** Found releases for every catalog album with an id in `ids`. */
 function found(catalog: Catalog, ids: string[]): Map<string, FoundRelease> {
   const releases = new Map<string, FoundRelease>();
@@ -332,7 +337,7 @@ test('alternate versions are stripped when the original is kept', async () => {
     collected.map((c) => c.trackIds),
     [['z1']],
   );
-  assert.deepEqual(r.decisions, [
+  assert.deepEqual(rules(r.decisions), [
     {
       kind: 'variant-stripped',
       reason: 'instrumental',
@@ -430,7 +435,7 @@ test('deluxe release: only tracks absent from the base album qualify', async () 
     [['d3']],
   );
   assert.equal(skippedCount, 2);
-  assert.deepEqual(r.decisions, [
+  assert.deepEqual(rules(r.decisions), [
     {
       kind: 'deluxe-stripped',
       release: 'Best Album (Deluxe)',
@@ -486,7 +491,7 @@ test('title-track-only: single promotion contributes only the title track', asyn
     [['h1']],
   );
   assert.equal(skippedCount, 2);
-  assert.deepEqual(r.decisions, [
+  assert.deepEqual(rules(r.decisions), [
     {
       kind: 'title-track-only',
       release: 'Hit Song',
@@ -535,7 +540,9 @@ test('a single duplicating an album track is skipped with a decision', async () 
     collected.map((c) => c.release.id),
     ['alb-h'],
   );
-  assert.deepEqual(r.decisions, [{ kind: 'single-skipped', release: 'Same' }]);
+  assert.deepEqual(rules(r.decisions), [
+    { kind: 'single-skipped', release: 'Same' },
+  ]);
 });
 
 test('an all-instrumental release is stripped', async () => {
@@ -620,5 +627,61 @@ test('a release whose reads throw fails collection unless contained', async () =
       (error as Error).message,
     ]),
     [['alb-bad', 'boom']],
+  );
+});
+
+// ── Landing ──────────────────────────────────────────────────────────────────
+
+test('a release is found only once it lands, keeping its source', async () => {
+  const catalog: Catalog = {
+    artists: [
+      {
+        id: 'art-l',
+        name: 'Lima',
+        albums: [
+          {
+            id: 'alb-lands',
+            name: 'Lands',
+            type: 'album',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 'l1', name: 'New', key: 'lima::new' }],
+          },
+          {
+            id: 'alb-heard',
+            name: 'Heard',
+            type: 'album',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 'h1', name: 'Old', key: 'lima::old' }],
+          },
+          {
+            id: 'alb-sped',
+            name: 'Lands (Sped Up)',
+            type: 'single',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 's1', name: 'New', key: 'lima::new sped' }],
+          },
+        ],
+      },
+    ],
+  };
+  const releases = found(catalog, ['alb-lands', 'alb-heard', 'alb-sped']);
+  const lands = releases.get('alb-lands');
+  if (lands) lands.source = 'Editors Picks';
+  const r = run(fixtureReads(catalog));
+
+  // alb-heard's only track is excluded; alb-sped is stripped.
+  await collect(r, releases, new Set(['h1']));
+
+  assert.deepEqual(
+    r.decisions.filter((d) => d.kind === 'release-found'),
+    [
+      {
+        kind: 'release-found',
+        artist: 'Lima',
+        release: 'Lands',
+        type: 'album',
+        source: 'Editors Picks',
+      },
+    ],
   );
 });

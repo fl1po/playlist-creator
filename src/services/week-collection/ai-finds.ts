@@ -424,6 +424,7 @@ export async function runAiPhase(
         artistSpotifyId: release.artistId,
         priority: 'ai',
         score: 0,
+        source: 'AI',
         aiFind: { confidence: pick.confidence, reason: pick.reason },
       },
     });

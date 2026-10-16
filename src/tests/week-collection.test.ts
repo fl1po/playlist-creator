@@ -155,6 +155,8 @@ test('low-popularity releases are gated out with a decision', async () => {
   );
 
   assert.deepEqual(week.tracks, []);
+  // Discovered, but it never landed: not a find.
+  assert.deepEqual(kinds(week.decisions), ['low-popularity']);
   const lowPop = week.decisions.find((d) => d.kind === 'low-popularity');
   assert.deepEqual(lowPop, {
     kind: 'low-popularity',
