@@ -1,5 +1,4 @@
 import { filterByPriority } from '../../domain/artists.js';
-import { filterLowPopularity, filterVariants } from '../../domain/releases.js';
 import { getValidDates, parseDate } from '../../domain/tracks.js';
 import type { PlaylistTrackWithArtists } from '../../lib/pagination.js';
 import type {
@@ -9,15 +8,15 @@ import type {
   TrustedArtistsFile,
 } from '../../lib/types.js';
 import {
-  collectTracks,
+  collect,
+  createRun,
+  gate,
   getArtistWindowReleases,
-  type Run,
 } from '../week-collection/engine.js';
 import type {
   CollectionDecision,
   PopularitySource,
   ReleaseReads,
-  VariantStripReason,
 } from '../week-collection/index.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -243,12 +242,8 @@ export async function syncPriorityChanges(
     // One run for the whole sync: an artist's album list is fetched once and
     // memoized across every playlist. The engine emits CollectionDecisions; we
     // fold them into the wider SyncDecision trail once the phase completes.
-    const additionDecisions: CollectionDecision[] = [];
-    const run: Run = {
-      reads,
-      decisions: additionDecisions,
-      albumsByArtist: new Map(),
-    };
+    const run = createRun({ reads, popularity });
+    const additionDecisions = run.decisions;
 
     const resolved: Array<{ name: string; id: string; data: ArtistData }> = [];
     for (const change of promoted) {
@@ -287,37 +282,12 @@ export async function syncPriorityChanges(
 
       if (foundReleases.size === 0) continue;
 
-      const pops = await popularity.lookup(foundReleases);
-      const lowPop = filterLowPopularity(foundReleases, pops, minPopularity);
-      for (const rid of lowPop) {
-        const r = foundReleases.get(rid);
-        if (r) {
-          additionDecisions.push({
-            kind: 'low-popularity',
-            artist: r.artistName,
-            release: r.name,
-            albumId: rid,
-            popularity: pops.get(rid) ?? 0,
-          });
-        }
-        foundReleases.delete(rid);
-      }
-
-      const { filtered, removed } = filterVariants(foundReleases);
-      for (const { type, release } of removed) {
-        additionDecisions.push({
-          kind: 'variant-stripped',
-          reason: type as VariantStripReason,
-          artist: release.artistName,
-          release: release.name,
-        });
-      }
-      for (const rid of filtered) foundReleases.delete(rid);
-      if (foundReleases.size === 0) continue;
+      const { kept } = await gate(run, foundReleases, minPopularity);
+      if (kept.size === 0) continue;
 
       const existing = new Set(await reads.playlistTrackIds(pl.id));
       const exclude = new Set<string>([...awTrackIds, ...existing]);
-      const { collected } = await collectTracks(run, foundReleases, exclude);
+      const { collected } = await collect(run, kept, exclude);
       const trackIds = collected.flatMap((c) => c.trackIds);
       // Reported only once a release adds tracks: one filtered out above, or
       // whose tracks are all already present, is not a find for this backfill.

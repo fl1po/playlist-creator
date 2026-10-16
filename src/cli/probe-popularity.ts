@@ -16,9 +16,10 @@ import { FileConfigStore } from '../lib/config.js';
 import { fetchDeezerPopularities } from '../lib/deezer-popularity.js';
 import { createCliGateway } from '../lib/spotify/gateway.js';
 import type { FoundRelease, TrustedArtistsFile } from '../lib/types.js';
+import { deezerPopularitySource } from '../services/week-collection/adapters.js';
 import {
+  createRun,
   getArtistWindowReleases,
-  type Run,
 } from '../services/week-collection/engine.js';
 import { spotifyReleaseReads } from '../services/week-collection/spotify-reads.js';
 
@@ -48,7 +49,7 @@ console.log(
   `Artists: first ${roster.length} P1/P2   Week(s): ${weeks.join(', ')}\n`,
 );
 
-const run: Run = { reads, decisions: [], albumsByArtist: new Map() };
+const run = createRun({ reads, popularity: deezerPopularitySource(() => {}) });
 const found = new Map<string, FoundRelease>();
 
 for (let i = 0; i < roster.length; i++) {

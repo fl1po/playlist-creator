@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { getValidDates, parseDate } from '../domain/tracks.js';
 import type { FoundRelease } from '../lib/types.js';
+import { fixedPopularitySource } from '../services/week-collection/adapters.js';
 import {
-  collectTracks,
+  collect,
+  createRun,
+  gate,
   getArtistWindowReleases,
   type Run,
 } from '../services/week-collection/engine.js';
@@ -23,8 +26,8 @@ const WINDOW = getValidDates(parseDate(WEEK));
 const IN_WINDOW = '2026-06-05';
 const OUT_OF_WINDOW = '2024-01-01';
 
-function run(reads: ReleaseReads): Run {
-  return { reads, decisions: [], albumsByArtist: new Map() };
+function run(reads: ReleaseReads, scores: Record<string, number> = {}): Run {
+  return createRun({ reads, popularity: fixedPopularitySource(scores) });
 }
 
 function kinds(decisions: CollectionDecision[]): string[] {
@@ -145,6 +148,111 @@ test('discovery groups variants inside the window and picks the explicit one', a
   ]);
 });
 
+// ── Popularity gate ──────────────────────────────────────────────────────────
+
+test('the gate drops releases below the floor with a decision; unknown popularity passes', async () => {
+  const catalog: Catalog = {
+    artists: [
+      {
+        id: 'art-g',
+        name: 'Gamma',
+        albums: ['alb-low', 'alb-floor', 'alb-unknown'].map((id) => ({
+          id,
+          name: id,
+          type: 'album',
+          release_date: IN_WINDOW,
+          tracks: [],
+        })),
+      },
+    ],
+  };
+  const r = run(fixtureReads(catalog), { 'alb-low': 59, 'alb-floor': 60 });
+
+  const { kept, dropped, popularity } = await gate(
+    r,
+    found(catalog, ['alb-low', 'alb-floor', 'alb-unknown']),
+    60,
+  );
+
+  assert.deepEqual([...kept.keys()], ['alb-floor', 'alb-unknown']);
+  assert.deepEqual(
+    dropped.map((d) => d.id),
+    ['alb-low'],
+  );
+  assert.equal(popularity.get('alb-floor'), 60);
+  assert.deepEqual(r.decisions, [
+    {
+      kind: 'low-popularity',
+      artist: 'Gamma',
+      release: 'alb-low',
+      albumId: 'alb-low',
+      popularity: 59,
+    },
+  ]);
+});
+
+// ── Variant strip ────────────────────────────────────────────────────────────
+
+test('alternate versions are stripped when the original is kept', async () => {
+  const catalog: Catalog = {
+    artists: [
+      {
+        id: 'art-e',
+        name: 'Echo',
+        albums: [
+          {
+            id: 'alb-z',
+            name: 'Album Z',
+            type: 'album',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 'z1', name: 'Zed', key: 'echo::zed' }],
+          },
+          {
+            id: 'alb-zi',
+            name: 'Album Z (Instrumental)',
+            type: 'album',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 'zi1', name: 'Zed', key: 'echo::zed inst' }],
+          },
+          {
+            id: 'alb-sped',
+            name: 'Loud (Sped Up)',
+            type: 'single',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 's1', name: 'Loud', key: 'echo::loud sped' }],
+          },
+        ],
+      },
+    ],
+  };
+  const r = run(fixtureReads(catalog));
+
+  const { collected } = await collect(
+    r,
+    found(catalog, ['alb-z', 'alb-zi', 'alb-sped']),
+    new Set(),
+  );
+
+  assert.deepEqual(
+    collected.map((c) => c.trackIds),
+    [['z1']],
+  );
+  assert.deepEqual(r.decisions, [
+    {
+      kind: 'variant-stripped',
+      reason: 'instrumental',
+      artist: 'Echo',
+      release: 'Album Z (Instrumental)',
+    },
+    {
+      kind: 'variant-stripped',
+      reason: 'sped up',
+      artist: 'Echo',
+      release: 'Loud (Sped Up)',
+    },
+  ]);
+});
+
 // ── Track rules ──────────────────────────────────────────────────────────────
 
 test('excluded tracks are skipped and counted', async () => {
@@ -169,7 +277,7 @@ test('excluded tracks are skipped and counted', async () => {
     ],
   };
 
-  const { collected, skippedCount } = await collectTracks(
+  const { collected, skippedCount } = await collect(
     run(fixtureReads(catalog)),
     found(catalog, ['alb-x']),
     new Set(['t2']),
@@ -216,7 +324,7 @@ test('deluxe release: only tracks absent from the base album qualify', async () 
   };
   const r = run(fixtureReads(catalog));
 
-  const { collected, skippedCount } = await collectTracks(
+  const { collected, skippedCount } = await collect(
     r,
     found(catalog, ['alb-dlx']),
     new Set(),
@@ -272,7 +380,7 @@ test('title-track-only: single promotion contributes only the title track', asyn
   };
   const r = run(fixtureReads(catalog));
 
-  const { collected, skippedCount } = await collectTracks(
+  const { collected, skippedCount } = await collect(
     r,
     found(catalog, ['alb-hit']),
     new Set(),
@@ -322,7 +430,7 @@ test('a single duplicating an album track is skipped with a decision', async () 
   const r = run(fixtureReads(catalog));
 
   // The single comes first in the input; albums are collected first anyway.
-  const { collected } = await collectTracks(
+  const { collected } = await collect(
     r,
     found(catalog, ['sgl-h', 'alb-h']),
     new Set(),
@@ -358,11 +466,7 @@ test('an all-instrumental release is stripped', async () => {
   };
   const r = run(fixtureReads(catalog));
 
-  const { collected } = await collectTracks(
-    r,
-    found(catalog, ['alb-i']),
-    new Set(),
-  );
+  const { collected } = await collect(r, found(catalog, ['alb-i']), new Set());
 
   assert.deepEqual(collected, []);
   assert.deepEqual(kinds(r.decisions), ['variant-stripped']);
@@ -403,21 +507,23 @@ test('a release whose reads throw fails collection unless contained', async () =
   };
   const releases = found(catalog, ['alb-ok', 'alb-bad']);
 
-  await assert.rejects(collectTracks(run(reads), releases, new Set()), /boom/);
+  await assert.rejects(collect(run(reads), releases, new Set()), /boom/);
 
-  const contained: string[] = [];
-  const { collected } = await collectTracks(
+  const { collected, contained } = await collect(
     run(reads),
     releases,
     new Set(),
-    (release) => {
-      contained.push(release.id);
-      return true;
-    },
+    () => true,
   );
   assert.deepEqual(
     collected.map((c) => c.release.id),
     ['alb-ok'],
   );
-  assert.deepEqual(contained, ['alb-bad']);
+  assert.deepEqual(
+    contained.map(({ release, error }) => [
+      release.id,
+      (error as Error).message,
+    ]),
+    [['alb-bad', 'boom']],
+  );
 });
