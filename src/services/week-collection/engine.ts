@@ -35,6 +35,8 @@ export interface Run {
   onProgress?: (e: WeekProgressEvent) => void;
   /** artistAlbums responses memoized for the lifetime of one run. */
   albumsByArtist: Map<string, RawAlbum[]>;
+  /** Name-search fallbacks memoized for the lifetime of one run. */
+  artistIdsByName: Map<string, string | null>;
 }
 
 export function createRun(
@@ -47,6 +49,7 @@ export function createRun(
     decisions: [],
     onProgress,
     albumsByArtist: new Map(),
+    artistIdsByName: new Map(),
   };
 }
 
@@ -129,6 +132,49 @@ export type WindowRelease = RawRelease & { markets: number };
 
 // ── Artist release discovery ─────────────────────────────────────────────────
 
+/** A roster artist: name, tier and score, and the Spotify id if stored. */
+export interface RosterArtist {
+  name: string;
+  priority: number | null;
+  score: number;
+  spotifyId?: string | null;
+}
+
+/**
+ * A roster artist's in-window releases, one variant each, as found releases.
+ * Anchored to the stored Spotify id: a fresh name search can resolve a common
+ * name (e.g. "Ebenezer") to an unrelated artist and pull in their whole
+ * catalog, so the search is only a fallback when no id was stored. Null when
+ * the artist isn't on Spotify.
+ */
+export async function discoverArtist(
+  run: Run,
+  artist: RosterArtist,
+  validDates: string[],
+): Promise<FoundRelease[] | null> {
+  const artistId = artist.spotifyId ?? (await searchArtistId(run, artist.name));
+  if (!artistId) return null;
+  const releases = await getArtistWindowReleases(run, artistId, validDates);
+  return releases.map((r) => ({
+    id: r.id,
+    name: r.name,
+    type: r.type,
+    release_date: r.release_date,
+    markets: r.markets,
+    artistName: artist.name,
+    artistSpotifyId: artistId,
+    priority: artist.priority ?? 0,
+    score: artist.score,
+  }));
+}
+
+async function searchArtistId(run: Run, name: string) {
+  if (run.artistIdsByName.has(name)) return run.artistIdsByName.get(name);
+  const id = (await run.reads.searchArtist(name))?.id ?? null;
+  run.artistIdsByName.set(name, id);
+  return id;
+}
+
 async function memoArtistAlbums(run: Run, artistId: string) {
   const cached = run.albumsByArtist.get(artistId);
   if (cached) return cached;
@@ -138,7 +184,7 @@ async function memoArtistAlbums(run: Run, artistId: string) {
 }
 
 /** Window-filter an artist's releases, then keep one variant per group. */
-export async function getArtistWindowReleases(
+async function getArtistWindowReleases(
   run: Run,
   artistId: string,
   validDates: string[],

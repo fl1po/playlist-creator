@@ -2,7 +2,6 @@ import { filterByPriority } from '../../domain/artists.js';
 import { getValidDates, parseDate } from '../../domain/tracks.js';
 import type { PlaylistTrackWithArtists } from '../../lib/pagination.js';
 import type {
-  ArtistData,
   FoundRelease,
   SimplePlaylist,
   TrustedArtistsFile,
@@ -10,8 +9,8 @@ import type {
 import {
   collect,
   createRun,
+  discoverArtist,
   gate,
-  getArtistWindowReleases,
 } from '../week-collection/engine.js';
 import type {
   CollectionDecision,
@@ -245,38 +244,20 @@ export async function syncPriorityChanges(
     const run = createRun({ reads, popularity });
     const additionDecisions = run.decisions;
 
-    const resolved: Array<{ name: string; id: string; data: ArtistData }> = [];
-    for (const change of promoted) {
+    const promotedArtists = promoted.flatMap((change) => {
       const data = trustedArtists.artistCounts[change.artist];
-      if (!data) continue;
-      // Anchor to the stored Spotify id so a common name doesn't resolve to an
-      // unrelated artist; fall back to a name search only when none was stored.
-      const id =
-        data.spotifyId ?? (await reads.searchArtist(change.artist))?.id;
-      if (!id) continue;
-      resolved.push({ name: change.artist, id, data });
-    }
+      return data ? [{ name: change.artist, ...data }] : [];
+    });
 
     for (const pl of unprocessedPlaylists) {
-      if (resolved.length === 0) break;
+      if (promotedArtists.length === 0) break;
       const validDates = getValidDates(parseDate(pl.name));
       const foundReleases = new Map<string, FoundRelease>();
 
-      for (const { name, id, data } of resolved) {
-        const releases = await getArtistWindowReleases(run, id, validDates);
-        for (const r of releases) {
-          if (foundReleases.has(r.id)) continue;
-          foundReleases.set(r.id, {
-            id: r.id,
-            name: r.name,
-            type: r.type,
-            release_date: r.release_date,
-            markets: r.markets,
-            artistName: name,
-            artistSpotifyId: id,
-            priority: data.priority ?? 0,
-            score: data.score,
-          });
+      for (const artist of promotedArtists) {
+        const releases = await discoverArtist(run, artist, validDates);
+        for (const r of releases ?? []) {
+          if (!foundReleases.has(r.id)) foundReleases.set(r.id, r);
         }
       }
 

@@ -19,7 +19,7 @@ import type { FoundRelease, TrustedArtistsFile } from '../lib/types.js';
 import { deezerPopularitySource } from '../services/week-collection/adapters.js';
 import {
   createRun,
-  getArtistWindowReleases,
+  discoverArtist,
 } from '../services/week-collection/engine.js';
 import { spotifyReleaseReads } from '../services/week-collection/spotify-reads.js';
 
@@ -57,24 +57,9 @@ for (let i = 0; i < roster.length; i++) {
   process.stdout.write(
     `\r  searching ${i + 1}/${roster.length}: ${name}`.padEnd(70),
   );
-  const artist = data.spotifyId
-    ? { id: data.spotifyId, name }
-    : await reads.searchArtist(name);
-  if (!artist) continue;
-  const releases = await getArtistWindowReleases(run, artist.id, validDates);
-  for (const r of releases) {
-    if (found.has(r.id)) continue;
-    found.set(r.id, {
-      id: r.id,
-      name: r.name,
-      type: r.type,
-      release_date: r.release_date,
-      markets: r.markets,
-      artistName: name,
-      artistSpotifyId: artist.id,
-      priority: data.priority ?? 0,
-      score: data.score,
-    });
+  const releases = await discoverArtist(run, { name, ...data }, validDates);
+  for (const r of releases ?? []) {
+    if (!found.has(r.id)) found.set(r.id, r);
   }
 }
 console.log(

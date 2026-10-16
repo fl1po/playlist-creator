@@ -15,8 +15,8 @@ import { isContainedPickFailure, landAiPicks, runAiPhase } from './ai-finds.js';
 import {
   collect,
   createRun,
+  discoverArtist,
   gate,
-  getArtistWindowReleases,
   type Run,
 } from './engine.js';
 
@@ -482,7 +482,7 @@ export async function collectWeek(
   onProgress?: (e: WeekProgressEvent) => void,
 ): Promise<WeekCollection> {
   const { week, roster, trustedArtists, listeningHistory, editorial } = input;
-  const { reads, checkpoints } = ports;
+  const { checkpoints } = ports;
   const validDates = getValidDates(parseDate(week));
   const run = createRun(ports, onProgress);
 
@@ -512,35 +512,10 @@ export async function collectWeek(
   try {
     for (let ai = artistsSearched; ai < roster.length; ai++) {
       const [name, data] = roster[ai];
-      // Anchor to the artist that actually earned the priority. A fresh name
-      // search can resolve a common name (e.g. "Ebenezer") to an unrelated
-      // Spotify artist and pull in their whole catalog. Fall back to search
-      // only when no id was stored.
-      const artist = data.spotifyId
-        ? { id: data.spotifyId, name }
-        : await reads.searchArtist(name);
-      if (!artist) {
-        artistsSearched = ai + 1;
-        continue;
-      }
-      const releases = await getArtistWindowReleases(
-        run,
-        artist.id,
-        validDates,
-      );
-      for (const release of releases) {
+      const releases = await discoverArtist(run, { name, ...data }, validDates);
+      for (const release of releases ?? []) {
         if (!foundReleases.has(release.id)) {
-          foundReleases.set(release.id, {
-            id: release.id,
-            name: release.name,
-            type: release.type,
-            release_date: release.release_date,
-            markets: release.markets,
-            artistName: name,
-            artistSpotifyId: artist.id,
-            priority: data.priority ?? 0,
-            score: data.score,
-          });
+          foundReleases.set(release.id, release);
           run.decisions.push({
             kind: 'release-found',
             artist: name,
@@ -556,6 +531,7 @@ export async function collectWeek(
         }
       }
       artistsSearched = ai + 1;
+      if (!releases) continue;
       onProgress?.({
         phase: 'searching',
         searched: artistsSearched,

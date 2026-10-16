@@ -6,8 +6,8 @@ import { fixedPopularitySource } from '../services/week-collection/adapters.js';
 import {
   collect,
   createRun,
+  discoverArtist,
   gate,
-  getArtistWindowReleases,
   type Run,
 } from '../services/week-collection/engine.js';
 import type {
@@ -25,6 +25,7 @@ const WEEK = '05.06.26'; // window: 2026-05-30 … 2026-06-05
 const WINDOW = getValidDates(parseDate(WEEK));
 const IN_WINDOW = '2026-06-05';
 const OUT_OF_WINDOW = '2024-01-01';
+const P1 = { priority: 1, score: 100 };
 
 function run(reads: ReleaseReads, scores: Record<string, number> = {}): Run {
   return createRun({ reads, popularity: fixedPopularitySource(scores) });
@@ -83,12 +84,25 @@ test('discovery keeps only in-window releases', async () => {
     ],
   });
 
-  const releases = await getArtistWindowReleases(run(reads), 'art-a', WINDOW);
-
-  assert.deepEqual(
-    releases.map((r) => r.id),
-    ['alb-new'],
+  const releases = await discoverArtist(
+    run(reads),
+    { name: 'Alpha', ...P1, spotifyId: 'art-a' },
+    WINDOW,
   );
+
+  assert.deepEqual(releases, [
+    {
+      id: 'alb-new',
+      name: 'New',
+      type: 'album',
+      release_date: IN_WINDOW,
+      markets: 0,
+      artistName: 'Alpha',
+      artistSpotifyId: 'art-a',
+      priority: 1,
+      score: 100,
+    },
+  ]);
 });
 
 test('discovery groups variants inside the window and picks the explicit one', async () => {
@@ -132,10 +146,14 @@ test('discovery groups variants inside the window and picks the explicit one', a
   });
   const r = run(reads);
 
-  const releases = await getArtistWindowReleases(r, 'art-v', WINDOW);
+  const releases = await discoverArtist(
+    r,
+    { name: 'Vera', ...P1, spotifyId: 'art-v' },
+    WINDOW,
+  );
 
   assert.deepEqual(
-    releases.map((x) => x.id),
+    releases?.map((x) => x.id),
     ['v-explicit'],
   );
   assert.deepEqual(r.decisions, [
@@ -146,6 +164,83 @@ test('discovery groups variants inside the window and picks the explicit one', a
       explicit: true,
     },
   ]);
+});
+
+test('discovery anchors to the stored Spotify id, ignoring same-name artists', async () => {
+  const reads = fixtureReads({
+    artists: [
+      // A name search would resolve to this unrelated artist first.
+      {
+        id: 'eben-wrong',
+        name: 'Ebenezer',
+        albums: [
+          {
+            id: 'alb-wrong',
+            name: 'Wrong',
+            type: 'single',
+            release_date: IN_WINDOW,
+            tracks: [],
+          },
+        ],
+      },
+      {
+        id: 'eben-right',
+        name: 'Ebenezer',
+        albums: [
+          {
+            id: 'alb-real',
+            name: 'Real',
+            type: 'single',
+            release_date: IN_WINDOW,
+            tracks: [],
+          },
+        ],
+      },
+    ],
+  });
+
+  const releases = await discoverArtist(
+    run(reads),
+    { name: 'Ebenezer', ...P1, spotifyId: 'eben-right' },
+    WINDOW,
+  );
+
+  assert.deepEqual(
+    releases?.map((x) => x.id),
+    ['alb-real'],
+  );
+  assert.deepEqual(reads.searchCalls, []);
+});
+
+test('without a stored id, discovery searches by name once per run', async () => {
+  const reads = fixtureReads({
+    artists: [
+      {
+        id: 'art-k',
+        name: 'Kilo',
+        albums: [
+          {
+            id: 'alb-k',
+            name: 'K',
+            type: 'album',
+            release_date: IN_WINDOW,
+            tracks: [],
+          },
+        ],
+      },
+    ],
+  });
+  const r = run(reads);
+
+  const first = await discoverArtist(r, { name: 'Kilo', ...P1 }, WINDOW);
+  const again = await discoverArtist(r, { name: 'Kilo', ...P1 }, WINDOW);
+  const missing = await discoverArtist(r, { name: 'Nobody', ...P1 }, WINDOW);
+  await discoverArtist(r, { name: 'Nobody', ...P1 }, WINDOW);
+
+  assert.equal(first?.[0].artistSpotifyId, 'art-k');
+  assert.deepEqual(again, first);
+  assert.equal(missing, null);
+  assert.deepEqual(reads.searchCalls, ['Kilo', 'Nobody']);
 });
 
 // ── Popularity gate ──────────────────────────────────────────────────────────
