@@ -1,4 +1,6 @@
 import {
+  filterLowPopularity,
+  filterVariants,
   getBaseAlbumName,
   groupReleases,
   isAllInstrumental,
@@ -10,25 +12,45 @@ import {
 import type { AlbumTrack, FoundRelease } from '../../lib/types.js';
 import type {
   CollectionDecision,
+  PopularitySource,
   RawAlbum,
   ReleaseReads,
+  VariantStripReason,
   WeekProgressEvent,
 } from './index.js';
 
 /**
- * The shared release-discovery + track-collection engine, built on `ReleaseReads`.
+ * Release discovery and release qualification, built on `ReleaseReads` and
+ * `PopularitySource`.
  *
- * Two consumers drive it: `collectWeek` (one Friday's window, editorial,
- * checkpoints) and `syncPriorityChanges` (per-playlist promotion backfill). The
- * engine owns no orchestration — callers build a `Run`, feed it found releases,
- * and read decisions back off `run.decisions`.
+ * Week collection and promotion sync both drive it: discover releases, `gate`
+ * them on popularity, then `collect` the qualifying tracks. Between the two,
+ * week collection runs its AI phase. Decisions accumulate on the run in the
+ * order they're made, across every step and caller phase.
  */
 export interface Run {
   reads: ReleaseReads;
+  popularity: PopularitySource;
   decisions: CollectionDecision[];
   onProgress?: (e: WeekProgressEvent) => void;
   /** artistAlbums responses memoized for the lifetime of one run. */
   albumsByArtist: Map<string, RawAlbum[]>;
+  /** Name-search fallbacks memoized for the lifetime of one run. */
+  artistIdsByName: Map<string, string | null>;
+}
+
+export function createRun(
+  ports: { reads: ReleaseReads; popularity: PopularitySource },
+  onProgress?: (e: WeekProgressEvent) => void,
+): Run {
+  return {
+    reads: ports.reads,
+    popularity: ports.popularity,
+    decisions: [],
+    onProgress,
+    albumsByArtist: new Map(),
+    artistIdsByName: new Map(),
+  };
 }
 
 export interface Collected {
@@ -36,9 +58,134 @@ export interface Collected {
   trackIds: string[];
 }
 
+// ── Popularity gate ──────────────────────────────────────────────────────────
+
+/**
+ * Drop releases below `minPopularity`, each with a `low-popularity` decision.
+ * A release with no known popularity passes. Returns the popularity map too:
+ * week collection ranks by it and feeds it to the AI phase.
+ */
+export async function gate(
+  run: Run,
+  releases: Map<string, FoundRelease>,
+  minPopularity: number,
+): Promise<{
+  kept: Map<string, FoundRelease>;
+  dropped: FoundRelease[];
+  popularity: Map<string, number>;
+}> {
+  const popularity = await run.popularity.lookup(releases, (done, total) =>
+    run.onProgress?.({ phase: 'popularity', done, total }),
+  );
+  const low = filterLowPopularity(releases, popularity, minPopularity);
+  const kept = new Map<string, FoundRelease>();
+  const dropped: FoundRelease[] = [];
+  for (const [id, release] of releases) {
+    if (!low.has(id)) {
+      kept.set(id, release);
+      continue;
+    }
+    run.decisions.push({
+      kind: 'low-popularity',
+      artist: release.artistName,
+      release: release.name,
+      albumId: id,
+      popularity: popularity.get(id) ?? 0,
+    });
+    dropped.push(release);
+  }
+  return { kept, dropped, popularity };
+}
+
+// ── Collection ───────────────────────────────────────────────────────────────
+
+/**
+ * The qualifying tracks of `releases`: strip alternate versions of kept
+ * releases, then apply the track rules (see `collectTracks`). A release whose
+ * reads throw fails the collection, unless `contain` returns true for it: then
+ * it's dropped, returned in `contained`, and collection goes on.
+ */
+export async function collect(
+  run: Run,
+  releases: Map<string, FoundRelease>,
+  exclude: Set<string>,
+  contain?: (release: FoundRelease, error: unknown) => boolean,
+): Promise<{
+  collected: Collected[];
+  skippedCount: number;
+  contained: Array<{ release: FoundRelease; error: unknown }>;
+}> {
+  const { filtered, removed } = filterVariants(releases);
+  for (const { type, release } of removed) {
+    run.decisions.push({
+      kind: 'variant-stripped',
+      reason: type as VariantStripReason,
+      artist: release.artistName,
+      release: release.name,
+    });
+  }
+  const remaining = new Map([...releases].filter(([id]) => !filtered.has(id)));
+  const result = await collectTracks(run, remaining, exclude, contain);
+  // A release is found only once it lands; one filtered out, or whose tracks
+  // were all excluded, records only the decision that dropped it.
+  for (const { release } of result.collected) {
+    run.decisions.push({
+      kind: 'release-found',
+      artist: release.artistName,
+      release: release.name,
+      type: release.type,
+      ...(release.source ? { source: release.source } : {}),
+    });
+  }
+  return result;
+}
+
 export type WindowRelease = RawRelease & { markets: number };
 
 // ── Artist release discovery ─────────────────────────────────────────────────
+
+/** A roster artist: name, tier and score, and the Spotify id if stored. */
+export interface RosterArtist {
+  name: string;
+  priority: number | null;
+  score: number;
+  spotifyId?: string | null;
+}
+
+/**
+ * A roster artist's in-window releases, one variant each, as found releases.
+ * Anchored to the stored Spotify id: a fresh name search can resolve a common
+ * name (e.g. "Ebenezer") to an unrelated artist and pull in their whole
+ * catalog, so the search is only a fallback when no id was stored. Null when
+ * the artist isn't on Spotify.
+ */
+export async function discoverArtist(
+  run: Run,
+  artist: RosterArtist,
+  validDates: string[],
+): Promise<FoundRelease[] | null> {
+  const artistId = artist.spotifyId ?? (await searchArtistId(run, artist.name));
+  if (!artistId) return null;
+  const releases = await getArtistWindowReleases(run, artistId, validDates);
+  return releases.map((r) => ({
+    id: r.id,
+    name: r.name,
+    type: r.type,
+    release_date: r.release_date,
+    markets: r.markets,
+    artistName: artist.name,
+    artistSpotifyId: artistId,
+    priority: artist.priority ?? 0,
+    score: artist.score,
+  }));
+}
+
+async function searchArtistId(run: Run, name: string) {
+  if (run.artistIdsByName.has(name)) return run.artistIdsByName.get(name);
+  const id = (await run.reads.searchArtist(name))?.id ?? null;
+  run.artistIdsByName.set(name, id);
+  return id;
+}
 
 async function memoArtistAlbums(run: Run, artistId: string) {
   const cached = run.albumsByArtist.get(artistId);
@@ -49,7 +196,7 @@ async function memoArtistAlbums(run: Run, artistId: string) {
 }
 
 /** Window-filter an artist's releases, then keep one variant per group. */
-export async function getArtistWindowReleases(
+async function getArtistWindowReleases(
   run: Run,
   artistId: string,
   validDates: string[],
@@ -141,16 +288,19 @@ export async function chooseVariant(
  * title-track-only, and album/single dedup rules. `exclude` holds track ids
  * removed outright (the listening history for a week collection; the All Weekly
  * ids plus the playlist's existing tracks for a promotion sync).
- * A release whose reads throw fails the collection, unless `contain` returns
- * true for it: then that release is dropped and collection goes on.
  */
-export async function collectTracks(
+async function collectTracks(
   run: Run,
   foundReleases: Map<string, FoundRelease>,
   exclude: Set<string>,
   contain?: (release: FoundRelease, error: unknown) => boolean,
-): Promise<{ collected: Collected[]; skippedCount: number }> {
+): Promise<{
+  collected: Collected[];
+  skippedCount: number;
+  contained: Array<{ release: FoundRelease; error: unknown }>;
+}> {
   const collected: Collected[] = [];
+  const contained: Array<{ release: FoundRelease; error: unknown }> = [];
   let skippedCount = 0;
   const seenIds = new Set<string>();
   const seenKeys = new Set<string>();
@@ -176,8 +326,9 @@ export async function collectTracks(
     try {
       fetched = await readRelease(run, albumId, release, previousKeysByArtist);
     } catch (error) {
-      if (contain?.(release, error)) continue;
-      throw error;
+      if (!contain?.(release, error)) throw error;
+      contained.push({ release, error });
+      continue;
     }
     const { albumTracks, originalTrackKeys, titleTrack, previousKeys } =
       fetched;
@@ -258,7 +409,7 @@ export async function collectTracks(
     }
   }
 
-  return { collected, skippedCount };
+  return { collected, skippedCount, contained };
 }
 
 interface ReleaseReadings {

@@ -236,6 +236,16 @@ test('the threshold decides what lands; unknown ids are discarded', async () => 
     ['Title at', 'Title hi'],
   );
   assert.deepEqual(reads.upcCalls, ['upc-at', 'upc-hi']);
+  // Like every landed release, a landed pick is also a find.
+  assert.deepEqual(
+    week.decisions.flatMap((d) =>
+      d.kind === 'release-found' ? [[d.release, d.source]] : [],
+    ),
+    [
+      ['Title at', 'AI'],
+      ['Title hi', 'AI'],
+    ],
+  );
 });
 
 test('zero picks above the threshold is a normal outcome', async () => {

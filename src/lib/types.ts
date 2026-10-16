@@ -96,6 +96,9 @@ export interface FoundRelease {
   priority: number | 'editorial' | 'ai';
   score: number;
   markets?: number;
+  /** Where a find came from when not the artist search: an editorial
+   * playlist name, or `AI`. */
+  source?: string;
   /** Set on AI finds: the LLM's confidence (0–100) and one-line reason. */
   aiFind?: { confidence: number; reason: string };
 }

@@ -55,8 +55,6 @@ export interface AiPhase {
   /** The judge hit the spend cap. */
   exhausted: boolean;
   skipped?: WeekSkipReason;
-  /** Picks whose track reads threw: album id → message. */
-  trackFailures: Map<string, string>;
 }
 
 type WeekSkipReason = 'no-api-key' | 'over-budget' | 'failed';
@@ -336,7 +334,6 @@ export async function runAiPhase(
     candidates: 0,
     spendUsd: 0,
     exhausted: false,
-    trackFailures: new Map(),
   };
   // No key, or no budget left: no pool, no judge call.
   if (!ai.hasApiKey) return skipPhase(run, phase, 'no-api-key');
@@ -427,6 +424,7 @@ export async function runAiPhase(
         artistSpotifyId: release.artistId,
         priority: 'ai',
         score: 0,
+        source: 'AI',
         aiFind: { confidence: pick.confidence, reason: pick.reason },
       },
     });
@@ -570,17 +568,14 @@ function skipPhase(
 }
 
 /**
- * For `collectTracks`: a pick whose reads throw (other than abort or auth
- * loss) is dropped and noted for `landAiPicks`; anything else propagates.
+ * For `collect`: a pick whose reads throw (other than abort or auth loss) is
+ * contained and handed to `landAiPicks`; anything else propagates.
  */
-export function containPickFailures(
-  phase: AiPhase,
-): (release: FoundRelease, error: unknown) => boolean {
-  return (release, error) => {
-    if (!release.aiFind || escapesPhase(error)) return false;
-    phase.trackFailures.set(release.id, errorMessage(error));
-    return true;
-  };
+export function isContainedPickFailure(
+  release: FoundRelease,
+  error: unknown,
+): boolean {
+  return release.aiFind !== undefined && !escapesPhase(error);
 }
 
 /**
@@ -640,21 +635,26 @@ function skip(
 
 /**
  * Record which picks survived the shape rules: an `ai-pick` for each one
- * that kept tracks, a "no tracks left" skip for the rest, then the summary.
+ * that kept tracks, a "failed" skip for each one whose reads `collect`
+ * contained, a "no tracks left" skip for the rest, then the summary.
  */
 export function landAiPicks(
   run: Run,
   phase: AiPhase,
   collected: Collected[],
+  contained: Array<{ release: FoundRelease; error: unknown }>,
 ): AiPicksRecord {
   if (phase.skipped) {
     summarize(run, phase, 0);
     return { skipped: phase.skipped };
   }
   const landed = new Set(collected.map((c) => c.release.id));
+  const failures = new Map(
+    contained.map(({ release, error }) => [release.id, errorMessage(error)]),
+  );
   const picks: Extract<AiPicksRecord, { picks: unknown }>['picks'] = [];
   for (const { release, candidate } of phase.picks) {
-    const failure = phase.trackFailures.get(release.id);
+    const failure = failures.get(release.id);
     if (failure !== undefined) {
       skip(run, 'failed', candidate, { message: failure });
       continue;

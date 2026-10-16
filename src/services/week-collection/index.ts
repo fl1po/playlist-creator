@@ -3,11 +3,7 @@ import {
   hasRejectedGenre,
   isGenreAcceptable,
 } from '../../domain/filters.js';
-import {
-  filterLowPopularity,
-  filterVariants,
-  releaseDateFallbackMatch,
-} from '../../domain/releases.js';
+import { releaseDateFallbackMatch } from '../../domain/releases.js';
 import { getValidDates, parseDate } from '../../domain/tracks.js';
 import type {
   AlbumTrack,
@@ -15,8 +11,14 @@ import type {
   PlaylistAlbumInfo,
   TrustedArtistsFile,
 } from '../../lib/types.js';
-import { containPickFailures, landAiPicks, runAiPhase } from './ai-finds.js';
-import { collectTracks, getArtistWindowReleases, type Run } from './engine.js';
+import { isContainedPickFailure, landAiPicks, runAiPhase } from './ai-finds.js';
+import {
+  collect,
+  createRun,
+  discoverArtist,
+  gate,
+  type Run,
+} from './engine.js';
 
 // ── Ports (the seam) ─────────────────────────────────────────────────────────
 
@@ -256,6 +258,7 @@ export type VariantStripReason =
 
 export type CollectionDecision =
   | {
+      /** The release landed: it added at least one track. */
       kind: 'release-found';
       artist: string;
       release: string;
@@ -326,7 +329,8 @@ export type WeekProgressEvent =
   | { phase: 'resumed'; searched: number; total: number; found: number }
   | { phase: 'searching'; searched: number; total: number; artist: string }
   | {
-      phase: 'release-found';
+      /** Found by the search or editorial merge; it may still not land. */
+      phase: 'release-discovered';
       artist: string;
       release: string;
       type: string;
@@ -480,14 +484,9 @@ export async function collectWeek(
   onProgress?: (e: WeekProgressEvent) => void,
 ): Promise<WeekCollection> {
   const { week, roster, trustedArtists, listeningHistory, editorial } = input;
-  const { reads, popularity, checkpoints } = ports;
+  const { checkpoints } = ports;
   const validDates = getValidDates(parseDate(week));
-  const run: Run = {
-    reads,
-    decisions: [],
-    onProgress,
-    albumsByArtist: new Map(),
-  };
+  const run = createRun(ports, onProgress);
 
   // ── Search P1/P2 artists (resuming from checkpoint) ───────────────────────
   const foundReleases = new Map<string, FoundRelease>();
@@ -515,43 +514,12 @@ export async function collectWeek(
   try {
     for (let ai = artistsSearched; ai < roster.length; ai++) {
       const [name, data] = roster[ai];
-      // Anchor to the artist that actually earned the priority. A fresh name
-      // search can resolve a common name (e.g. "Ebenezer") to an unrelated
-      // Spotify artist and pull in their whole catalog. Fall back to search
-      // only when no id was stored.
-      const artist = data.spotifyId
-        ? { id: data.spotifyId, name }
-        : await reads.searchArtist(name);
-      if (!artist) {
-        artistsSearched = ai + 1;
-        continue;
-      }
-      const releases = await getArtistWindowReleases(
-        run,
-        artist.id,
-        validDates,
-      );
-      for (const release of releases) {
+      const releases = await discoverArtist(run, { name, ...data }, validDates);
+      for (const release of releases ?? []) {
         if (!foundReleases.has(release.id)) {
-          foundReleases.set(release.id, {
-            id: release.id,
-            name: release.name,
-            type: release.type,
-            release_date: release.release_date,
-            markets: release.markets,
-            artistName: name,
-            artistSpotifyId: artist.id,
-            priority: data.priority ?? 0,
-            score: data.score,
-          });
-          run.decisions.push({
-            kind: 'release-found',
-            artist: name,
-            release: release.name,
-            type: release.type,
-          });
+          foundReleases.set(release.id, release);
           onProgress?.({
-            phase: 'release-found',
+            phase: 'release-discovered',
             artist: name,
             release: release.name,
             type: release.type,
@@ -559,6 +527,7 @@ export async function collectWeek(
         }
       }
       artistsSearched = ai + 1;
+      if (!releases) continue;
       onProgress?.({
         phase: 'searching',
         searched: artistsSearched,
@@ -594,42 +563,26 @@ export async function collectWeek(
   );
 
   // ── Popularity gate + ranking ─────────────────────────────────────────────
-  const releasePopularity = await popularity.lookup(
-    foundReleases,
-    (done, total) => onProgress?.({ phase: 'popularity', done, total }),
-  );
-  const lowPop = filterLowPopularity(
-    foundReleases,
-    releasePopularity,
-    editorial.gate.minPopularity,
-  );
-  for (const id of lowPop) {
-    const r = foundReleases.get(id);
-    if (!r) continue;
-    const releasePop = releasePopularity.get(id) ?? 0;
-    run.decisions.push({
-      kind: 'low-popularity',
+  const {
+    kept,
+    dropped,
+    popularity: releasePopularity,
+  } = await gate(run, foundReleases, editorial.gate.minPopularity);
+  // An editorial find the gate dropped gets a second look from the judge.
+  for (const r of dropped) {
+    if (r.priority !== 'editorial') continue;
+    rejects.push({
+      albumId: r.id,
       artist: r.artistName,
-      release: r.name,
-      albumId: id,
-      popularity: releasePop,
+      title: r.name,
+      type: r.type,
+      releaseDate: r.release_date,
+      provenance: {
+        kind: 'low-popularity',
+        popularity: releasePopularity.get(r.id) ?? 0,
+        playlists: playlistsOf.get(r.id) ?? [],
+      },
     });
-    foundReleases.delete(id);
-    // An editorial find the gate dropped gets a second look from the judge.
-    if (r.priority === 'editorial') {
-      rejects.push({
-        albumId: id,
-        artist: r.artistName,
-        title: r.name,
-        type: r.type,
-        releaseDate: r.release_date,
-        provenance: {
-          kind: 'low-popularity',
-          popularity: releasePop,
-          playlists: playlistsOf.get(id) ?? [],
-        },
-      });
-    }
   }
 
   // ── AI finds (picks skip the popularity gate) ─────────────────────────────
@@ -642,41 +595,31 @@ export async function collectWeek(
           { candidates: ports.candidates, judge: ports.judge },
           {
             window: validDates,
-            foundReleases,
+            foundReleases: kept,
             rejects,
             popularity: releasePopularity,
           },
         )
       : null;
   for (const { release } of aiPhase?.picks ?? []) {
-    foundReleases.set(release.id, release);
+    kept.set(release.id, release);
   }
 
-  // ── Variant strip (alternate versions of kept releases) ──────────────────
-  const { filtered: variantIds, removed } = filterVariants(foundReleases);
-  for (const { type, release } of removed) {
-    run.decisions.push({
-      kind: 'variant-stripped',
-      reason: type as VariantStripReason,
-      artist: release.artistName,
-      release: release.name,
-    });
-  }
-  for (const id of variantIds) foundReleases.delete(id);
-
-  // ── Track collection (deluxe / title-track / history dedup) ──────────────
-  const { collected, skippedCount } = await collectTracks(
+  // ── Collection (variant strip, deluxe / title-track / history dedup) ─────
+  const { collected, skippedCount, contained } = await collect(
     run,
-    foundReleases,
+    kept,
     listeningHistory,
-    aiPhase ? containPickFailures(aiPhase) : undefined,
+    aiPhase ? isContainedPickFailure : undefined,
   );
 
   const releases = collected.map((c) => ({
     ...c.release,
     tracksAdded: c.trackIds.length,
   }));
-  const aiPicks = aiPhase ? landAiPicks(run, aiPhase, collected) : undefined;
+  const aiPicks = aiPhase
+    ? landAiPicks(run, aiPhase, collected, contained)
+    : undefined;
   // AI finds play after the popularity-ranked releases, by confidence.
   const ranked = [
     ...collected
@@ -796,20 +739,14 @@ async function mergeEditorial(
           artistSpotifyId: primaryArtist.id,
           priority,
           score,
+          source: playlist.name,
         });
         playlistsOf.set(albumId, [playlist.name]);
         releaseKeys.add(
           `${artistName.toLowerCase()}|${album.name.toLowerCase().trim()}`,
         );
-        run.decisions.push({
-          kind: 'release-found',
-          artist: artistName,
-          release: album.name,
-          type: album.type,
-          source: playlist.name,
-        });
         run.onProgress?.({
-          phase: 'release-found',
+          phase: 'release-discovered',
           artist: artistName,
           release: album.name,
           type: album.type,
