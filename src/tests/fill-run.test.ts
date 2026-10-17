@@ -292,6 +292,18 @@ test('nothing pending: progress is written, sync never runs', async (t) => {
   assert.equal(w.storage.progress?.total, 0);
 });
 
+test('reading the playlists that set the date range logs its progress', async (t) => {
+  const w = world(t, fixtureCtx({ userId: 'user-1' }));
+  const log = recordingLog();
+
+  await runFill(w.options({ handlers: log.handlers }));
+
+  const reading = log.lines.indexOf(
+    'Loading playlists to determine date range...',
+  );
+  assert.match(log.lines[reading + 1], /^ {2}Playlists read: \d+\/\d+$/);
+});
+
 test('a zero-track run never appends a fill-history entry', async (t) => {
   const w = world(t, fixtureCtx({ userId: 'user-1' }));
   await runFill(w.options());

@@ -1,5 +1,6 @@
 import type { AppConfig, ConfigStore, UserTokens } from '../types.js';
 import { type Clock, untilAborted } from './clock.js';
+import { timedFetch } from './http.js';
 
 /**
  * Outcome of one refresh-token grant. `rejected` means the refresh token is
@@ -27,7 +28,7 @@ export const spotifyRefreshGrant: RefreshGrant = async (app, refreshToken) => {
   );
   let response: Response;
   try {
-    response = await fetch('https://accounts.spotify.com/api/token', {
+    response = await timedFetch()('https://accounts.spotify.com/api/token', {
       method: 'POST',
       headers: {
         Authorization: `Basic ${auth}`,

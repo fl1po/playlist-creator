@@ -21,8 +21,14 @@ import type { SimplePlaylist } from '../../lib/types.js';
  * `addTracks` means the write must not be treated as done.
  */
 export interface WeeklyPlaylistStore {
-  /** Every playlist the user owns, all pages. */
-  list(userId: string): Promise<SimplePlaylist[]>;
+  /**
+   * Every playlist the user owns, all pages. `onProgress` gets the running
+   * count of playlists read (owned or not) against the total after each page.
+   */
+  list(
+    userId: string,
+    onProgress?: (fetched: number, total: number) => void,
+  ): Promise<SimplePlaylist[]>;
   create(userId: string, name: string): Promise<{ id: string; url: string }>;
   addTracks(playlistId: string, trackIds: string[]): Promise<void>;
 }
@@ -94,6 +100,8 @@ export interface WeeklyPlaylistsDeps {
   userId: string;
   /** Drops the cached unprocessed-playlists listing. */
   invalidateUnprocessed(): Promise<void>;
+  /** Progress of the one listing read, page by page. */
+  onListProgress?: (fetched: number, total: number) => void;
 }
 
 /**
@@ -106,7 +114,7 @@ export function weeklyPlaylists(deps: WeeklyPlaylistsDeps): WeeklyPlaylists {
   let weeklies: SimplePlaylist[] | null = null;
   const listing = async (): Promise<SimplePlaylist[]> => {
     if (!weeklies) {
-      weeklies = (await store.list(userId)).filter((p) =>
+      weeklies = (await store.list(userId, deps.onListProgress)).filter((p) =>
         isWeeklyPlaylistName(p.name),
       );
     }

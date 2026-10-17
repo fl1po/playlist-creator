@@ -8,6 +8,7 @@ import {
   SpotifyAuthLost,
 } from './errors.js';
 import { logSpotifyEventToConsole, type SpotifyEvent } from './events.js';
+import { timedFetch } from './http.js';
 import { type Lane, RequestPacer } from './pacer.js';
 import { RetryAfterResponseValidator } from './response-validator.js';
 import {
@@ -124,7 +125,10 @@ function buildSdk(clientId: string, tokens: UserTokens): SpotifyApi {
       expires_in: 3600,
       refresh_token: tokens.refreshToken,
     },
-    { responseValidator: new RetryAfterResponseValidator() },
+    {
+      responseValidator: new RetryAfterResponseValidator(),
+      fetch: timedFetch(),
+    },
   );
 }
 

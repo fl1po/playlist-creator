@@ -13,8 +13,8 @@ export function spotifyWeeklyPlaylistStore(
 ): WeeklyPlaylistStore {
   const writes = spotifyPlaylistWrites(ctx);
   return {
-    list(userId) {
-      return getAllUserPlaylists(ctx, userId);
+    list(userId, onProgress) {
+      return getAllUserPlaylists(ctx, userId, { onProgress });
     },
     async create(userId, name) {
       const result = await ctx.call(
@@ -54,7 +54,8 @@ export function memoryWeeklyPlaylistStore(
   return {
     created,
     added,
-    async list() {
+    async list(_userId, onProgress) {
+      onProgress?.(playlists.length, playlists.length);
       return playlists.map((p) => ({ ...p }));
     },
     async create(_userId, name) {

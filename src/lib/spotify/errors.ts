@@ -65,7 +65,7 @@ export function isAbort(err: unknown): boolean {
 /**
  * Classify a caught error into a structured kind.
  *
- * Priority: known error classes (RateLimitError, HttpError) → message
+ * Priority: known error classes (RateLimitError, HttpError) → timeouts → message
  * string-matching fallback for errors from the SDK or network layer.
  */
 export function classifyError(e: Error): ClassifiedError {
@@ -86,6 +86,9 @@ export function classifyError(e: Error): ClassifiedError {
       return { kind: 'server', statusCode: code, original: e };
     return { kind: 'unknown', statusCode: code, original: e };
   }
+
+  // A request cut off by its timeout (see http.ts).
+  if (e.name === 'TimeoutError') return { kind: 'network', original: e };
 
   const msg = e.message?.toLowerCase() ?? '';
 

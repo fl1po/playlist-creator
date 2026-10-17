@@ -11,6 +11,7 @@ import {
   SpotifyAuthLost,
   TaskAborted,
 } from '../lib/spotify/gateway.js';
+import { timedFetch } from '../lib/spotify/http.js';
 import type { RefreshOutcome } from '../lib/spotify/tokens.js';
 import type { ConfigStore, SpotifyConfig } from '../lib/types.js';
 
@@ -324,6 +325,32 @@ test('server errors are retried, then reported as kind server', async () => {
   assert.equal(result.success, false);
   if (!result.success) assert.equal(result.kind, 'server');
   assert.equal(events.at(-1)?.type, 'callFailed');
+});
+
+test('a timed-out call is retried as a network error', async () => {
+  const { gw, events } = gateway();
+  const timeout = new DOMException('The operation timed out.', 'TimeoutError');
+  const s = script(timeout);
+  const result = await gw.call(s.fn, 'read');
+  assert.equal(s.tokens.length, 2);
+  assert.equal(result.success, true);
+  assert.equal(events[0]?.type, 'networkRetry');
+});
+
+test('a request that stalls is cut off with a TimeoutError', async () => {
+  // Never answers; only its signal can end it.
+  const stalled: typeof fetch = (_input, init) =>
+    new Promise((_, reject) =>
+      init?.signal?.addEventListener('abort', () =>
+        reject(init.signal?.reason),
+      ),
+    );
+  // The timeout's own timer doesn't hold the event loop open.
+  const keepAlive = setTimeout(() => {}, 1000);
+  await assert.rejects(timedFetch(10, stalled)('https://api.spotify.com'), {
+    name: 'TimeoutError',
+  });
+  clearTimeout(keepAlive);
 });
 
 test('a 404 comes back as kind client without a retry', async () => {

@@ -401,6 +401,8 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
     store: ports.weekly,
     userId,
     invalidateUnprocessed: () => ports.recalculation.unprocessed.invalidate(),
+    onListProgress: (fetched, total) =>
+      emitter.emit('log', `  Playlists read: ${fetched}/${total}`),
   });
 
   // ── Unfilled Fridays ─────────────────────────────────────────────────────
