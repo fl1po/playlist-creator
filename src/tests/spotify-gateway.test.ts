@@ -209,6 +209,47 @@ test('an interactive call refuses a long Retry-After instead of waiting', async 
   if (!result.success) assert.equal(result.kind, 'rate_limited');
 });
 
+test('a long Retry-After an interactive call refused holds a task back, and the task says so', async () => {
+  const clock = fakeClock();
+  const pacer = new RequestPacer(1, clock);
+  const ui = gateway({ pacer, clock }).gw;
+  await ui.call(script(new RateLimitError(120)).fn, 'ui');
+  const banEnd = clock.now() + 121_000;
+
+  const events: SpotifyEvent[] = [];
+  const task = gateway({ pacer, clock }).gw.forTask({
+    signal: new AbortController().signal,
+    onEvent: (e) => events.push(e),
+  });
+  const calledAt: number[] = [];
+  const result = await task.call(async () => {
+    calledAt.push(clock.now());
+    return 'x';
+  }, 'read');
+
+  assert.equal(result.success, true);
+  assert.deepEqual(
+    events.map((e) => e.type),
+    ['rateLimitWait'],
+  );
+  assert.equal(
+    events[0].type === 'rateLimitWait' && events[0].until.getTime(),
+    banEnd,
+  );
+  assert.equal(calledAt.length, 1);
+  assert.ok(calledAt[0] >= banEnd);
+});
+
+test('after a long Retry-After, interactive calls fail fast without asking Spotify', async () => {
+  const { gw } = gateway();
+  await gw.call(script(new RateLimitError(120)).fn, 'ui');
+  const again = script();
+  const result = await gw.call(again.fn, 'ui');
+  assert.equal(result.success, false);
+  if (!result.success) assert.equal(result.kind, 'rate_limited');
+  assert.equal(again.tokens.length, 0);
+});
+
 // ── Auth ────────────────────────────────────────────────────────────────────
 
 test('a 401 refreshes once and retries with the new token', async () => {

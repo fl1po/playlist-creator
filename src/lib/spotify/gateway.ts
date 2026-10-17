@@ -215,13 +215,25 @@ export function createSpotifyGateway(opts: GatewayOptions): SessionGateway {
         signal?.throwIfAborted();
 
         const bannedUntil = pacer.bannedUntil();
-        if (lane === 'interactive' && bannedUntil !== null) {
-          return failure(
-            'rate_limited',
-            new RateLimitError(null),
-            description,
-            new Date(bannedUntil),
-          );
+        if (bannedUntil !== null) {
+          if (lane === 'interactive') {
+            return failure(
+              'rate_limited',
+              new RateLimitError(null),
+              description,
+              new Date(bannedUntil),
+            );
+          }
+          // A ban another call learned of: wait it out and say so, rather
+          // than queue behind interactive calls that never reach Spotify.
+          const waitMs = bannedUntil - clock.now();
+          onEvent?.({
+            type: 'rateLimitWait',
+            seconds: Math.ceil(waitMs / 1000),
+            until: new Date(bannedUntil),
+          });
+          await clock.sleep(waitMs, signal);
+          continue;
         }
 
         let usedToken = tokens.accessToken;
@@ -305,6 +317,11 @@ export function createSpotifyGateway(opts: GatewayOptions): SessionGateway {
                 classified.retryAfterSeconds != null
                   ? classified.retryAfterSeconds + 1
                   : 60 * (retry + 1);
+              // Spotify named the end of the limit: no call on this server
+              // should spend a request rediscovering it before then.
+              if (classified.retryAfterSeconds != null) {
+                pacer.ban(clock.now() + waitS * 1000);
+              }
 
               if (lane === 'interactive') {
                 if (
