@@ -18,7 +18,7 @@ import { RequestPacer, type SpotifyGateway } from '../lib/spotify/gateway.js';
 import type { AppConfig } from '../lib/types.js';
 import { createAuthManager, fetchSpotifyUserId } from './auth.js';
 import { bearerIdentity } from './bearer-identity.js';
-import { createBroadcaster } from './broadcast.js';
+import { createBroadcaster, type DeployInfo } from './broadcast.js';
 import { productionLogStore } from './log-store.js';
 import { createRouteContext } from './route-context.js';
 import { authRoutes } from './routes/auth.js';
@@ -811,9 +811,27 @@ if (fs.existsSync(srcPublic)) {
 
 // ── Start ───────────────────────────────────────────────────────────────────
 
+/** The deploy Railway built this process from; empty when run elsewhere. */
+function deployInfo(): DeployInfo {
+  const env = process.env;
+  return {
+    commit: env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7),
+    // Just the subject line.
+    message: env.RAILWAY_GIT_COMMIT_MESSAGE?.split('\n')[0].trim(),
+    branch: env.RAILWAY_GIT_BRANCH,
+  };
+}
+
+const deploy = deployInfo();
+if (deploy.commit) {
+  console.log(
+    `Deployed ${deploy.commit} "${deploy.message ?? ''}" (${deploy.branch ?? '?'})`,
+  );
+}
+
 migrateFromLegacy()
   .then(() =>
-    broadcaster.restore().catch((err) => {
+    broadcaster.restore(deploy).catch((err) => {
       console.error('Restoring the log failed:', err);
     }),
   )

@@ -1369,7 +1369,10 @@ function handleMessage({ type, data }) {
     // Marks a deploy in the replayed log: whatever ran before it was cut off
     // without a closing event, so nothing earlier may still look in progress.
     case 'server:restarted': {
-      log('warn', 'Server restarted — anything running before this was cut off');
+      const deployed = data?.commit
+        ? ` — deployed ${data.commit}${data.message ? ` "${data.message}"` : ''}${data.branch ? ` (${data.branch})` : ''}`
+        : '';
+      log('warn', `Server restarted${deployed}. Anything running before this was cut off`);
       setFetching(false);
       clearRateLimitCountdown();
       searchedArtists = new Set();

@@ -277,3 +277,19 @@ test('the persisted week can be read back for export', async () => {
     [['log', 'spotify', 'limited']],
   );
 });
+
+test('the restart marker carries what was deployed', async () => {
+  const store = memoryLogStore();
+  const before = createBroadcaster({ store });
+  before.broadcastTo('u1', 'log', { level: 'info', message: 'one' });
+  await before.flush();
+
+  const deploy = { commit: 'abc1234', message: 'ban fix', branch: 'main' };
+  const after = createBroadcaster({ store });
+  await after.restore(deploy);
+  const client = fakeClient();
+  after.addClient(client.res, 'u1');
+
+  const marker = client.messages().find((m) => m.type === 'server:restarted');
+  assert.deepEqual(marker?.data, deploy);
+});

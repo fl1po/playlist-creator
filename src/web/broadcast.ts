@@ -33,7 +33,7 @@ export interface Broadcaster {
    * Load each user's last week from the store into the replay history, then
    * mark the restart so the client ends any run the restart cut off.
    */
-  restore(): Promise<void>;
+  restore(deploy?: DeployInfo): Promise<void>;
   /** The user's last week of history messages, oldest first. */
   week(userId: string): Promise<HistoryMessage[]>;
 }
@@ -43,6 +43,13 @@ export interface HistoryMessage {
   data: unknown;
   ts: number;
   task?: string;
+}
+
+/** What this process runs, as the restart marker names it. */
+export interface DeployInfo {
+  commit?: string;
+  message?: string;
+  branch?: string;
 }
 
 export interface BroadcasterOptions {
@@ -227,7 +234,7 @@ export function createBroadcaster(opts: BroadcasterOptions = {}): Broadcaster {
     );
   }
 
-  async function restore() {
+  async function restore(deploy: DeployInfo = {}) {
     if (!store) return;
     for (const userId of await store.users()) {
       const entries = await store.load(userId, now() - RETENTION_MS);
@@ -235,7 +242,7 @@ export function createBroadcaster(opts: BroadcasterOptions = {}): Broadcaster {
       const restored = entries.slice(-MAX_LOG_HISTORY);
       logHistory.set(userId, [...restored, ...(logHistory.get(userId) ?? [])]);
       seq = Math.max(seq, restored[restored.length - 1].seq);
-      broadcastTo(userId, 'server:restarted', {});
+      broadcastTo(userId, 'server:restarted', deploy);
     }
   }
 
