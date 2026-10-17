@@ -864,6 +864,7 @@
         </select>
         <label class="toggle"><input type="checkbox" id="logShowDebug" autocomplete="off" onchange="applyDebugToggle()"> Debug</label>
         <label class="toggle"><input type="checkbox" id="logAutoScroll" checked> Auto-scroll</label>
+        <button class="secondary" onclick="downloadLog()" title="Download the last week of the log">Download</button>
         <button class="secondary" onclick="clearLog()">Clear</button>
         <button class="gear-btn pin-btn" data-pin="logBlock" onclick="togglePin('logBlock')" title="Pin to top"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="17" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg></button>
       </div>
@@ -1363,6 +1364,21 @@ function handleMessage({ type, data }) {
       // A stopped fill keeps the weeks it finished.
       loadAiPicks();
       if (statsVisible) loadStats();
+      break;
+    }
+    // Marks a deploy in the replayed log: whatever ran before it was cut off
+    // without a closing event, so nothing earlier may still look in progress.
+    case 'server:restarted': {
+      log('warn', 'Server restarted — anything running before this was cut off');
+      setFetching(false);
+      clearRateLimitCountdown();
+      searchedArtists = new Set();
+      currentSearchArtist = null;
+      clearArtistMarks();
+      hideProgress('fillCurrent');
+      hideProgress('recalc');
+      document.getElementById('fillSegBar').classList.remove('visible');
+      document.getElementById('fillTotalProgressText').classList.remove('visible');
       break;
     }
     case 'fill:recalculated':
@@ -2268,6 +2284,17 @@ function applyDebugToggle() {
 // fire its change event, so the panel follows whatever the box shows.
 window.addEventListener('pageshow', applyDebugToggle);
 
+// The server keeps a week of the log; this saves all of it as text.
+async function downloadLog() {
+  const res = await fetch('/api/logs/export', { headers: authHeaders() });
+  if (!res.ok) { log('error', `Log download failed: HTTP ${res.status}`); return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await res.blob());
+  a.download = `playlists-log-${new Date().toISOString().slice(0, 10)}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 function clearLog() {
   document.getElementById('logPanel').innerHTML = '';
   document.getElementById('logTaskFilter').length = 1;
@@ -2280,18 +2307,21 @@ function esc(s) {
   return d.innerHTML;
 }
 
+function authHeaders() {
+  const headers = {};
+  const tokens = Store.getTokens();
+  if (tokens?.accessToken) {
+    headers['Authorization'] = `Bearer ${tokens.accessToken}`;
+    const userId = Store.getUserId();
+    if (userId) headers['X-User-Id'] = userId;
+    if (tokens.refreshToken) headers['X-Refresh-Token'] = tokens.refreshToken;
+  }
+  return headers;
+}
+
 async function api(method, url, body) {
   try {
-    const opts = { method, headers: {} };
-    const tokens = Store.getTokens();
-    if (tokens?.accessToken) {
-      opts.headers['Authorization'] = `Bearer ${tokens.accessToken}`;
-      const userId = Store.getUserId();
-      if (userId) opts.headers['X-User-Id'] = userId;
-      if (tokens.refreshToken) {
-        opts.headers['X-Refresh-Token'] = tokens.refreshToken;
-      }
-    }
+    const opts = { method, headers: authHeaders() };
     if (body) {
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(body);

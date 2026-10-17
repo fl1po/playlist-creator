@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Response } from 'express';
 import { createBroadcaster } from '../web/broadcast.js';
+import { memoryLogStore } from '../web/log-store.js';
 
 // ── Fake SSE response ────────────────────────────────────────────────────────
 
@@ -163,5 +164,116 @@ test('transient message types stay out of the replayed history', () => {
   assert.deepEqual(
     replayed.map((m) => m.type),
     ['log'],
+  );
+});
+
+// ── Persistence across restarts ─────────────────────────────────────────────
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const messagesOf = (client: FakeClient) =>
+  client
+    .messages()
+    .filter((m) => m.type !== 'status')
+    .map((m) =>
+      m.type === 'log' ? (m.data as { message: string }).message : m.type,
+    );
+
+test('the log survives a restart, ending in a restart marker', async () => {
+  const store = memoryLogStore();
+  const before = createBroadcaster({ store });
+  before.broadcastTo('u1', 'log', { level: 'info', message: 'one' });
+  before.broadcastTo('u1', 'fill:start', { dates: ['31.07.26'] }, 'fill');
+  await before.flush();
+
+  const after = createBroadcaster({ store });
+  await after.restore();
+  const client = fakeClient();
+  after.addClient(client.res, 'u1');
+
+  assert.deepEqual(messagesOf(client), [
+    'one',
+    'fill:start',
+    'server:restarted',
+  ]);
+});
+
+test('a client resuming across a restart gets only what it has not seen', async () => {
+  const store = memoryLogStore();
+  const before = createBroadcaster({ store });
+  const live = fakeClient();
+  before.addClient(live.res, 'u1');
+  before.broadcastTo('u1', 'log', { level: 'info', message: 'seen' });
+  await before.flush();
+
+  const after = createBroadcaster({ store });
+  await after.restore();
+  after.broadcastTo('u1', 'log', { level: 'info', message: 'new' });
+  const reconnected = fakeClient();
+  after.addClient(reconnected.res, 'u1', live.lastEventId());
+
+  assert.deepEqual(messagesOf(reconnected), ['server:restarted', 'new']);
+});
+
+test('lines older than a week are not restored', async () => {
+  const store = memoryLogStore();
+  let now = Date.now();
+  const before = createBroadcaster({ store, now: () => now });
+  before.broadcastTo('u1', 'log', { level: 'info', message: 'old' });
+  now += 6 * DAY_MS;
+  before.broadcastTo('u1', 'log', { level: 'info', message: 'recent' });
+  await before.flush();
+
+  now += 2 * DAY_MS;
+  const after = createBroadcaster({ store, now: () => now });
+  await after.restore();
+  const client = fakeClient();
+  after.addClient(client.res, 'u1');
+
+  assert.deepEqual(messagesOf(client), ['recent', 'server:restarted']);
+});
+
+test('browser storage mirrors are not persisted', async () => {
+  const store = memoryLogStore();
+  const before = createBroadcaster({ store });
+  before.broadcastTo('u1', 'data:save', { key: 'tokens', value: 'secret' });
+  before.broadcastTo('u1', 'log', { level: 'info', message: 'kept' });
+  await before.flush();
+
+  const after = createBroadcaster({ store });
+  await after.restore();
+  const client = fakeClient();
+  after.addClient(client.res, 'u1');
+
+  assert.deepEqual(messagesOf(client), ['kept', 'server:restarted']);
+});
+
+test('clearing the log clears it across restarts too', async () => {
+  const store = memoryLogStore();
+  const before = createBroadcaster({ store });
+  before.broadcastTo('u1', 'log', { level: 'info', message: 'gone' });
+  await before.flush();
+  before.broadcastTo('u1', 'log', { level: 'info', message: 'unflushed' });
+  await before.clearHistory('u1');
+  await before.flush();
+
+  const after = createBroadcaster({ store });
+  await after.restore();
+  const client = fakeClient();
+  after.addClient(client.res, 'u1');
+
+  assert.deepEqual(messagesOf(client), []);
+});
+
+test('the persisted week can be read back for export', async () => {
+  const store = memoryLogStore();
+  const b = createBroadcaster({ store });
+  b.broadcastTo('u1', 'log', { level: 'warn', message: 'limited' }, 'spotify');
+  b.broadcastTo('u2', 'log', { level: 'info', message: 'not mine' });
+
+  const week = await b.week('u1');
+
+  assert.deepEqual(
+    week.map((m) => [m.type, m.task, (m.data as { message: string }).message]),
+    [['log', 'spotify', 'limited']],
   );
 });

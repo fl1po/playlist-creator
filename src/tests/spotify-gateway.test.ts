@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
+import type { SpotifyCall } from '../lib/spotify/call-stats.js';
 import type { Clock } from '../lib/spotify/clock.js';
 import { HttpError, RateLimitError } from '../lib/spotify/errors.js';
 import type { SpotifyEvent } from '../lib/spotify/events.js';
@@ -248,6 +249,29 @@ test('after a long Retry-After, interactive calls fail fast without asking Spoti
   assert.equal(result.success, false);
   if (!result.success) assert.equal(result.kind, 'rate_limited');
   assert.equal(again.tokens.length, 0);
+});
+
+test('every attempt that reaches Spotify is reported with its outcome', async () => {
+  const calls: SpotifyCall[] = [];
+  const { gw } = gateway({
+    lane: 'background',
+    onCall: (c) => calls.push(c),
+    retry: { server: { maxRetries: 1, baseDelayMs: 1 } },
+  });
+  await gw.call(script(new RateLimitError(4)).fn, 'playback state');
+  await gw.call(script(new HttpError(503, 'down')).fn, 'playlist items x');
+
+  assert.deepEqual(calls, [
+    {
+      lane: 'background',
+      description: 'playback state',
+      outcome: 'rate_limited',
+      retryAfterSeconds: 4,
+    },
+    { lane: 'background', description: 'playback state', outcome: 'ok' },
+    { lane: 'background', description: 'playlist items x', outcome: 'failed' },
+    { lane: 'background', description: 'playlist items x', outcome: 'ok' },
+  ]);
 });
 
 // ── Auth ────────────────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 import { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import type { ConfigStore, UserTokens } from '../types.js';
+import type { SpotifyCall } from './call-stats.js';
 import { type Clock, systemClock, untilAborted } from './clock.js';
 import {
   classifyError,
@@ -109,6 +110,8 @@ export interface GatewayOptions {
   authLostHint?: string;
   /** Observer for calls made on this gateway itself. */
   onEvent?: (event: SpotifyEvent) => void;
+  /** Sees every attempt that reaches Spotify, on every lane and view. */
+  onCall?: (call: SpotifyCall) => void;
   // Internal seams — tests swap these.
   sdk?: (clientId: string, tokens: UserTokens) => SpotifyApi;
   grant?: RefreshGrant;
@@ -237,13 +240,16 @@ export function createSpotifyGateway(opts: GatewayOptions): SessionGateway {
         }
 
         let usedToken = tokens.accessToken;
+        let attempted = false;
         try {
           if (tokens.expiresWithin(REFRESH_MARGIN_MS)) {
             await recoverAuth(new Error('Access token about to expire'));
           }
           await pacer.pace(lane, signal);
           usedToken = tokens.accessToken;
+          attempted = true;
           const data = await fn(api());
+          opts.onCall?.({ lane, description, outcome: 'ok' });
           pacer.onSuccess();
           longSleepCount = 0;
           return { success: true, data };
@@ -252,6 +258,20 @@ export function createSpotifyGateway(opts: GatewayOptions): SessionGateway {
           if (isAbort(err) || err instanceof SpotifyAuthLost) throw err;
 
           const classified = classifyError(err);
+          if (attempted) {
+            opts.onCall?.(
+              classified.kind === 'rate_limit'
+                ? {
+                    lane,
+                    description,
+                    outcome: 'rate_limited',
+                    ...(classified.retryAfterSeconds != null && {
+                      retryAfterSeconds: classified.retryAfterSeconds,
+                    }),
+                  }
+                : { lane, description, outcome: 'failed' },
+            );
+          }
           switch (classified.kind) {
             case 'auth': {
               // Someone else already replaced the token this call used.

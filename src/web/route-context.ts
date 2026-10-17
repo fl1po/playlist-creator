@@ -9,6 +9,7 @@ import {
   UserTokenStore,
 } from '../lib/config.js';
 import { createDurableCache } from '../lib/durable-cache.js';
+import type { CallStats } from '../lib/spotify/call-stats.js';
 import {
   createSpotifyGateway,
   type RequestPacer,
@@ -64,6 +65,8 @@ export interface RouteContext {
 export interface RouteContextDeps {
   broadcaster: Broadcaster;
   pacer: RequestPacer;
+  /** Server-wide tally of each user's Spotify calls. */
+  callStats: CallStats;
   appConfigStore: IAppConfigStore;
   auth: AuthManager;
   usersDir: string;
@@ -75,6 +78,7 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
   const {
     broadcaster,
     pacer,
+    callStats,
     appConfigStore,
     auth,
     usersDir,
@@ -96,6 +100,7 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
     return createSpotifyGateway({
       configStore,
       pacer,
+      onCall: (call) => callStats.record(userId, call),
       // Only tasks wait for a login; completing it installs the new tokens
       // through the session gateway's setTokens.
       reauth: async () => {

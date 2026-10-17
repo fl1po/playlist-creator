@@ -13,11 +13,13 @@ import {
 } from '../lib/cache-files.js';
 import { createAppConfigStore, UserTokenStore } from '../lib/config.js';
 import { createDurableCache } from '../lib/durable-cache.js';
+import { createCallStats } from '../lib/spotify/call-stats.js';
 import { RequestPacer, type SpotifyGateway } from '../lib/spotify/gateway.js';
 import type { AppConfig } from '../lib/types.js';
 import { createAuthManager, fetchSpotifyUserId } from './auth.js';
 import { bearerIdentity } from './bearer-identity.js';
 import { createBroadcaster } from './broadcast.js';
+import { productionLogStore } from './log-store.js';
 import { createRouteContext } from './route-context.js';
 import { authRoutes } from './routes/auth.js';
 import { configRoutes } from './routes/config.js';
@@ -52,8 +54,30 @@ const PORT = Number(process.env.PORT ?? 3005);
 
 const pacer = new RequestPacer(1);
 const appConfigStore = createAppConfigStore();
-const broadcaster = createBroadcaster();
+// The live log persists in Redis for a week, so it survives deploys.
+const broadcaster = createBroadcaster({ store: productionLogStore() });
 const broadcast = broadcaster.broadcast;
+
+const LOG_FLUSH_MS = 10_000;
+setInterval(() => void broadcaster.flush(), LOG_FLUSH_MS).unref();
+// A deploy stops the old process with SIGTERM: store what's left first.
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.once(signal, () => {
+    void broadcaster.flush().finally(() => process.exit(0));
+  });
+}
+
+// Every user's Spotify calls, summarised into their log and stdout, so a
+// rate limit can be traced to what spent it.
+const CALL_REPORT_MINUTES = 5;
+const callStats = createCallStats({
+  windowMinutes: CALL_REPORT_MINUTES,
+  report: (userId, { level, message }) => {
+    console.log(`[spotify] ${userId}: ${message}`);
+    broadcaster.broadcastTo(userId, 'log', { level, message }, 'spotify');
+  },
+});
+setInterval(() => callStats.report(), CALL_REPORT_MINUTES * 60 * 1000).unref();
 
 // Server-wide: one task runs at a time across all users (ADR-0003).
 const taskRunner = createTaskRunner({ broadcaster });
@@ -79,6 +103,7 @@ const auth = createAuthManager({
 const ctx = createRouteContext({
   broadcaster,
   pacer,
+  callStats,
   appConfigStore,
   auth,
   usersDir: USERS_DIR,
@@ -281,11 +306,50 @@ app.post('/api/import-data', async (req, res) => {
   });
 });
 
-app.post('/api/clear-logs', (req, res) => {
+app.post('/api/clear-logs', async (req, res) => {
   const session = ctx.requireSession(req, res);
   if (!session) return;
-  broadcaster.clearHistory(session.userId);
-  res.json({ ok: true });
+  try {
+    await broadcaster.clearHistory(session.userId);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// The last week of the log as text, one line per message.
+app.get('/api/logs/export', async (req, res) => {
+  const session = ctx.requireSession(req, res);
+  if (!session) return;
+  try {
+    const lines = (await broadcaster.week(session.userId)).map((m) => {
+      const when = new Date(m.ts).toISOString();
+      const task = m.task ? ` [${m.task}]` : '';
+      if (m.type === 'log') {
+        const d = m.data as { level?: string; message?: string } | string;
+        return typeof d === 'string'
+          ? `${when}${task} ${d}`
+          : `${when}${task} ${d.level ?? 'info'}: ${d.message}`;
+      }
+      return `${when}${task} ${m.type} ${JSON.stringify(m.data)}`;
+    });
+    res
+      .type('text/plain')
+      .attachment(`log-${session.userId}.txt`)
+      .send(`${lines.join('\n')}\n`);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// The session user's Spotify calls since this process started.
+app.get('/api/debug/spotify-calls', (req, res) => {
+  const session = ctx.requireSession(req, res);
+  if (!session) return;
+  res.json({
+    since: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+    ...callStats.totals(session.userId),
+  });
 });
 
 // ── Playback tracking ──────────────────────────────────────────────────────
@@ -747,8 +811,14 @@ if (fs.existsSync(srcPublic)) {
 
 // ── Start ───────────────────────────────────────────────────────────────────
 
-migrateFromLegacy().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Dashboard running at http://localhost:${PORT}`);
+migrateFromLegacy()
+  .then(() =>
+    broadcaster.restore().catch((err) => {
+      console.error('Restoring the log failed:', err);
+    }),
+  )
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Dashboard running at http://localhost:${PORT}`);
+    });
   });
-});
