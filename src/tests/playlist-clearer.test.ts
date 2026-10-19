@@ -95,10 +95,8 @@ test('removes local files and episodes by their own URI', async () => {
 test('a failed removal throws and says how far it got', async () => {
   const { ctx } = fakeContext({ trackUris: uris(130), failRemoveBatch: 1 });
   let cleared = false;
-  const service = new PlaylistClearerService(ctx, {
-    onCleared: () => {
-      cleared = true;
-    },
+  const service = new PlaylistClearerService(ctx, (e) => {
+    if (e.kind === 'cleared') cleared = true;
   });
 
   await assert.rejects(service.clear('Target'), /100 of 130 removed/);
@@ -118,10 +116,8 @@ test('a failed track read throws instead of clearing a partial list', async () =
 test('a failed playlist listing throws instead of reporting "not found"', async () => {
   const { ctx } = fakeContext({ trackUris: [], failListing: true });
   let notFound = false;
-  const service = new PlaylistClearerService(ctx, {
-    onPlaylistNotFound: () => {
-      notFound = true;
-    },
+  const service = new PlaylistClearerService(ctx, (e) => {
+    if (e.kind === 'not-found') notFound = true;
   });
 
   await assert.rejects(service.clear('Target'), /list playlists/);

@@ -1,6 +1,10 @@
 import { FileConfigStore } from '../lib/config.js';
 import { createCliGateway } from '../lib/spotify/gateway.js';
-import { PlaylistClearerService } from '../services/playlist-clearer.js';
+import { printLines } from '../lib/task-log.js';
+import {
+  describeClear,
+  PlaylistClearerService,
+} from '../services/playlist-clearer.js';
 
 const targetName = process.argv[2];
 if (!targetName) {
@@ -10,15 +14,9 @@ if (!targetName) {
 
 const ctx = createCliGateway({ configStore: new FileConfigStore() });
 
-const service = new PlaylistClearerService(ctx, {
-  onPlaylistFound: (name, count) =>
-    console.log(`Found: ${name} (${count} tracks)`),
-  onPlaylistNotFound: (name) => {
-    console.error(`Playlist "${name}" not found`);
-    process.exit(1);
-  },
-  onCleared: (name, count) =>
-    console.log(`Cleared ${count} tracks from "${name}"`),
+const service = new PlaylistClearerService(ctx, (e) => {
+  printLines(describeClear(e));
+  if (e.kind === 'not-found') process.exit(1);
 });
 
 await service.clear(targetName);

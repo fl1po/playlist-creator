@@ -1,23 +1,30 @@
-import { type EventHandlers, ServiceEmitter } from '../lib/service-events.js';
 import type { ApiResult, SpotifyGateway } from '../lib/spotify/gateway.js';
+import { type LogLine, line } from '../lib/task-log.js';
 
-export type PlaylistClearerEventMap = {
-  playlistFound: [name: string, trackCount: number];
-  playlistNotFound: [name: string];
-  cleared: [name: string, trackCount: number];
-};
+export type ClearEvent =
+  | { kind: 'found'; name: string; trackCount: number }
+  | { kind: 'not-found'; name: string }
+  | { kind: 'cleared'; name: string; trackCount: number };
+
+/** A clear's task-log lines (ADR-0007). */
+export function describeClear(e: ClearEvent): LogLine[] {
+  switch (e.kind) {
+    case 'found':
+      return [line(`Found "${e.name}" (${e.trackCount} tracks)`)];
+    case 'not-found':
+      return [line(`Playlist "${e.name}" not found`, 'warn')];
+    case 'cleared':
+      return [
+        line(`Cleared ${e.trackCount} tracks from "${e.name}"`, 'success'),
+      ];
+  }
+}
 
 export class PlaylistClearerService {
-  private ctx: SpotifyGateway;
-  private emitter: ServiceEmitter<PlaylistClearerEventMap>;
-
   constructor(
-    ctx: SpotifyGateway,
-    events?: EventHandlers<PlaylistClearerEventMap>,
-  ) {
-    this.ctx = ctx;
-    this.emitter = new ServiceEmitter(events);
-  }
+    private ctx: SpotifyGateway,
+    private onEvent: (e: ClearEvent) => void = () => {},
+  ) {}
 
   /**
    * Removes every track from the user's playlist named `playlistName`.
@@ -49,11 +56,15 @@ export class PlaylistClearerService {
 
     const target = playlists.find((p) => p.name === playlistName);
     if (!target) {
-      this.emitter.emit('playlistNotFound', playlistName);
+      this.onEvent({ kind: 'not-found', name: playlistName });
       return { cleared: 0 };
     }
 
-    this.emitter.emit('playlistFound', target.name, target.trackCount);
+    this.onEvent({
+      kind: 'found',
+      name: target.name,
+      trackCount: target.trackCount,
+    });
 
     const uris: Array<{ uri: string }> = [];
     let itemOffset = 0;
@@ -102,7 +113,11 @@ export class PlaylistClearerService {
       }
     }
 
-    this.emitter.emit('cleared', playlistName, uris.length);
+    this.onEvent({
+      kind: 'cleared',
+      name: playlistName,
+      trackCount: uris.length,
+    });
     return { cleared: uris.length };
   }
 }

@@ -6,6 +6,7 @@ import type {
 } from '../task-runner.js';
 
 interface DedupRemoveEvents extends BaseEvents {
+  /** Disarms the page's remove button; the line is logged (ADR-0007). */
   'dedup:complete': { totalRemoved: number };
 }
 

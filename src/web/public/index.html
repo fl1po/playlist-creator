@@ -1244,12 +1244,6 @@ function renderSteps(steps, current) {
 }
 
 // ── SSE Connection ──────────────────────────────────────────────
-// Timestamp of the SSE event currently being dispatched; log() falls back to
-// it so event-derived lines carry the event's time, not the render time.
-let currentEventTs = null;
-// Name of the process (e.g. "fill") that sent the event being handled; log()
-// tags its lines with it so the panel can be filtered by process.
-let currentEventTask = null;
 // True while the first connection replays history. The page loads artists,
 // picks and stats itself on startup, so replayed completions needn't reload
 // them; a reconnect's replay carries events the page missed, so those do.
@@ -1293,9 +1287,14 @@ const LogCache = {
   open() {
     this.dbPromise ??= new Promise((resolve) => {
       try {
-        const req = indexedDB.open('playlists-log', 1);
-        req.onupgradeneeded = () =>
-          req.result.createObjectStore('events', { keyPath: ['user', 'seq'] });
+        // Version 2: task events became log lines (ADR-0007), so a cache
+        // of older events is dropped rather than kept unrendered.
+        const req = indexedDB.open('playlists-log', 2);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (db.objectStoreNames.contains('events')) db.deleteObjectStore('events');
+          db.createObjectStore('events', { keyPath: ['user', 'seq'] });
+        };
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => resolve(null);
         req.onblocked = () => resolve(null);
@@ -1351,20 +1350,6 @@ const LogCache = {
 };
 window.addEventListener('pagehide', () => LogCache.flush());
 
-// Run one stream message through the handlers, stamped with its own time.
-function dispatch(msg) {
-  // Most handlers below log without passing a timestamp; while one is
-  // running, log() adopts the event's own so replayed history keeps the
-  // time the work happened.
-  currentEventTs = msg.ts ?? null;
-  currentEventTask = msg.task ?? null;
-  try {
-    handleMessage(msg);
-  } finally {
-    currentEventTs = null;
-    currentEventTask = null;
-  }
-}
 
 async function connect() {
   const user = Store.getUserId();
@@ -1376,7 +1361,7 @@ async function connect() {
       ? api('GET', '/api/events/ticket').then(res => res.ticket)
       : null,
   ]);
-  for (const r of cached) dispatch(JSON.parse(r.msg));
+  for (const r of cached) handleMessage(JSON.parse(r.msg));
   const params = new URLSearchParams();
   if (ticket) params.set('ticket', ticket);
   if (cached.length) params.set('since', cached[cached.length - 1].seq);
@@ -1414,7 +1399,7 @@ async function connect() {
 
   es.onmessage = (e) => {
     const msg = JSON.parse(e.data);
-    dispatch(msg);
+    handleMessage(msg);
     const numbered = e.lastEventId && e.lastEventId !== lastId;
     lastId = e.lastEventId;
     if (user && numbered && !LOG_CACHE_SKIP.has(msg.type)) {
@@ -1423,7 +1408,9 @@ async function connect() {
   };
 }
 
-function handleMessage({ type, data }) {
+// Every line the page logs from the stream carries the message's own time
+// and process, so replayed history keeps when and where the work happened.
+function handleMessage({ type, data, ts, task }) {
   switch (type) {
     case 'replay:done':
       initialReplay = false;
@@ -1450,7 +1437,7 @@ function handleMessage({ type, data }) {
       // Server broadcasts logs as either a {level, message, ts} object or a
       // bare string (e.g. playlist-scan progress); normalize both shapes.
       const p = typeof data === 'string' ? { message: data } : data;
-      log(p.level || 'info', p.message, p.ts);
+      log(p.level || 'info', p.message, p.ts ?? ts, task);
       break;
     }
 
@@ -1467,7 +1454,7 @@ function handleMessage({ type, data }) {
       const deployed = data?.commit
         ? ` — deployed ${data.commit}${data.message ? ` "${data.message}"` : ''}${data.branch ? ` (${data.branch})` : ''}`
         : '';
-      log('warn', `Server restarted${deployed}. Anything running before this was cut off`);
+      log('warn', `Server restarted${deployed}. Anything running before this was cut off`, ts, task);
       break;
     }
     case 'fill:recalculated':
@@ -1477,35 +1464,16 @@ function handleMessage({ type, data }) {
       reloadSoon('artists', 'stats');
       break;
 
-    // Lookup — results rendered from HTTP response in findArtist()
-    case 'lookup:result':
-      break;
-
-    // Clear
-    case 'clear:complete':
-      log('success', `Cleared ${data.cleared} tracks from "${data.name}"`);
-      break;
-
     // Dedup
-    case 'dedup:playlist': {
-      const dupes = data.duplicates.map(d => `${d.artist} — ${d.track} ×${d.count}`).join(', ');
-      const total = data.duplicates.reduce((s, d) => s + d.count - 1, 0);
-      log('info', `${data.name}: ${total} duplicates (${dupes})`);
-      break;
-    }
     case 'dedup:scanComplete':
       // A replayed scan may be days old; removing by it could take out
       // tracks added since, so only a scan seen live arms the button.
-      if (!initialReplay) dedupScanResult = data;
-      if (data.totalDuplicates > 0) {
-        log('warn', `Scan complete: ${data.totalDuplicates} duplicates in ${data.playlists.length} playlists`);
-        if (!initialReplay) document.getElementById('dedupRemoveBtn').disabled = false;
-      } else {
-        log('success', 'Scan complete: no duplicates found');
+      if (!initialReplay) {
+        dedupScanResult = data;
+        if (data.totalDuplicates > 0) document.getElementById('dedupRemoveBtn').disabled = false;
       }
       break;
     case 'dedup:complete':
-      log('success', `Removed ${data.totalRemoved} duplicate tracks`);
       dedupScanResult = null;
       document.getElementById('dedupRemoveBtn').disabled = true;
       break;
@@ -2258,12 +2226,12 @@ function log(level, message, ts, task) {
   const entry = document.createElement('div');
   entry.className = `log-entry ${level}`;
   // Lines no process owns (auth, config, local notices) fall under "system".
-  entry.dataset.task = task ?? currentEventTask ?? 'system';
+  entry.dataset.task = task ?? 'system';
   addLogFilterOption(entry.dataset.task);
   applyLogFilterTo(entry);
   // Replayed history can be days old — mark anything not from today with its
   // date so the bare time isn't misread as "just now".
-  const d = new Date(ts ?? currentEventTs ?? Date.now());
+  const d = new Date(ts ?? Date.now());
   const isToday = d.toDateString() === new Date().toDateString();
   const tsStr = isToday
     ? logTimeFmt.format(d)
