@@ -46,7 +46,7 @@ The resumable checkpoint of a partially-searched week, persisted so an aborted f
 _Avoid_: artist search progress
 
 **Collection decision**:
-A record of one choice made during week collection — variant picked, deluxe tracks stripped, title-track-only, single skipped as duplicate, low-popularity filtered. The audit trail the UI and logs render. A release counts as *found* only once it lands — adds at least one track to the weekly playlist. A release discovered but then filtered out, or whose tracks were all already there, records only the decision that dropped it.
+A record of one choice made during week collection — variant picked, deluxe tracks stripped, title-track-only, single skipped as duplicate, low-popularity filtered. The audit trail the UI and logs render. A release counts as *found* only once it lands — adds at least one track to the weekly playlist. A release discovered but then filtered out, or whose tracks were all already there, records only the decision that dropped it. The task log says *discovered* when the search turns a release up and *added* once it is found, never "found" for a release that may still be dropped.
 
 **Release qualification**:
 The shared rules that decide which of a set of found releases, and which of their tracks, qualify for a weekly playlist: the popularity gate, the variant strip, the deluxe and title-track-only rules, and listening-history exclusion. Week collection and promotion sync both run their releases through it, so a collection decision means the same thing in either.
@@ -73,6 +73,10 @@ The rule that promotion sync removes a demoted artist's tracks an album at a tim
 **Task**:
 One user-started background operation in the web app — a fill, recalculation, clear, dedup scan, and so on. At most one runs at a time across the whole server. The user who started it *owns* it: only they can stop it or see which task is running; everyone else just sees the server as busy. Its progress is held by the server and shown only to its owner; it isn't part of the log, so nothing of it survives the task's end. Its log lines carry the task's name, which is what the live log's process filter shows.
 _Avoid_: job, process (except as the live log's label)
+
+**Task log**:
+The lines a task writes, worded once on the server from what the task did, and the same in the CLI, the live log panel and the export. A task's results — what the page reloads or draws from — travel beside it as data, never as text for the page to word.
+_Avoid_: event log, messages
 
 ### Releases
 
