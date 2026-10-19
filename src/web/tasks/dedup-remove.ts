@@ -1,4 +1,3 @@
-import { invalidateNonListenedCache } from '../../services/non-listened-playlists.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -51,9 +50,5 @@ export const dedupRemoveTask: TaskDefinition<DedupRemoveEvents> = {
 
     tc.emit('dedup:complete', { totalRemoved });
     tc.log('success', `Removed ${totalRemoved} duplicate tracks`);
-  },
-
-  async cleanup(tc) {
-    await invalidateNonListenedCache(tc.data);
   },
 };

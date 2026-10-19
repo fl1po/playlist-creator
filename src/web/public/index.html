@@ -806,7 +806,7 @@
         <button id="listeningTimeBtn" onclick="calcListeningTime()">Calculate</button>
         <label class="toggle"><input type="checkbox" id="ltForceRecalc"> Force</label>
       </div>
-      <p class="hint">Calculate total listening time of non-listened weekly playlists.</p>
+      <p class="hint">Calculate total listening time of unprocessed weekly playlists.</p>
       <p id="ltProgressText" class="progress-text"></p>
       <div id="ltResult" style="display:none; margin-top:8px; font-weight:600;"></div>
       <div id="ltCatchup" style="display:none; margin-top:10px; font-size:13px; color:#b3b3b3;">
@@ -1824,7 +1824,9 @@ function showListeningTimeResult(data) {
   const el = document.getElementById('ltResult');
   el.style.display = 'block';
   const avg = data.playlistCount > 0 ? formatDuration(data.totalMs / data.playlistCount) : '0m';
-  el.textContent = `${formatDuration(data.totalMs)} across ${data.playlistCount} playlists (${data.totalTracks} tracks) · avg ${avg}/playlist`;
+  // The last calculation: fills and listens since then aren't in it.
+  const asOf = data.computedAt ? ` · as of ${new Date(data.computedAt).toLocaleString()}` : '';
+  el.textContent = `${formatDuration(data.totalMs)} across ${data.playlistCount} playlists (${data.totalTracks} tracks) · avg ${avg}/playlist${asOf}`;
 
   const expandBtn = document.getElementById('ltExpandBtn');
   const breakdown = document.getElementById('ltBreakdown');

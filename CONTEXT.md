@@ -55,8 +55,12 @@ _Avoid_: release collection (the old module name), engine
 ### Syncing
 
 **Promotion sync**:
-Reconciling already-published weekly playlists with a recalculation's priority changes — removing the tracks of artists demoted out of P1/P2, and backfilling in-window releases from artists promoted into P1/P2. Runs after recalculation, over unprocessed (non-listened) weekly playlists only — whether that recalculation happened standalone or mid-fill. Shares release discovery and release qualification with week collection, but has no editorial merge, no checkpoints, and no Friday window of its own (it matches each playlist's own date). Never produces AI finds, and treats an existing AI find like any other track: backfill skips it by track, and album-unit removal can remove it. Returns its own collection decisions, removal included.
+Reconciling already-published weekly playlists with a recalculation's priority changes — removing the tracks of artists demoted out of P1/P2, and backfilling in-window releases from artists promoted into P1/P2. Runs after recalculation, over unprocessed weekly playlists only — whether that recalculation happened standalone or mid-fill. Shares release discovery and release qualification with week collection, but has no editorial merge, no checkpoints, and no Friday window of its own (it matches each playlist's own date). Never produces AI finds, and treats an existing AI find like any other track: backfill skips it by track, and album-unit removal can remove it. Returns its own collection decisions, removal included.
 _Avoid_: playlist sync, priority diff, backfill
+
+**Unprocessed weekly playlist**:
+A weekly playlist with tracks that is newer than the newest weekly playlist overlapping All Weekly: published, but not yet listened to. Everything older than that cutoff counts as listened. What promotion sync reconciles, dedup scans and listening time measures. Any change to a weekly playlist, whether by the app or by the user in Spotify, counts at once.
+_Avoid_: non-listened playlist
 
 **Priority change**:
 One artist crossing the P1/P2 boundary during recalculation — a *promotion* (into P1/P2) or a *demotion* (out of P1/P2). Only boundary crossings drive promotion sync; movement within or below the boundary does not.
@@ -141,7 +145,7 @@ _Avoid_: signal playlist, discovery playlist
 - **"Weekly"** is overloaded: *All Weekly* is the listening-history source; a *weekly playlist* is an output. Never shorten either to just "weekly".
 - **"Fill" vs "week collection"**: fill is the multi-week operation; week collection is one Friday's gathering. The code historically blurred these inside `date-pipeline.ts`.
 - **"Taste"** is overloaded: year collection's *taste profile* is a genre/cluster vector; AI finds' *taste context* is a tiered list of artist names. Always say which.
-- **"Unprocessed"** belongs to promotion sync: an *unprocessed weekly playlist* is published but not yet listened to. A Friday the fill still has to build is an *unfilled Friday*, never "unprocessed".
+- **"Unprocessed"** belongs to the *unprocessed weekly playlist*: published but not yet listened to. A Friday the fill still has to build is an *unfilled Friday*, never "unprocessed".
 
 ## Example dialogue
 

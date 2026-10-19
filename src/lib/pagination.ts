@@ -243,6 +243,7 @@ export function getAllUserPlaylists(
             id: item.id,
             name: item.name,
             trackCount: item.tracks.total,
+            snapshotId: item.snapshot_id,
           });
         }
       }

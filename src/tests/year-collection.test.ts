@@ -269,8 +269,8 @@ test('buckets releases by month, defaulting year-only dates to January', () => {
 });
 
 test('month names avoid the DD.MM.YY pattern the weekly system matches', () => {
-  // A playlist called 01.01.16 would be read as a weekly playlist by fill-run
-  // and non-listened-playlists, which both match exact DD.MM.YY names.
+  // A playlist called 01.01.16 would be read as a weekly playlist by the
+  // weekly playlists module, which both match exact DD.MM.YY names.
   const weeklyPattern = /^(\d{2})\.(\d{2})\.(\d{2})$/;
   for (let month = 1; month <= 12; month++) {
     const name = monthOf(`2016-${String(month).padStart(2, '0')}-01`, 2016);

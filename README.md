@@ -298,7 +298,7 @@ How it works:
 
 Output is 12 playlists named `YYYY.MM`, releases date-ascending, tracks in album
 sequence. The naming deliberately avoids the `DD.MM.YY` weekly convention —
-`fill-run` and `non-listened-playlists` both match that pattern.
+the weekly playlists module matches that pattern.
 
 Requires a free [Last.fm API key](https://www.last.fm/api/account/create) in
 `.env` as `LASTFM_API_KEY`.
@@ -333,7 +333,7 @@ src/
 │   ├── recalculation/            # Re-score roster + sync pending priority changes
 │   ├── artist-lookup.ts          # Single-artist search
 │   ├── playlist-clearer.ts       # Clear a target playlist
-│   └── non-listened-playlists.ts # Find unfilled Fridays
+│   └── weekly-playlists/         # Unfilled Fridays, weekly writes, unprocessed listing
 └── web/
     ├── server.ts                 # Express + WebSocket dashboard
     ├── routes/                   # auth, config, queries
