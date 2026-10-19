@@ -20,7 +20,6 @@ interface AwBreakdownCache {
 
 interface AwBreakdownEvents extends BaseEvents {
   'awBreakdown:complete': AwBreakdownCache;
-  'awBreakdown:progress': { fetched: number; total: number };
 }
 
 export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
@@ -63,7 +62,12 @@ export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
     const weeks = await getPlaylistTracksGroupedByWeek(tc.ctx, awId, {
       onProgress: (fetched, total) => {
         tc.checkAbort();
-        tc.emit('awBreakdown:progress', { fetched, total });
+        tc.progress.bar(
+          'aw',
+          fetched,
+          total,
+          `Fetching tracks: ${fetched}/${total}`,
+        );
       },
     });
 

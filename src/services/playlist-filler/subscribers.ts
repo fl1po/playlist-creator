@@ -2,6 +2,7 @@ import {
   broadcastEvents,
   type EventHandlers,
 } from '../../lib/service-events.js';
+import type { TaskProgress } from '../../lib/task-progress.js';
 import { describeChange } from '../recalculation/subscribers.js';
 import type { PlaylistFillerEventMap } from './events.js';
 
@@ -106,8 +107,8 @@ export function consoleHandlers(): EventHandlers<PlaylistFillerEventMap> {
 // ── Broadcast subscriber (web) ──────────────────────────────────────────────
 
 export interface BroadcastHandlersOptions {
-  /** Mutated as artists are searched; reset on batchComplete. */
-  searchedArtists: Set<string>;
+  /** The owner's view of where the fill is (ADR-0006). */
+  progress: TaskProgress;
   /** Throws if the user requested abort. Called at hot-path events. */
   checkAbort: () => void;
 }
@@ -116,20 +117,26 @@ export function broadcastHandlers(
   broadcast: (type: string, data: unknown) => void,
   opts: BroadcastHandlersOptions,
 ): EventHandlers<PlaylistFillerEventMap> {
-  const { searchedArtists, checkAbort } = opts;
+  const { progress, checkAbort } = opts;
+  /** Index of the date being filled, for the step strip. */
+  let current = 0;
   const base = broadcastEvents<PlaylistFillerEventMap>(broadcast, {
     start: {
       type: 'fill:start',
       pack: (dates) => {
         checkAbort();
+        progress.steps(dates);
+        progress.bar('fillCurrent', 0, 1, 'Starting...');
         return { dates };
       },
     },
     dateStart: {
-      type: 'fill:progress',
-      pack: (date, index, total) => {
+      log: (date, index, total) => {
         checkAbort();
-        return { date, index, total, searched: searchedArtists.size };
+        current = index;
+        progress.step(index, 'active');
+        progress.bar('fillCurrent', 0, 1, `${date}: starting...`);
+        return `[${index + 1}/${total}] Processing: ${date}`;
       },
     },
     dateSkipped: {
@@ -142,14 +149,6 @@ export function broadcastHandlers(
     },
     playlistReused: {
       log: (date) => `Reusing empty playlist: ${date}`,
-    },
-    artistSearchProgress: {
-      type: 'fill:searchProgress',
-      pack: (searched, total, artistName) => {
-        checkAbort();
-        searchedArtists.add(artistName);
-        return { searched, total, artist: artistName };
-      },
     },
     weekProgressSaved: {
       log: (searched, total) =>
@@ -184,11 +183,23 @@ export function broadcastHandlers(
     },
     dateCompleted: {
       type: 'fill:dateComplete',
-      pack: (result) => result,
+      pack: (result) => {
+        progress.step(current, result.skipped ? 'skipped' : 'done');
+        progress.bar(
+          'fillCurrent',
+          1,
+          1,
+          `${result.date}: done — ${result.tracksAdded} tracks`,
+        );
+        return result;
+      },
     },
     dateError: {
       type: 'fill:error',
-      pack: (date, err) => ({ date, message: err.message }),
+      pack: (date, err) => {
+        progress.step(current, 'error');
+        return { date, message: err.message };
+      },
     },
     recalculating: {
       log: () => 'Playlist changed — recalculating priorities...',
@@ -200,7 +211,9 @@ export function broadcastHandlers(
     batchComplete: {
       type: 'fill:complete',
       pack: (results, duration) => {
-        searchedArtists.clear();
+        // The trailing promotion sync may still run; the dates are done.
+        progress.steps([]);
+        progress.clearBar('fillCurrent');
         return { results, duration };
       },
     },
@@ -208,18 +221,32 @@ export function broadcastHandlers(
     warning: { log: (msg) => msg, level: 'warn' },
   });
 
-  // 'resumed' restores per-artist search state on the web UI. Hand-written
-  // rather than a broadcastEvents entry: it sends two messages (the full
-  // searched set, then a log line) and sends nothing when no artists resumed.
+  // Hand-written rather than broadcastEvents entries: each sends a log line
+  // only some of the time.
   return {
     ...base,
+    onArtistSearchProgress: (searched, total, artistName) => {
+      checkAbort();
+      progress.mark(artistName);
+      progress.bar(
+        'fillCurrent',
+        searched,
+        total,
+        `Searching artists: ${searched}/${total}`,
+      );
+      if (searched % 50 === 0 || searched === total) {
+        broadcast('log', {
+          level: 'info',
+          message: `  Searched ${searched}/${total} artists`,
+        });
+      }
+    },
     onResumed: (resumeDate, resumedArtistNames) => {
       if (resumedArtistNames.length === 0) return;
-      for (const name of resumedArtistNames) searchedArtists.add(name);
-      broadcast('fill:searchedArtists', [...searchedArtists]);
+      progress.mark(...resumedArtistNames);
       broadcast('log', {
         level: 'info',
-        message: `Restored ${searchedArtists.size} searched artists from cache${resumeDate ? ` (date: ${resumeDate})` : ''}`,
+        message: `Restored ${resumedArtistNames.length} searched artists from cache${resumeDate ? ` (date: ${resumeDate})` : ''}`,
       });
     },
   };

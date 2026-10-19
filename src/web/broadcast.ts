@@ -81,14 +81,7 @@ function resumeSeq(lastEventId: string | null | undefined): number {
 }
 
 /** High-frequency or transient types that should not be stored. */
-const SKIP_HISTORY = new Set([
-  'status',
-  'reload',
-  'auth',
-  'fill:searchProgress',
-  'recalc:scanProgress',
-  'listeningTime:progress',
-]);
+const SKIP_HISTORY = new Set(['status', 'reload', 'auth']);
 
 /** Replayed, but not worth persisting: the browser's storage mirror. */
 const SKIP_PERSIST = new Set(['data:save']);

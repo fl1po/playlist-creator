@@ -25,12 +25,6 @@ interface ListeningTimeResult {
 }
 
 interface ListeningTimeEvents extends BaseEvents {
-  'listeningTime:progress': {
-    current: number;
-    total: number;
-    playlistName: string;
-    totalMs: number;
-  };
   'listeningTime:complete': ListeningTimeResult;
 }
 
@@ -107,12 +101,12 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
         ready,
       });
 
-      tc.emit('listeningTime:progress', {
-        current: i + 1,
-        total: candidates.length,
-        playlistName: pl.name,
-        totalMs,
-      });
+      tc.progress.bar(
+        'lt',
+        i + 1,
+        candidates.length,
+        `${i + 1}/${candidates.length} — ${pl.name} (${formatHm(totalMs)})`,
+      );
     });
 
     // Drop snapshots of playlists that are no longer non-listened.

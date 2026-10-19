@@ -40,7 +40,7 @@ import { awBreakdownTask } from './tasks/aw-breakdown.js';
 import { clearTask } from './tasks/clear.js';
 import { dedupRemoveTask } from './tasks/dedup-remove.js';
 import { dedupScanTask } from './tasks/dedup-scan.js';
-import { fillTask, getSearchedArtists } from './tasks/fill.js';
+import { fillTask } from './tasks/fill.js';
 import { listeningTimeTask } from './tasks/listening-time.js';
 import { recalculateTask } from './tasks/recalculate.js';
 
@@ -81,12 +81,6 @@ setInterval(() => callStats.report(), CALL_REPORT_MINUTES * 60 * 1000).unref();
 
 // Server-wide: one task runs at a time across all users (ADR-0003).
 const taskRunner = createTaskRunner({ broadcaster });
-broadcaster.onConnect(() => {
-  const searched = getSearchedArtists();
-  return searched.size > 0
-    ? [{ type: 'fill:searchedArtists', data: [...searched] }]
-    : [];
-});
 
 // ── Route Context ───────────────────────────────────────────────────────────
 

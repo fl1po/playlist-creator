@@ -19,8 +19,8 @@ import type {
 interface RecalculateEvents extends BaseEvents {
   'recalc:complete': TrustedArtistsFile['metadata']['stats'];
   'recalc:changes': { changes: PriorityChange[] };
-  // recalc:scanStart / recalc:scanProgress go out through
-  // broadcastRecalculationProgress on the raw tc.broadcast surface.
+  // recalc:scanStart goes out through broadcastRecalculationProgress on the
+  // raw tc.broadcast surface; scan progress goes through tc.progress.
 }
 
 export const recalculateTask: TaskDefinition<RecalculateEvents> = {
@@ -42,7 +42,11 @@ export const recalculateTask: TaskDefinition<RecalculateEvents> = {
 
     const result = await recalculate(userConfig, deps, {
       force: !!tc.body.force,
-      onProgress: broadcastRecalculationProgress(tc.broadcast, tc.checkAbort),
+      onProgress: broadcastRecalculationProgress(
+        tc.broadcast,
+        tc.progress,
+        tc.checkAbort,
+      ),
     });
 
     if (result.outcome === 'unchanged') {

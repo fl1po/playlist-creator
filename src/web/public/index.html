@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="replaying">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -130,9 +130,6 @@
     display: none; gap: 2px; margin-top: 12px; height: 6px;
   }
   .segmented-bar.visible { display: flex; }
-  /* History replays through the live handlers; until it ends and the status
-     says whether a task is still running, its progress is not news. */
-  .replaying .progress-bar, .replaying .progress-text, .replaying .segmented-bar { visibility: hidden; }
   .segmented-bar .seg {
     flex: 1; background: #282828; border-radius: 2px; overflow: hidden;
     position: relative;
@@ -143,6 +140,8 @@
     background-size: 200% 100%;
   }
   .segmented-bar .seg.done .seg-fill { width: 100%; }
+  .segmented-bar .seg.skipped .seg-fill { width: 100%; background: #555; }
+  .segmented-bar .seg.error .seg-fill { width: 100%; background: #e74c3c; }
   .segmented-bar .seg.active { background: #1a3a25; }
   .segmented-bar .seg.active .seg-fill { background: #1DB954; }
   .segmented-bar.fetching .seg.active .seg-fill {
@@ -1126,8 +1125,9 @@ let ownTask = false;
 let stopping = false;
 let streamConnected = false;
 
-// ── Fill progress state ──────────────────────────────────────────
-let fillState = { totalDates: 0, currentDate: 0, totalArtists: 0, currentArtist: 0, dates: [] };
+// ── Task progress ───────────────────────────────────────────────
+// The running task's progress arrives in the owner's status (ADR-0006);
+// nothing here is rebuilt from the log.
 let searchedArtists = new Set();
 let currentSearchArtist = null;
 let rateLimitTimer = null;
@@ -1158,41 +1158,89 @@ function setFetching(active) {
   document.getElementById('recalcProgress').classList[methods]('fetching');
 }
 
-function buildSegBar(dates) {
-  const bar = document.getElementById('fillSegBar');
-  bar.innerHTML = '';
-  for (let i = 0; i < dates.length; i++) {
-    const seg = document.createElement('div');
-    seg.className = 'seg';
-    seg.title = dates[i];
-    seg.innerHTML = '<div class="seg-fill"></div>';
-    bar.appendChild(seg);
-  }
-  bar.classList.add('visible');
-}
+// Bars a task may report, by key: `${key}ProgressText`, and `${key}Progress`
+// where the card has a bar.
+const PROGRESS_BARS = ['fillCurrent', 'recalc', 'lt', 'aw'];
+const shownBars = new Set();
+let shownSteps = '';
+let stepsHideTimer = null;
+let shownWaitUntil = null;
 
-function updateFillProgress() {
-  const { totalDates, currentDate, totalArtists, currentArtist } = fillState;
-  if (!totalDates) return;
-  const bar = document.getElementById('fillSegBar');
-  const segs = bar.children;
-  for (let i = 0; i < segs.length; i++) {
-    const seg = segs[i];
-    const fill = seg.querySelector('.seg-fill');
-    if (i < currentDate) {
-      seg.className = 'seg done';
-      fill.style.width = '100%';
-    } else if (i === currentDate) {
-      seg.className = 'seg active';
-      fill.style.width = totalArtists ? `${(currentArtist / totalArtists * 100).toFixed(1)}%` : '0%';
-    } else {
-      seg.className = 'seg';
-      fill.style.width = '0%';
+/** Draw the owner's progress, or none when `p` is absent. */
+function renderProgress(p) {
+  const bars = new Map((p?.bars ?? []).map(b => [b.key, b]));
+  for (const key of PROGRESS_BARS) {
+    const b = bars.get(key);
+    if (b) {
+      showProgress(key, b.value, b.total, b.text);
+      shownBars.add(key);
+    } else if (shownBars.has(key)) {
+      hideProgress(key);
+      shownBars.delete(key);
     }
   }
+  renderSteps(p?.steps ?? [], bars.get('fillCurrent'));
+
+  if (!p || p.marked) {
+    clearArtistMarks();
+    searchedArtists = new Set(p?.marked ?? []);
+    currentSearchArtist = null;
+    for (const name of searchedArtists) markArtistRow(name, 'done');
+  }
+  for (const name of p?.markedAdded ?? []) {
+    searchedArtists.add(name);
+    currentSearchArtist = name;
+    markArtistRow(name, 'searched');
+  }
+
+  const waitUntil = p?.waitUntil ?? null;
+  if (waitUntil !== shownWaitUntil) {
+    shownWaitUntil = waitUntil;
+    if (waitUntil) startRateLimitCountdown(waitUntil);
+    else clearRateLimitCountdown();
+  }
+  setFetching(!!p && !waitUntil);
+}
+
+function renderSteps(steps, current) {
+  const bar = document.getElementById('fillSegBar');
   const txt = document.getElementById('fillTotalProgressText');
+  if (!steps.length) {
+    if (shownSteps && !stepsHideTimer) {
+      stepsHideTimer = setTimeout(() => {
+        stepsHideTimer = null;
+        bar.classList.remove('visible');
+        txt.classList.remove('visible');
+      }, 1500);
+    }
+    shownSteps = '';
+    return;
+  }
+  clearTimeout(stepsHideTimer);
+  stepsHideTimer = null;
+  const labels = steps.map(s => s.label).join('|');
+  if (labels !== shownSteps) {
+    shownSteps = labels;
+    bar.innerHTML = '';
+    for (const s of steps) {
+      const seg = document.createElement('div');
+      seg.title = s.label;
+      seg.innerHTML = '<div class="seg-fill"></div>';
+      bar.appendChild(seg);
+    }
+  }
+  steps.forEach((s, i) => {
+    const seg = bar.children[i];
+    seg.className = s.state === 'pending' ? 'seg' : `seg ${s.state}`;
+    const fill = seg.querySelector('.seg-fill');
+    fill.style.width = s.state === 'pending' ? '0%'
+      : s.state === 'active' ? (current?.total ? `${(current.value / current.total * 100).toFixed(1)}%` : '0%')
+      : '100%';
+  });
+  bar.classList.add('visible');
+  const finished = steps.filter(s => s.state !== 'pending' && s.state !== 'active').length;
   txt.classList.add('visible');
-  txt.textContent = `Overall: ${currentDate}/${totalDates} dates`;
+  txt.textContent = `Overall: ${finished}/${steps.length} dates`;
 }
 
 // ── SSE Connection ──────────────────────────────────────────────
@@ -1241,17 +1289,13 @@ function logPriorityChanges(changes) {
 // ── Log cache ───────────────────────────────────────────────────
 // The history events a page was sent are kept in IndexedDB, so a reload
 // replays them locally and asks the server only for what came after them.
-// Raw events rather than rendered lines: replaying them through
-// handleMessage rebuilds a running task's progress just as the server's
-// replay does.
+// Raw events rather than rendered lines, replayed through handleMessage
+// just as the server's replay is.
 const LOG_CACHE_MAX = 2000; // the server's MAX_LOG_HISTORY
 const LOG_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // the server's retention
 // The server's SKIP_HISTORY: transient, never part of a replay. data:save is
 // left out too, since replaying an old save would undo a newer one.
-const LOG_CACHE_SKIP = new Set([
-  'status', 'reload', 'auth', 'fill:searchProgress', 'recalc:scanProgress',
-  'listeningTime:progress', 'data:save',
-]);
+const LOG_CACHE_SKIP = new Set(['status', 'reload', 'auth', 'data:save']);
 const LogCache = {
   dbPromise: null,
   queue: [],
@@ -1393,15 +1437,6 @@ function handleMessage({ type, data }) {
   switch (type) {
     case 'replay:done':
       initialReplay = false;
-      // The status snapshot came before the history: with no task of ours
-      // running, whatever progress the replay drew belongs to finished runs.
-      if (!ownTask) {
-        clearProgressUi();
-        searchedArtists = new Set();
-        currentSearchArtist = null;
-        clearArtistMarks();
-      }
-      document.documentElement.classList.remove('replaying');
       break;
     // The log was cleared since this page's cache; a full replay follows.
     case 'replay:reset':
@@ -1418,6 +1453,7 @@ function handleMessage({ type, data }) {
       if (data.task) setStatusText(`Running: ${data.task}`);
       else if (data.busy) setStatusText('Busy: another user’s task');
       else setStatusText('Connected');
+      renderProgress(data.progress);
       break;
 
     case 'log': {
@@ -1430,53 +1466,26 @@ function handleMessage({ type, data }) {
 
     // Fill events
     case 'fill:start':
-      fillState = { totalDates: data.dates.length, currentDate: 0, totalArtists: 0, currentArtist: 0, dates: data.dates };
       log('info', `Fill started — ${data.dates.length} dates to process`);
       log('info', `Dates: ${data.dates.join(', ')}`);
-      showProgress('fillCurrent', 0, 1, 'Starting...');
-      buildSegBar(data.dates);
-      updateFillProgress();
-      setFetching(true);
       break;
+    // Before ADR-0006 progress travelled as events; history from then still
+    // carries this one, whose line the server now logs itself.
     case 'fill:progress':
-      clearRateLimitCountdown();
-      fillState.currentDate = data.index;
-      fillState.currentArtist = 0;
       log('info', `[${data.index + 1}/${data.total}] Processing: ${data.date}`);
-      if (data.searched > 0) {
-        showProgress('fillCurrent', data.searched, fillState.totalArtists || data.searched, `Searching artists: ${data.searched}/${fillState.totalArtists || '...'}`);
-      } else {
-        showProgress('fillCurrent', 0, 1, `${data.date}: starting...`);
-      }
-      updateFillProgress();
-      setFetching(true);
       break;
     case 'fill:releaseFound':
       log('info', `  Found: ${data.artist} — ${data.release} (${data.type})${data.source ? ` [${data.source}]` : ''}`);
       break;
     case 'fill:dateComplete': {
-      fillState.currentArtist = fillState.totalArtists;
-      showProgress('fillCurrent', 1, 1, `${data.date}: done — ${data.tracksAdded} tracks`);
-      updateFillProgress();
-      setFetching(false);
       log('success', `  ${data.date}: ${data.tracksAdded} tracks added (${data.albumsCount} albums, ${data.singlesCount} singles, ${data.skippedCount} skipped)`);
       if (data.playlistUrl) log('info', `  URL: ${data.playlistUrl}`);
       break;
     }
     case 'fill:error':
       log('error', `Fill error [${data.date}]: ${data.message}`);
-      setFetching(false);
       break;
     case 'fill:complete': {
-      setFetching(false);
-      clearRateLimitCountdown();
-      searchedArtists = new Set();
-      currentSearchArtist = null;
-      clearArtistMarks();
-      hideProgress('fillCurrent');
-      const segBar = document.getElementById('fillSegBar');
-      const totalTxt = document.getElementById('fillTotalProgressText');
-      setTimeout(() => { segBar.classList.remove('visible'); totalTxt.classList.remove('visible'); }, 1500);
       const totalTracks = data.results.reduce((s, r) => s + (r.tracksAdded || 0), 0);
       const skipped = data.results.filter(r => r.skipped).length;
       const errors = data.results.filter(r => r.error).length;
@@ -1486,86 +1495,27 @@ function handleMessage({ type, data }) {
       reloadSoon('artists', 'aiPicks', 'stats');
       break;
     }
-    case 'fill:stopped': {
-      setFetching(false);
-      clearRateLimitCountdown();
-      searchedArtists = new Set();
-      currentSearchArtist = null;
-      clearArtistMarks();
-      hideProgress('fillCurrent');
-      const segBar2 = document.getElementById('fillSegBar');
-      const totalTxt2 = document.getElementById('fillTotalProgressText');
-      setTimeout(() => { segBar2.classList.remove('visible'); totalTxt2.classList.remove('visible'); }, 1500);
+    case 'fill:stopped':
       // A stopped fill keeps the weeks it finished.
       reloadSoon('artists', 'aiPicks', 'stats');
       break;
-    }
-    // Marks a deploy in the replayed log: whatever ran before it was cut off
-    // without a closing event, so nothing earlier may still look in progress.
+    // Marks a deploy in the replayed log: whatever ran before it was cut off.
     case 'server:restarted': {
       const deployed = data?.commit
         ? ` — deployed ${data.commit}${data.message ? ` "${data.message}"` : ''}${data.branch ? ` (${data.branch})` : ''}`
         : '';
       log('warn', `Server restarted${deployed}. Anything running before this was cut off`);
-      setFetching(false);
-      clearRateLimitCountdown();
-      searchedArtists = new Set();
-      currentSearchArtist = null;
-      clearArtistMarks();
-      hideProgress('fillCurrent');
-      hideProgress('recalc');
-      document.getElementById('fillSegBar').classList.remove('visible');
-      document.getElementById('fillTotalProgressText').classList.remove('visible');
       break;
     }
     case 'fill:recalculated':
       logPriorityChanges(data.changes);
       reloadSoon('artists');
       break;
-    case 'spotify:rateLimited':
-      startRateLimitCountdown(data.wakeTime);
-      setFetching(false);
-      break;
-    case 'fill:searchProgress':
-      clearRateLimitCountdown();
-      if (!fillState.totalArtists) fillState.totalArtists = data.total;
-      fillState.currentArtist = data.searched;
-      if (data.artist) {
-        searchedArtists.add(data.artist);
-        currentSearchArtist = data.artist;
-        markArtistRow(data.artist, 'searched');
-      }
-      showProgress('fillCurrent', data.searched, data.total, `Searching artists: ${data.searched}/${data.total}`);
-      updateFillProgress();
-      setFetching(true);
-      if (data.searched % 50 === 0 || data.searched === data.total) {
-        log('info', `  Searched ${data.searched}/${data.total} artists`);
-      }
-      break;
-
-    case 'fill:searchedArtists':
-      searchedArtists = new Set(data);
-      currentSearchArtist = null;
-      // Re-apply marks to existing table rows
-      for (const name of searchedArtists) markArtistRow(name, 'done');
-      break;
-
     // Recalc events
     case 'recalc:scanStart':
       log('info', `Scanning ${data.playlist}...`);
-      setFetching(true);
-      break;
-    case 'recalc:scanProgress':
-      if (data.total) {
-        showProgress('recalc', data.offset, data.total, `${data.playlist}: ${data.offset}/${data.total}`);
-        setFetching(true);
-      } else if (data.artists) {
-        log('info', `${data.playlist}: ${data.artists} artists, ${data.tracks} tracks`);
-      }
       break;
     case 'recalc:complete':
-      setFetching(false);
-      hideProgress('recalc');
       log('success', `Priorities: P1=${data.p1Count} P2=${data.p2Count} P3=${data.p3Count} P4=${data.p4Count}`);
       reloadSoon('artists', 'stats');
       break;
@@ -1582,7 +1532,6 @@ function handleMessage({ type, data }) {
     // Sync events
     case 'sync:start':
       log('info', `Playlist sync started — ${data.demoted} demoted, ${data.promoted} promoted, ${data.playlists} playlist(s)`);
-      setFetching(true);
       break;
     case 'sync:playlistSync': {
       let detail = '';
@@ -1593,7 +1542,6 @@ function handleMessage({ type, data }) {
     }
     case 'sync:complete':
       log('success', `Playlist sync complete — ${data.totalRemoved} removed, ${data.totalAdded} added across ${data.playlistsSynced} playlist(s)`);
-      setFetching(false);
       break;
 
     // Clear
@@ -1626,34 +1574,14 @@ function handleMessage({ type, data }) {
       break;
 
     // Listening Time
-    case 'listeningTime:progress': {
-      const ltProg = document.getElementById('ltProgressText');
-      ltProg.textContent = `${data.current}/${data.total} — ${data.playlistName} (${formatDuration(data.totalMs)})`;
-      ltProg.classList.add('visible');
-      break;
-    }
-    case 'listeningTime:complete': {
-      const ltProg2 = document.getElementById('ltProgressText');
-      ltProg2.classList.remove('visible');
-      ltProg2.textContent = '';
+    case 'listeningTime:complete':
       showListeningTimeResult(data);
       break;
-    }
 
     // AW Breakdown
-    case 'awBreakdown:progress': {
-      const awProg = document.getElementById('awProgressText');
-      awProg.textContent = `Fetching tracks: ${data.fetched}/${data.total}`;
-      awProg.classList.add('visible');
-      break;
-    }
-    case 'awBreakdown:complete': {
-      const awProg2 = document.getElementById('awProgressText');
-      awProg2.classList.remove('visible');
-      awProg2.textContent = '';
+    case 'awBreakdown:complete':
       showAwBreakdownResult(data);
       break;
-    }
 
     // Auth
     case 'auth':
@@ -2323,33 +2251,27 @@ function clearArtistMarks() {
 }
 
 // ── UI helpers ───────────────────────────────────────────────────
+const progressHideTimers = {};
+
+// A text-only card (listening time, AW breakdown) has no bar element.
 function showProgress(prefix, value, total, text) {
+  clearTimeout(progressHideTimers[prefix]);
   const bar = document.getElementById(`${prefix}Progress`);
   const fill = document.getElementById(`${prefix}ProgressFill`);
   const txt = document.getElementById(`${prefix}ProgressText`);
-  bar.classList.add('visible');
+  bar?.classList.add('visible');
   txt.classList.add('visible');
-  fill.style.width = total > 0 ? `${(value / total * 100).toFixed(1)}%` : '0%';
+  if (fill) fill.style.width = total > 0 ? `${(value / total * 100).toFixed(1)}%` : '0%';
   txt.textContent = text;
-}
-
-// Hide every task's progress at once, without hideProgress's lingering 100%.
-function clearProgressUi() {
-  setFetching(false);
-  clearRateLimitCountdown();
-  for (const id of ['fillCurrentProgress', 'fillCurrentProgressText', 'fillTotalProgressText',
-    'fillSegBar', 'recalcProgress', 'recalcProgressText', 'ltProgressText', 'awProgressText']) {
-    document.getElementById(id).classList.remove('visible');
-  }
 }
 
 function hideProgress(prefix) {
   const bar = document.getElementById(`${prefix}Progress`);
   const fill = document.getElementById(`${prefix}ProgressFill`);
   const txt = document.getElementById(`${prefix}ProgressText`);
-  fill.style.width = '100%';
-  setTimeout(() => {
-    bar.classList.remove('visible');
+  if (fill) fill.style.width = '100%';
+  progressHideTimers[prefix] = setTimeout(() => {
+    bar?.classList.remove('visible');
     txt.classList.remove('visible');
   }, 1500);
 }

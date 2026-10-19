@@ -4,11 +4,12 @@ import type express from 'express';
 import type { DurableCache } from '../lib/durable-cache.js';
 import { createDurableCache } from '../lib/durable-cache.js';
 import { describeSpotifyEvent } from '../lib/spotify/events.js';
-import {
-  type SpotifyEvent,
-  type SpotifyGateway,
-  TaskAborted,
-} from '../lib/spotify/gateway.js';
+import { type SpotifyGateway, TaskAborted } from '../lib/spotify/gateway.js';
+import type {
+  ProgressUpdate,
+  ProgressView,
+  TaskProgress,
+} from '../lib/task-progress.js';
 import type { IUserConfigStore, UserConfig } from '../lib/user-config.js';
 import type { Broadcaster } from './broadcast.js';
 import type { UserSession } from './route-context.js';
@@ -52,6 +53,8 @@ export interface TaskContext<E extends BaseEvents = BaseEvents> {
   broadcast: (type: string, data: unknown) => void;
   /** Throws `TaskAborted` if the user requested abort. */
   checkAbort: () => void;
+  /** Where the task is, shown to its owner only (ADR-0006). */
+  progress: TaskProgress;
   /**
    * File-then-Redis durable cache, scoped to this user. Every save is also
    * mirrored to the browser's localStorage.
@@ -102,7 +105,14 @@ export { TaskAborted };
 export type TaskStatus =
   | { busy: false; mine: false }
   | { busy: true; mine: false }
-  | { busy: true; mine: true; task: string; stopping: boolean };
+  | {
+      busy: true;
+      mine: true;
+      task: string;
+      stopping: boolean;
+      /** Present once the task has reported any progress. */
+      progress?: ProgressView;
+    };
 
 export type StartResult =
   /** `done` settles once run, error handling and cleanup are all over; it never rejects. */
@@ -132,6 +142,26 @@ interface Running {
   name: string;
   userId: string;
   abort: AbortController;
+  progress: ProgressState | null;
+}
+
+interface ProgressState {
+  steps: ProgressView['steps'];
+  bars: Map<string, ProgressView['bars'][number]>;
+  marked: Set<string>;
+  waitUntil?: number;
+  /** Marked since the last live update. */
+  added: string[];
+  sendQueued: boolean;
+}
+
+function viewOf(p: ProgressState): ProgressView {
+  return {
+    steps: p.steps.map((s) => ({ ...s })),
+    bars: [...p.bars.values()].map((b) => ({ ...b })),
+    marked: [...p.marked],
+    ...(p.waitUntil !== undefined && { waitUntil: p.waitUntil }),
+  };
 }
 
 /**
@@ -151,7 +181,80 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       mine: true,
       task: running.name,
       stopping: running.abort.signal.aborted,
+      ...(running.progress && { progress: viewOf(running.progress) }),
     };
+  }
+
+  /**
+   * The run's progress record. Everything reported in one turn goes to the
+   * owner as one live update, and nothing is sent once the run has ended.
+   */
+  function progressOf(run: Running) {
+    const state = (): ProgressState => {
+      run.progress ??= {
+        steps: [],
+        bars: new Map(),
+        marked: new Set(),
+        added: [],
+        sendQueued: false,
+      };
+      return run.progress;
+    };
+    const send = (p: ProgressState) => {
+      if (p.sendQueued) return;
+      p.sendQueued = true;
+      queueMicrotask(() => {
+        p.sendQueued = false;
+        if (running !== run) return;
+        const { marked: _all, ...rest } = viewOf(p);
+        const update: ProgressUpdate = { ...rest, markedAdded: p.added };
+        p.added = [];
+        broadcaster.broadcastTo(run.userId, 'status', {
+          ...statusFor(run.userId),
+          progress: update,
+        });
+      });
+    };
+    /** Any report means the task moved on from a rate-limit wait. */
+    const report = (change: (p: ProgressState) => void) => {
+      const p = state();
+      p.waitUntil = undefined;
+      change(p);
+      send(p);
+    };
+
+    const progress: TaskProgress = {
+      steps: (labels) =>
+        report((p) => {
+          p.steps = labels.map((label) => ({ label, state: 'pending' }));
+        }),
+      step: (index, stepState) =>
+        report((p) => {
+          if (p.steps[index]) p.steps[index].state = stepState;
+        }),
+      bar: (key, value, total, text) =>
+        report((p) => {
+          p.bars.set(key, { key, value, total, text });
+        }),
+      clearBar: (key) =>
+        report((p) => {
+          p.bars.delete(key);
+        }),
+      mark: (...names) =>
+        report((p) => {
+          for (const name of names) {
+            if (p.marked.has(name)) continue;
+            p.marked.add(name);
+            p.added.push(name);
+          }
+        }),
+    };
+    const waitUntil = (until: number) => {
+      const p = state();
+      p.waitUntil = until;
+      send(p);
+    };
+    return { progress, waitUntil };
   }
 
   const publishStatus = () => broadcaster.broadcastEach('status', statusFor);
@@ -175,10 +278,16 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     // Bound to this task's own signal: work leaking past the task's end must
     // keep honouring this task's stop, never a later task's.
     const abort = new AbortController();
-    running = { name: def.name, userId: session.userId, abort };
+    const run: Running = {
+      name: def.name,
+      userId: session.userId,
+      abort,
+      progress: null,
+    };
+    running = run;
     publishStatus();
 
-    const tc = createTaskContext(def, session, body, abort.signal);
+    const tc = createTaskContext(def, session, body, run);
     const done = (async () => {
       try {
         // Every task assumes its data dir exists (services write cache files into it).
@@ -221,14 +330,22 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     def: TaskDefinition<E>,
     session: UserSession,
     body: Record<string, unknown>,
-    signal: AbortSignal,
+    run: Running,
   ): TaskContext<E> {
+    const { signal } = run.abort;
     const checkAbort = () => signal.throwIfAborted();
     const userBroadcast = (type: string, data: unknown) =>
       broadcaster.broadcastTo(session.userId, type, data, def.name);
+    const { progress, waitUntil } = progressOf(run);
     const ctx = session.gateway.forTask({
       signal,
-      onEvent: (event) => reportSpotifyEvent(userBroadcast, event),
+      onEvent: (event) => {
+        userBroadcast('log', describeSpotifyEvent(event));
+        // Rate-limit waits drive the owner's countdown.
+        if (event.type === 'rateLimitWait' || event.type === 'longSleep') {
+          waitUntil(event.until.getTime());
+        }
+      },
     });
 
     let userConfigPromise: Promise<UserConfig> | undefined;
@@ -242,6 +359,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       userId: session.userId,
       broadcast: userBroadcast,
       checkAbort,
+      progress,
       // Mirror every save to the browser's localStorage under the
       // dataset's name.
       cache: createDurableCache({
@@ -276,21 +394,6 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   }
 
   return { start, stop, statusFor };
-}
-
-/** Show a gateway event to the task's owner; rate-limit waits also drive the UI's countdown. */
-function reportSpotifyEvent(
-  broadcast: (type: string, data: unknown) => void,
-  event: SpotifyEvent,
-): void {
-  broadcast('log', describeSpotifyEvent(event));
-  if (event.type === 'rateLimitWait' || event.type === 'longSleep') {
-    broadcast('spotify:rateLimited', {
-      seconds:
-        event.type === 'rateLimitWait' ? event.seconds : event.hours * 3600,
-      wakeTime: event.until.toISOString(),
-    });
-  }
 }
 
 // ── Express adapter ─────────────────────────────────────────────────────────

@@ -159,7 +159,7 @@ test('history is scoped per user', () => {
 
 test('transient message types stay out of the replayed history', () => {
   const b = createBroadcaster();
-  b.broadcastTo('u1', 'recalc:scanProgress', { done: 1 });
+  b.broadcastTo('u1', 'reload', {});
   b.broadcastTo('u1', 'log', { level: 'info', message: 'kept' });
 
   const client = fakeClient();

@@ -45,7 +45,6 @@ export interface RouteContext {
   readonly appConfigStore: IAppConfigStore;
   readonly auth: AuthManager;
   readonly sessions: Map<string, UserSession>;
-  readonly searchedArtists: Set<string>;
   readonly usersDir: string;
   readonly projectRoot: string;
   readonly port: number;
@@ -87,7 +86,6 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
   } = deps;
   const broadcast = broadcaster.broadcast;
   const sessions = new Map<string, UserSession>();
-  const searchedArtists = new Set<string>();
   const bearerTokenCache = new Map<string, string>();
   const bearerRefreshCache = new Map<string, string>();
 
@@ -278,7 +276,6 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
     appConfigStore,
     auth,
     sessions,
-    searchedArtists,
     usersDir,
     projectRoot,
     port,

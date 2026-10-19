@@ -1,3 +1,4 @@
+import type { TaskProgress } from '../../lib/task-progress.js';
 import type { PriorityChange } from '../promotion-sync/index.js';
 import type { SyncHandlers } from '../promotion-sync/subscribers.js';
 import type { RecalculationProgress, SyncProgress } from './index.js';
@@ -47,6 +48,7 @@ export function consoleRecalculationProgress(): (
 
 export function broadcastRecalculationProgress(
   broadcast: (type: string, data: unknown) => void,
+  progress: TaskProgress,
   checkAbort: () => void,
 ): (e: RecalculationProgress) => void {
   return (e) => {
@@ -59,17 +61,18 @@ export function broadcastRecalculationProgress(
         break;
       case 'scan-progress':
         checkAbort();
-        broadcast('recalc:scanProgress', {
-          playlist: e.name,
-          offset: e.fetched,
-          total: e.total,
-        });
+        progress.bar(
+          'recalc',
+          e.fetched,
+          e.total,
+          `${e.name}: ${e.fetched}/${e.total}`,
+        );
         break;
       case 'scan-done':
-        broadcast('recalc:scanProgress', {
-          playlist: e.cached ? `${e.name} (cached)` : e.name,
-          artists: e.artists,
-          tracks: e.tracks,
+        progress.clearBar('recalc');
+        broadcast('log', {
+          level: 'info',
+          message: `${e.cached ? `${e.name} (cached)` : e.name}: ${e.artists} artists, ${e.tracks} tracks`,
         });
         break;
     }

@@ -335,9 +335,127 @@ test('a running task uses tokens installed on the session mid-task', async () =>
   await run.done;
 });
 
-// ── Spotify events ───────────────────────────────────────────────────────────
+// ── Progress ─────────────────────────────────────────────────────────────────
 
-test('a rate-limit wait reaches only the owner, as a log line and a countdown', async () => {
+/** Let the runner send the progress reported in this turn. */
+const settle = () => new Promise((r) => setImmediate(r));
+
+test('a task’s progress is in its owner’s status and nobody else’s', async () => {
+  const { runner, connect } = setup();
+  const owner = connect('u1');
+  const other = connect('u2');
+  const anon = connect(null);
+  const fill = gatedTask('fill');
+  const run = started(runner.start(fill, session('u1'), {}));
+  const tc = await fill.started;
+
+  tc.progress.steps(['02.01.26', '09.01.26']);
+  tc.progress.step(0, 'active');
+  tc.progress.bar('fillCurrent', 3, 10, 'Searching artists: 3/10');
+  tc.progress.mark('Artist A', 'Artist B');
+  await settle();
+
+  const ownerView = {
+    busy: true,
+    mine: true,
+    task: 'fill',
+    stopping: false,
+    progress: {
+      steps: [
+        { label: '02.01.26', state: 'active' },
+        { label: '09.01.26', state: 'pending' },
+      ],
+      bars: [
+        {
+          key: 'fillCurrent',
+          value: 3,
+          total: 10,
+          text: 'Searching artists: 3/10',
+        },
+      ],
+      marked: ['Artist A', 'Artist B'],
+    },
+  };
+  assert.deepEqual(runner.statusFor('u1'), ownerView);
+  assert.deepEqual(connect('u1').lastStatus(), ownerView);
+  assert.equal(owner.lastStatus()?.progress !== undefined, true);
+
+  const outsiderView = { busy: true, mine: false };
+  assert.deepEqual(runner.statusFor('u2'), outsiderView);
+  assert.deepEqual(connect('u2').lastStatus(), outsiderView);
+  for (const c of [other, anon]) {
+    assert.ok(c.statuses().every((s) => !('progress' in s)));
+    assert.ok(
+      !JSON.stringify(c.messages()).includes('Artist A'),
+      'a non-owner never learns what the task searched',
+    );
+  }
+
+  fill.release();
+  await run.done;
+});
+
+test('live marks reach the owner as additions; a connect gets them all', async () => {
+  const { runner, connect } = setup();
+  const owner = connect('u1');
+  const fill = gatedTask('fill');
+  const run = started(runner.start(fill, session('u1'), {}));
+  const tc = await fill.started;
+
+  tc.progress.mark('A');
+  await settle();
+  // Reported together, sent together.
+  tc.progress.mark('B');
+  tc.progress.bar('fillCurrent', 2, 10, 'Searching artists: 2/10');
+  await settle();
+
+  const live = owner
+    .statuses()
+    .map((s) => s.progress as Record<string, unknown> | undefined)
+    .filter((p) => p !== undefined);
+  assert.deepEqual(
+    live.map((p) => [p.marked, p.markedAdded]),
+    [
+      [undefined, ['A']],
+      [undefined, ['B']],
+    ],
+  );
+  assert.deepEqual(
+    (connect('u1').lastStatus()?.progress as { marked?: string[] } | undefined)
+      ?.marked,
+    ['A', 'B'],
+  );
+
+  fill.release();
+  await run.done;
+});
+
+test('nothing of a run’s progress outlives the run', async () => {
+  const { runner, connect } = setup();
+  const owner = connect('u1');
+  const first = gatedTask('fill');
+  const firstRun = started(runner.start(first, session('u1'), {}));
+  const tc = await first.started;
+  tc.progress.steps(['02.01.26']);
+  tc.progress.bar('fillCurrent', 1, 2, 'Searching artists: 1/2');
+  tc.progress.mark('A');
+  first.release();
+  await firstRun.done;
+  // Progress reported as the run ends is not sent after it.
+  await settle();
+
+  assert.deepEqual(owner.lastStatus(), { busy: false, mine: false });
+  assert.deepEqual(connect('u1').lastStatus(), { busy: false, mine: false });
+
+  const second = gatedTask('recalculate');
+  const secondRun = started(runner.start(second, session('u1'), {}));
+  await second.started;
+  assert.equal('progress' in runner.statusFor('u1'), false);
+  second.release();
+  await secondRun.done;
+});
+
+test('a rate-limit wait shows in the owner’s progress until the task moves on', async () => {
   const { runner, connect } = setup();
   const owner = connect('u1');
   const other = connect('u2');
@@ -354,14 +472,12 @@ test('a rate-limit wait reaches only the owner, as a log line and a countdown', 
     return 'ok';
   }, 'read');
   assert.ok(result.success);
-  task.release();
-  await run.done;
+  await settle();
 
-  const countdown = owner
-    .messages()
-    .find((m) => m.type === 'spotify:rateLimited');
-  assert.equal(countdown?.task, 'recalculate');
-  assert.equal(countdown?.data.seconds, 3);
+  const waiting = runner.statusFor('u1') as {
+    progress?: { waitUntil?: number };
+  };
+  assert.equal(typeof waiting.progress?.waitUntil, 'number');
   assert.ok(
     owner
       .messages()
@@ -369,7 +485,14 @@ test('a rate-limit wait reaches only the owner, as a log line and a countdown', 
         (m) => m.type === 'log' && /Rate limited/.test(String(m.data.message)),
       ),
   );
-  assert.ok(!other.messages().some((m) => m.type === 'spotify:rateLimited'));
+  assert.ok(other.statuses().every((s) => !('progress' in s)));
+
+  tc.progress.bar('recalc', 1, 2, 'AW: 1/2');
+  const moved = runner.statusFor('u1') as { progress?: { waitUntil?: number } };
+  assert.equal(moved.progress?.waitUntil, undefined);
+
+  task.release();
+  await run.done;
 });
 
 // ── Outcome logging ──────────────────────────────────────────────────────────

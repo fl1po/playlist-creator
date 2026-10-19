@@ -13,14 +13,10 @@ import type {
 interface FillEvents extends BaseEvents {
   'fill:stopped': Record<string, never>;
   'fill:error': { date: string; message: string };
-  // fill:start / fill:progress / fill:searchProgress / fill:releaseFound /
-  // fill:dateComplete / fill:recalculated / fill:complete /
-  // fill:searchedArtists are emitted through broadcastHandlers using the raw
-  // tc.broadcast interop surface.
+  // fill:start / fill:releaseFound / fill:dateComplete / fill:recalculated /
+  // fill:complete are emitted through broadcastHandlers using the raw
+  // tc.broadcast interop surface; progress goes through tc.progress.
 }
-
-const searchedArtists = new Set<string>();
-export const getSearchedArtists = (): ReadonlySet<string> => searchedArtists;
 
 export const fillTask: TaskDefinition<FillEvents> = {
   name: 'fill',
@@ -29,13 +25,12 @@ export const fillTask: TaskDefinition<FillEvents> = {
 
   async run(tc: TaskContext<FillEvents>) {
     const freshMode = !!tc.body.fresh;
-    searchedArtists.clear();
     tc.log('info', `Starting playlist fill (fresh=${freshMode})...`);
 
     const userConfig = await tc.userConfig();
 
     const handlers = broadcastHandlers(tc.broadcast, {
-      searchedArtists,
+      progress: tc.progress,
       checkAbort: tc.checkAbort,
     });
 
@@ -62,11 +57,5 @@ export const fillTask: TaskDefinition<FillEvents> = {
   onError(tc, error, aborted) {
     if (aborted) tc.emit('fill:stopped', {});
     else tc.emit('fill:error', { date: 'batch', message: String(error) });
-  },
-
-  // The unprocessed-playlists listing is invalidated by the Weekly playlists
-  // module before each write, so nothing is left to drop here.
-  async cleanup() {
-    searchedArtists.clear();
   },
 };
