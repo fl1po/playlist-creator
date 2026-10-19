@@ -461,9 +461,6 @@ function unchangedRecalculation(
       async find() {
         return { playlists: [], awTrackIds: new Set() };
       },
-      async invalidate() {
-        calls.push('invalidate');
-      },
     },
     sync: {
       reads: fixtureReads(catalog),
@@ -630,18 +627,6 @@ test('a filled Friday is not among the dates the fill processes', async (t) => {
   assert.deepEqual(result.results, []);
   assert.deepEqual(weekly.created, []);
   assert.deepEqual(calls, []);
-});
-
-test('the unprocessed listing is invalidated before the tracks are written', async (t) => {
-  const { ports, calls } = memoryPorts(alphaCatalog(), [
-    { id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 },
-  ]);
-  const w = memoryWorld(t, ports);
-  await seedRoster(w.cache, ALPHA_P1);
-
-  await runFill(w.options());
-
-  assert.deepEqual(calls, [`create ${THIS_FRIDAY}`, 'invalidate', 'add pl-1']);
 });
 
 // ── Resume ───────────────────────────────────────────────────────────────────

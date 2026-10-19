@@ -242,7 +242,6 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
   const weekly = weeklyPlaylists({
     store: ports.weekly,
     userId,
-    invalidateUnprocessed: () => ports.recalculation.unprocessed.invalidate(),
     onListProgress: (fetched, total) =>
       log(`  Playlists read: ${fetched}/${total}`),
   });

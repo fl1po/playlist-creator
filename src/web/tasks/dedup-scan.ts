@@ -1,5 +1,6 @@
 import { getPlaylistTracksDetailed } from '../../lib/pagination.js';
-import { getNonListenedPlaylists } from '../../services/non-listened-playlists.js';
+import { spotifyWeeklyPlaylistStore } from '../../services/weekly-playlists/adapters.js';
+import { unprocessedWeeklyPlaylists } from '../../services/weekly-playlists/index.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -28,10 +29,12 @@ export const dedupScanTask: TaskDefinition<DedupScanEvents> = {
     const userConfig = await tc.userConfig();
     const me = await tc.me();
 
-    const { playlists: candidates } = await getNonListenedPlaylists(
-      tc.ctx,
-      tc.data,
-      me.id,
+    const { playlists: candidates } = await unprocessedWeeklyPlaylists(
+      {
+        store: spotifyWeeklyPlaylistStore(tc.ctx),
+        data: tc.data,
+        userId: me.id,
+      },
       userConfig.sourcePlaylists.allWeeklyId,
       (msg, level) => tc.log(level ?? 'info', msg),
     );

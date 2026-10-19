@@ -5,14 +5,12 @@ import {
 import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import type { UserData } from '../../lib/user-data/index.js';
 import {
-  getNonListenedPlaylists,
-  invalidateNonListenedCache,
-} from '../non-listened-playlists.js';
-import {
   deezerPopularitySource,
   promotionReads,
   spotifyPlaylistWrites,
 } from '../promotion-sync/adapters.js';
+import { spotifyWeeklyPlaylistStore } from '../weekly-playlists/adapters.js';
+import { unprocessedWeeklyPlaylists } from '../weekly-playlists/index.js';
 import type { RecalculationPorts, SourceReads } from './index.js';
 
 /** Production SourceReads: snapshot ids and position-aware scans via Spotify. */
@@ -68,7 +66,7 @@ export function spotifySourceReads(ctx: SpotifyGateway): SourceReads {
 
 /**
  * The production port set for one user. `userId` is the Spotify user id,
- * `data` holds that user's non-listened listing.
+ * `data` holds what the unprocessed listing reuses between runs.
  */
 export function spotifyRecalculationPorts(
   ctx: SpotifyGateway,
@@ -78,15 +76,16 @@ export function spotifyRecalculationPorts(
     sources: spotifySourceReads(ctx),
     unprocessed: {
       find(allWeeklyId, log) {
-        return getNonListenedPlaylists(
-          ctx,
-          user.data,
-          user.userId,
+        return unprocessedWeeklyPlaylists(
+          {
+            store: spotifyWeeklyPlaylistStore(ctx),
+            data: user.data,
+            userId: user.userId,
+          },
           allWeeklyId,
           log,
         );
       },
-      invalidate: () => invalidateNonListenedCache(user.data),
     },
     sync: {
       reads: promotionReads(ctx),

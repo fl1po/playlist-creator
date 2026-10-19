@@ -5,14 +5,18 @@ import {
   type DurationSnapshots,
   LISTENING_TIME,
 } from '../../lib/user-data/index.js';
-import { getNonListenedPlaylists } from '../../services/non-listened-playlists.js';
+import { spotifyWeeklyPlaylistStore } from '../../services/weekly-playlists/adapters.js';
+import { unprocessedWeeklyPlaylists } from '../../services/weekly-playlists/index.js';
 import type {
   BaseEvents,
   TaskContext,
   TaskDefinition,
 } from '../task-runner.js';
 
+/** The last calculation, kept until the next; the page shows its age. */
 interface ListeningTimeResult {
+  /** When it was calculated (ISO); later fills and listens aren't in it. */
+  computedAt: string;
   totalMs: number;
   totalTracks: number;
   playlistCount: number;
@@ -37,10 +41,12 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
     const userConfig = await tc.userConfig();
     const me = await tc.me();
 
-    const { playlists: candidates } = await getNonListenedPlaylists(
-      tc.ctx,
-      tc.data,
-      me.id,
+    const { playlists: candidates } = await unprocessedWeeklyPlaylists(
+      {
+        store: spotifyWeeklyPlaylistStore(tc.ctx),
+        data: tc.data,
+        userId: me.id,
+      },
       userConfig.sourcePlaylists.allWeeklyId,
       (msg, level) => tc.log(level ?? 'info', msg),
     );
@@ -109,7 +115,7 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
       );
     });
 
-    // Drop snapshots of playlists that are no longer non-listened.
+    // Drop snapshots of playlists that are no longer unprocessed.
     const candidateIds = new Set(candidates.map((c) => c.id));
     for (const id of Object.keys(snapshots)) {
       if (!candidateIds.has(id)) delete snapshots[id];
@@ -117,6 +123,7 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
     await tc.data.save(DURATION_SNAPSHOTS, snapshots);
 
     const result: ListeningTimeResult = {
+      computedAt: new Date().toISOString(),
       totalMs,
       totalTracks,
       playlistCount: candidates.length,
@@ -130,7 +137,7 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
     const avg = candidates.length > 0 ? totalMs / candidates.length : 0;
     tc.log(
       'success',
-      `Listening time: ${formatHm(totalMs)} across ${candidates.length} non-listened playlists (${totalTracks} tracks) · avg ${formatHm(avg)}/playlist${cached ? ` — ${cached} cached` : ''}`,
+      `Listening time: ${formatHm(totalMs)} across ${candidates.length} unprocessed weekly playlists (${totalTracks} tracks) · avg ${formatHm(avg)}/playlist${cached ? ` — ${cached} cached` : ''}`,
     );
   },
 };

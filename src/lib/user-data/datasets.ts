@@ -30,6 +30,12 @@ export interface DurationSnapshot {
 
 export type DurationSnapshots = Record<string, DurationSnapshot>;
 
+/** A weekly playlist's track ids as of one Spotify snapshot of it. */
+export interface WeeklyPlaylistTrackIds {
+  snapshotId: string;
+  trackIds: string[];
+}
+
 /** Read through `UserData.config`, which merges in the defaults. */
 export const CONFIG: Dataset<Partial<UserConfig>> = {
   name: 'config',
@@ -82,9 +88,16 @@ export const AW_BREAKDOWN: Dataset<unknown> = {
   file: 'aw-breakdown.json',
 };
 
-export const NON_LISTENED: Dataset<unknown> = {
-  name: 'nonListened',
-  file: 'non-listened-cache.json',
+/**
+ * Owned by the weekly playlists module: the track ids of the weekly playlists
+ * the last unprocessed listing walked, keyed by playlist id.
+ */
+export const WEEKLY_PLAYLIST_TRACKS: Dataset<
+  Record<string, WeeklyPlaylistTrackIds>
+> = {
+  name: 'weeklyPlaylistTracks',
+  file: 'weekly-playlist-tracks.json',
+  isEmpty: (v) => !v || Object.keys(v).length === 0,
 };
 
 /** Each opted-in week's AI picks or skip reason, keyed by weekly playlist date. */
@@ -153,7 +166,7 @@ export const DATASETS: ReadonlyArray<Dataset<unknown>> = [
   DURATION_SNAPSHOTS,
   LISTENING_TIME,
   AW_BREAKDOWN,
-  NON_LISTENED,
+  WEEKLY_PLAYLIST_TRACKS,
   AI_PICKS,
   DEEZER_ARTISTS,
   RELATED_ARTIST_GRAPH,

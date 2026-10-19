@@ -126,7 +126,6 @@ function fixtureWeeklies(input: Array<{ id: string; tracks: WeeklyTrack[] }>) {
           awTrackIds: new Set<string>(),
         };
       },
-      async invalidate() {},
     },
     sync: {
       reads: {

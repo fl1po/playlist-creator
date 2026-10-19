@@ -58,14 +58,15 @@ export interface SourceReads {
   ): Promise<PlaylistScanResult>;
 }
 
-/** The unprocessed (non-listened) weekly playlists promotion sync reconciles. */
+/**
+ * The unprocessed weekly playlists promotion sync reconciles. Always current:
+ * a sync's own writes show up in the next `find` with nothing to invalidate.
+ */
 export interface UnprocessedPlaylists {
   find(
     allWeeklyId: string,
     log: (message: string, level?: 'info' | 'debug') => void,
   ): Promise<{ playlists: SimplePlaylist[]; awTrackIds: Set<string> }>;
-  /** Drop any cached listing; called after a sync changed the playlists. */
-  invalidate(): Promise<void>;
 }
 
 export interface RecalculationPorts {
@@ -364,8 +365,6 @@ export async function syncPending(
   );
 
   await data.delete(PENDING_PRIORITY_CHANGES);
-  if (result.removed > 0 || result.added > 0)
-    await ports.unprocessed.invalidate();
   onProgress({ phase: 'complete', result });
   return result;
 }
