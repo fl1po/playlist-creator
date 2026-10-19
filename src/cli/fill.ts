@@ -6,8 +6,7 @@ import { UserConfigStore } from '../lib/user-config.js';
 import { fillPorts } from '../services/playlist-filler/adapters.js';
 import { runFill } from '../services/playlist-filler/fill-run.js';
 import { DurableFillStorage } from '../services/playlist-filler/storage.js';
-import { consoleHandlers } from '../services/playlist-filler/subscribers.js';
-import { consoleSyncHandlers } from '../services/promotion-sync/subscribers.js';
+import { consoleFillSink } from '../services/playlist-filler/subscribers.js';
 
 const freshMode = process.argv.includes('--fresh');
 
@@ -27,8 +26,7 @@ await runFill({
   storage,
   cache,
   ports: fillPorts(ctx, { userId, dataDir: DATA_DIR, storage, cache }),
-  handlers: consoleHandlers(),
-  syncHandlers: consoleSyncHandlers(),
+  onEvent: consoleFillSink,
   fresh: freshMode,
   aiFindsAvailable: aiFindsAvailable(),
 });

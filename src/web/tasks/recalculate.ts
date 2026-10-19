@@ -1,15 +1,14 @@
 import type { TrustedArtistsFile } from '../../lib/types.js';
-import type { PriorityChange } from '../../services/promotion-sync/index.js';
-import { broadcastSyncHandlers } from '../../services/promotion-sync/subscribers.js';
 import { spotifyRecalculationPorts } from '../../services/recalculation/adapters.js';
+import {
+  describeRecalculationResult,
+  describeSync,
+} from '../../services/recalculation/describe.js';
 import {
   recalculate,
   syncPending,
 } from '../../services/recalculation/index.js';
-import {
-  broadcastRecalculationProgress,
-  syncProgressTo,
-} from '../../services/recalculation/subscribers.js';
+import { webRecalculationProgress } from '../../services/recalculation/subscribers.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -17,10 +16,8 @@ import type {
 } from '../task-runner.js';
 
 interface RecalculateEvents extends BaseEvents {
+  /** For the page to reload the roster; the lines are logged (ADR-0007). */
   'recalc:complete': TrustedArtistsFile['metadata']['stats'];
-  'recalc:changes': { changes: PriorityChange[] };
-  // recalc:scanStart goes out through broadcastRecalculationProgress on the
-  // raw tc.broadcast surface; scan progress goes through tc.progress.
 }
 
 export const recalculateTask: TaskDefinition<RecalculateEvents> = {
@@ -42,25 +39,20 @@ export const recalculateTask: TaskDefinition<RecalculateEvents> = {
 
     const result = await recalculate(userConfig, deps, {
       force: !!tc.body.force,
-      onProgress: broadcastRecalculationProgress(
-        tc.broadcast,
-        tc.progress,
-        tc.checkAbort,
-      ),
+      onProgress: webRecalculationProgress(tc),
     });
 
-    if (result.outcome === 'unchanged') {
-      tc.log('info', 'Snapshots unchanged — skipping recalculation');
-    } else {
+    for (const l of describeRecalculationResult(result)) {
+      tc.log(l.level, l.message);
+    }
+    if (result.outcome === 'recalculated') {
       tc.emit('recalc:complete', result.roster.metadata.stats);
-      tc.emit('recalc:changes', { changes: result.changes });
-      tc.log('success', 'Priorities recalculated and saved');
     }
 
     // Runs even when unchanged: it also finishes any sync an earlier
     // recalculation or fill left pending.
-    const sync = broadcastSyncHandlers(tc.broadcast);
-    const synced = await syncPending(userConfig, deps, syncProgressTo(sync));
-    if (synced) sync.onComplete(synced);
+    await syncPending(userConfig, deps, (e) => {
+      for (const l of describeSync(e)) tc.log(l.level, l.message);
+    });
   },
 };

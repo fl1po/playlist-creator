@@ -175,9 +175,8 @@ export function createBroadcaster(opts: BroadcasterOptions = {}): Broadcaster {
     data: unknown,
     task?: string,
   ) {
-    // Every message is stamped, not just `log` ones: the client renders log
-    // lines out of task events too, and on replay those must show when the
-    // event happened rather than when the client re-rendered it.
+    // Every message is stamped, not just `log` ones: the page's log cache
+    // trims by it, and a deploy marker is shown at the time it happened.
     const ts = now();
     const msg = JSON.stringify({
       type,

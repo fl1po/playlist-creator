@@ -108,9 +108,9 @@ test('an event id from a previous process replays everything', () => {
 
 test('replayed events keep the timestamp of when they happened', async () => {
   const b = createBroadcaster();
-  // The client renders log lines out of task events, so every type — not just
-  // `log` — has to carry a timestamp or the replay reads as "just now".
-  b.broadcastTo('u1', 'fill:start', { dates: ['31.07.26'] });
+  // Every type — not just `log` — carries a timestamp: the page's log cache
+  // trims by it, and a deploy marker shows when it happened.
+  b.broadcastTo('u1', 'fill:complete', { results: [], duration: 1 });
   const emittedAt = Date.now();
   await new Promise((r) => setTimeout(r, 15));
 
@@ -122,7 +122,7 @@ test('replayed events keep the timestamp of when they happened', async () => {
     .split('\n')
     .filter((l) => l.startsWith('data: '))
     .map((l) => JSON.parse(l.slice(6)) as { type: string; ts?: number })
-    .find((m) => m.type === 'fill:start');
+    .find((m) => m.type === 'fill:complete');
 
   assert.ok(replayed?.ts, 'event must carry a timestamp');
   assert.ok(
@@ -135,7 +135,7 @@ test('events carry the process that sent them, live and on replay', () => {
   const b = createBroadcaster();
   const live = fakeClient();
   b.addClient(live.res, 'u1');
-  b.broadcastTo('u1', 'fill:start', { dates: ['31.07.26'] }, 'fill');
+  b.broadcastTo('u1', 'fill:complete', { results: [], duration: 1 }, 'fill');
   b.broadcastTo('u1', 'log', { level: 'info', message: 'signed in' });
 
   const fresh = fakeClient();
@@ -143,7 +143,7 @@ test('events carry the process that sent them, live and on replay', () => {
 
   for (const client of [live, fresh]) {
     const msgs = client.messages() as { type: string; task?: string }[];
-    assert.equal(msgs.find((m) => m.type === 'fill:start')?.task, 'fill');
+    assert.equal(msgs.find((m) => m.type === 'fill:complete')?.task, 'fill');
     assert.equal(msgs.find((m) => m.type === 'log')?.task, undefined);
   }
 });
@@ -190,7 +190,12 @@ test('the log survives a restart, ending in a restart marker', async () => {
   const store = memoryLogStore();
   const before = createBroadcaster({ store });
   before.broadcastTo('u1', 'log', { level: 'info', message: 'one' });
-  before.broadcastTo('u1', 'fill:start', { dates: ['31.07.26'] }, 'fill');
+  before.broadcastTo(
+    'u1',
+    'fill:complete',
+    { results: [], duration: 1 },
+    'fill',
+  );
   await before.flush();
 
   const after = createBroadcaster({ store });
@@ -200,7 +205,7 @@ test('the log survives a restart, ending in a restart marker', async () => {
 
   assert.deepEqual(messagesOf(client), [
     'one',
-    'fill:start',
+    'fill:complete',
     'server:restarted',
   ]);
 });

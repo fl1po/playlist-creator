@@ -7,10 +7,7 @@ import type {
 } from '../task-runner.js';
 
 interface DedupScanEvents extends BaseEvents {
-  'dedup:playlist': {
-    name: string;
-    duplicates: Array<{ artist: string; track: string; count: number }>;
-  };
+  /** Arms the page's remove button; the lines are logged (ADR-0007). */
   'dedup:scanComplete': {
     playlists: Array<{
       name: string;
@@ -88,7 +85,10 @@ export const dedupScanTask: TaskDefinition<DedupScanEvents> = {
           duplicateCount: dupCount,
           trackUris: urisToRemove,
         });
-        tc.emit('dedup:playlist', { name: pl.name, duplicates });
+        const listed = duplicates
+          .map((d) => `${d.artist} — ${d.track} ×${d.count}`)
+          .join(', ');
+        tc.log('info', `${pl.name}: ${dupCount} duplicates (${listed})`);
       }
     });
 
@@ -103,7 +103,7 @@ export const dedupScanTask: TaskDefinition<DedupScanEvents> = {
       );
     } else {
       tc.log(
-        'info',
+        'warn',
         `Found ${totalDuplicates} duplicate tracks across ${scanResults.length} playlists (scanned ${candidates.length})`,
       );
     }

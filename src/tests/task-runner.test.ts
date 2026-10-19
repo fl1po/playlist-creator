@@ -570,7 +570,6 @@ test('everything a task sends is tagged with its name and reaches only its owner
     async run(tc) {
       tc.log('info', 'hello');
       tc.emit('log', { level: 'info', message: 'typed' });
-      tc.broadcast('dedup:playlist', { name: 'x' });
       await tc.cache.save({ redisName: 'probe', file: 'probe.json' }, { a: 1 });
     },
   };
@@ -583,7 +582,6 @@ test('everything a task sends is tagged with its name and reaches only its owner
     [
       ['log', 'dedup-scan'],
       ['log', 'dedup-scan'],
-      ['dedup:playlist', 'dedup-scan'],
       ['data:save', 'dedup-scan'],
     ],
   );

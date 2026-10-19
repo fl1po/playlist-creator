@@ -1244,12 +1244,6 @@ function renderSteps(steps, current) {
 }
 
 // ── SSE Connection ──────────────────────────────────────────────
-// Timestamp of the SSE event currently being dispatched; log() falls back to
-// it so event-derived lines carry the event's time, not the render time.
-let currentEventTs = null;
-// Name of the process (e.g. "fill") that sent the event being handled; log()
-// tags its lines with it so the panel can be filtered by process.
-let currentEventTask = null;
 // True while the first connection replays history. The page loads artists,
 // picks and stats itself on startup, so replayed completions needn't reload
 // them; a reconnect's replay carries events the page missed, so those do.
@@ -1276,16 +1270,6 @@ function setStatusText(text) {
   document.getElementById('statusDot').title = text;
 }
 
-function logPriorityChanges(changes) {
-  if (!changes?.length) {
-    log('info', 'No priority changes detected');
-    return;
-  }
-  const label = (p) => p === null ? 'none' : `P${p}`;
-  log('info', `${changes.length} artist(s) changed priority:`);
-  for (const c of changes) log('info', `  ${c.artist}: ${label(c.from)} → ${label(c.to)}`);
-}
-
 // ── Log cache ───────────────────────────────────────────────────
 // The history events a page was sent are kept in IndexedDB, so a reload
 // replays them locally and asks the server only for what came after them.
@@ -1303,9 +1287,14 @@ const LogCache = {
   open() {
     this.dbPromise ??= new Promise((resolve) => {
       try {
-        const req = indexedDB.open('playlists-log', 1);
-        req.onupgradeneeded = () =>
-          req.result.createObjectStore('events', { keyPath: ['user', 'seq'] });
+        // Version 2: task events became log lines (ADR-0007), so a cache
+        // of older events is dropped rather than kept unrendered.
+        const req = indexedDB.open('playlists-log', 2);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (db.objectStoreNames.contains('events')) db.deleteObjectStore('events');
+          db.createObjectStore('events', { keyPath: ['user', 'seq'] });
+        };
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => resolve(null);
         req.onblocked = () => resolve(null);
@@ -1361,20 +1350,6 @@ const LogCache = {
 };
 window.addEventListener('pagehide', () => LogCache.flush());
 
-// Run one stream message through the handlers, stamped with its own time.
-function dispatch(msg) {
-  // Most handlers below log without passing a timestamp; while one is
-  // running, log() adopts the event's own so replayed history keeps the
-  // time the work happened.
-  currentEventTs = msg.ts ?? null;
-  currentEventTask = msg.task ?? null;
-  try {
-    handleMessage(msg);
-  } finally {
-    currentEventTs = null;
-    currentEventTask = null;
-  }
-}
 
 async function connect() {
   const user = Store.getUserId();
@@ -1386,7 +1361,7 @@ async function connect() {
       ? api('GET', '/api/events/ticket').then(res => res.ticket)
       : null,
   ]);
-  for (const r of cached) dispatch(JSON.parse(r.msg));
+  for (const r of cached) handleMessage(JSON.parse(r.msg));
   const params = new URLSearchParams();
   if (ticket) params.set('ticket', ticket);
   if (cached.length) params.set('since', cached[cached.length - 1].seq);
@@ -1424,7 +1399,7 @@ async function connect() {
 
   es.onmessage = (e) => {
     const msg = JSON.parse(e.data);
-    dispatch(msg);
+    handleMessage(msg);
     const numbered = e.lastEventId && e.lastEventId !== lastId;
     lastId = e.lastEventId;
     if (user && numbered && !LOG_CACHE_SKIP.has(msg.type)) {
@@ -1433,7 +1408,9 @@ async function connect() {
   };
 }
 
-function handleMessage({ type, data }) {
+// Every line the page logs from the stream carries the message's own time
+// and process, so replayed history keeps when and where the work happened.
+function handleMessage({ type, data, ts, task }) {
   switch (type) {
     case 'replay:done':
       initialReplay = false;
@@ -1460,41 +1437,14 @@ function handleMessage({ type, data }) {
       // Server broadcasts logs as either a {level, message, ts} object or a
       // bare string (e.g. playlist-scan progress); normalize both shapes.
       const p = typeof data === 'string' ? { message: data } : data;
-      log(p.level || 'info', p.message, p.ts);
+      log(p.level || 'info', p.message, p.ts ?? ts, task);
       break;
     }
 
-    // Fill events
-    case 'fill:start':
-      log('info', `Fill started — ${data.dates.length} dates to process`);
-      log('info', `Dates: ${data.dates.join(', ')}`);
-      break;
-    // Before ADR-0006 progress travelled as events; history from then still
-    // carries this one, whose line the server now logs itself.
-    case 'fill:progress':
-      log('info', `[${data.index + 1}/${data.total}] Processing: ${data.date}`);
-      break;
-    case 'fill:releaseFound':
-      log('info', `  Found: ${data.artist} — ${data.release} (${data.type})${data.source ? ` [${data.source}]` : ''}`);
-      break;
-    case 'fill:dateComplete': {
-      log('success', `  ${data.date}: ${data.tracksAdded} tracks added (${data.albumsCount} albums, ${data.singlesCount} singles, ${data.skippedCount} skipped)`);
-      if (data.playlistUrl) log('info', `  URL: ${data.playlistUrl}`);
-      break;
-    }
-    case 'fill:error':
-      log('error', `Fill error [${data.date}]: ${data.message}`);
-      break;
-    case 'fill:complete': {
-      const totalTracks = data.results.reduce((s, r) => s + (r.tracksAdded || 0), 0);
-      const skipped = data.results.filter(r => r.skipped).length;
-      const errors = data.results.filter(r => r.error).length;
-      log('success', `Fill complete — ${data.duration.toFixed(1)} min`);
-      log('success', `  ${data.results.length} dates: ${data.results.length - skipped - errors} created, ${skipped} skipped, ${errors} errors`);
-      log('success', `  Total tracks added: ${totalTracks}`);
+    // Task results: their lines arrive as log messages (ADR-0007).
+    case 'fill:complete':
       reloadSoon('artists', 'aiPicks', 'stats');
       break;
-    }
     case 'fill:stopped':
       // A stopped fill keeps the weeks it finished.
       reloadSoon('artists', 'aiPicks', 'stats');
@@ -1504,71 +1454,26 @@ function handleMessage({ type, data }) {
       const deployed = data?.commit
         ? ` — deployed ${data.commit}${data.message ? ` "${data.message}"` : ''}${data.branch ? ` (${data.branch})` : ''}`
         : '';
-      log('warn', `Server restarted${deployed}. Anything running before this was cut off`);
+      log('warn', `Server restarted${deployed}. Anything running before this was cut off`, ts, task);
       break;
     }
     case 'fill:recalculated':
-      logPriorityChanges(data.changes);
       reloadSoon('artists');
       break;
-    // Recalc events
-    case 'recalc:scanStart':
-      log('info', `Scanning ${data.playlist}...`);
-      break;
     case 'recalc:complete':
-      log('success', `Priorities: P1=${data.p1Count} P2=${data.p2Count} P3=${data.p3Count} P4=${data.p4Count}`);
       reloadSoon('artists', 'stats');
-      break;
-    case 'recalc:changes':
-      logPriorityChanges(data.changes);
-      break;
-    case 'recalc:topArtists':
-      break;
-
-    // Lookup — results rendered from HTTP response in findArtist()
-    case 'lookup:result':
-      break;
-
-    // Sync events
-    case 'sync:start':
-      log('info', `Playlist sync started — ${data.demoted} demoted, ${data.promoted} promoted, ${data.playlists} playlist(s)`);
-      break;
-    case 'sync:playlistSync': {
-      let detail = '';
-      if (data.removedArtists?.length) detail += ` (removed ${data.removedArtists.join(', ')})`;
-      if (data.addedArtists?.length) detail += ` (added ${data.addedArtists.join(', ')})`;
-      log('info', `  Synced "${data.name}": −${data.removed} +${data.added}${detail}`);
-      break;
-    }
-    case 'sync:complete':
-      log('success', `Playlist sync complete — ${data.totalRemoved} removed, ${data.totalAdded} added across ${data.playlistsSynced} playlist(s)`);
-      break;
-
-    // Clear
-    case 'clear:complete':
-      log('success', `Cleared ${data.cleared} tracks from "${data.name}"`);
       break;
 
     // Dedup
-    case 'dedup:playlist': {
-      const dupes = data.duplicates.map(d => `${d.artist} — ${d.track} ×${d.count}`).join(', ');
-      const total = data.duplicates.reduce((s, d) => s + d.count - 1, 0);
-      log('info', `${data.name}: ${total} duplicates (${dupes})`);
-      break;
-    }
     case 'dedup:scanComplete':
       // A replayed scan may be days old; removing by it could take out
       // tracks added since, so only a scan seen live arms the button.
-      if (!initialReplay) dedupScanResult = data;
-      if (data.totalDuplicates > 0) {
-        log('warn', `Scan complete: ${data.totalDuplicates} duplicates in ${data.playlists.length} playlists`);
-        if (!initialReplay) document.getElementById('dedupRemoveBtn').disabled = false;
-      } else {
-        log('success', 'Scan complete: no duplicates found');
+      if (!initialReplay) {
+        dedupScanResult = data;
+        if (data.totalDuplicates > 0) document.getElementById('dedupRemoveBtn').disabled = false;
       }
       break;
     case 'dedup:complete':
-      log('success', `Removed ${data.totalRemoved} duplicate tracks`);
       dedupScanResult = null;
       document.getElementById('dedupRemoveBtn').disabled = true;
       break;
@@ -2321,12 +2226,12 @@ function log(level, message, ts, task) {
   const entry = document.createElement('div');
   entry.className = `log-entry ${level}`;
   // Lines no process owns (auth, config, local notices) fall under "system".
-  entry.dataset.task = task ?? currentEventTask ?? 'system';
+  entry.dataset.task = task ?? 'system';
   addLogFilterOption(entry.dataset.task);
   applyLogFilterTo(entry);
   // Replayed history can be days old — mark anything not from today with its
   // date so the bare time isn't misread as "just now".
-  const d = new Date(ts ?? currentEventTs ?? Date.now());
+  const d = new Date(ts ?? Date.now());
   const isToday = d.toDateString() === new Date().toDateString();
   const tsStr = isToday
     ? logTimeFmt.format(d)

@@ -11,7 +11,6 @@ import {
   TRUSTED_ARTISTS,
 } from '../lib/cache-files.js';
 import { createDurableCache, type DurableCache } from '../lib/durable-cache.js';
-import type { EventHandlers } from '../lib/service-events.js';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
 import { type SpotifyGateway, TaskAborted } from '../lib/spotify/gateway.js';
 import type {
@@ -21,7 +20,8 @@ import type {
 } from '../lib/types.js';
 import { DEFAULT_USER_CONFIG, type UserConfig } from '../lib/user-config.js';
 import { fillPorts } from '../services/playlist-filler/adapters.js';
-import type { PlaylistFillerEventMap } from '../services/playlist-filler/events.js';
+import { describeFill } from '../services/playlist-filler/describe.js';
+import type { FillEvent } from '../services/playlist-filler/events.js';
 import {
   type FillPorts,
   type FillRunOptions,
@@ -32,7 +32,6 @@ import type {
   FillStorage,
   ProgressFile,
 } from '../services/playlist-filler/storage.js';
-import type { SyncHandlers } from '../services/promotion-sync/subscribers.js';
 import type {
   RecalculationPorts,
   SourceReads,
@@ -194,16 +193,26 @@ function tmpDataDir(t: { after: (fn: () => void) => void }): string {
   return dir;
 }
 
-function recordingSyncHandlers(): SyncHandlers & { logs: string[] } {
-  const logs: string[] = [];
-  return {
-    onProgress() {},
-    onLog(message) {
-      logs.push(message);
-    },
-    onComplete() {},
-    logs,
+/** Every fill event, in order. */
+function recordingEvents() {
+  const events: FillEvent[] = [];
+  const onEvent = (e: FillEvent) => {
+    events.push(e);
   };
+  const of = <K extends FillEvent['kind']>(kind: K) =>
+    events.filter((e): e is Extract<FillEvent, { kind: K }> => e.kind === kind);
+  return { events, onEvent, of };
+}
+
+/** The task-log lines the fill's events read as, warnings marked. */
+function recordingLog() {
+  const lines: string[] = [];
+  const onEvent = (e: FillEvent) => {
+    for (const l of describeFill(e)) {
+      lines.push(l.level === 'warn' ? `warn: ${l.message}` : l.message);
+    }
+  };
+  return { lines, onEvent };
 }
 
 const USER_CONFIG: UserConfig = {
@@ -241,8 +250,7 @@ function world(
         storage,
         cache,
         ports,
-        handlers: {} as EventHandlers<PlaylistFillerEventMap>,
-        syncHandlers: recordingSyncHandlers(),
+        onEvent: () => {},
         aiFindsAvailable: false,
         fresh: true,
         ...overrides,
@@ -296,7 +304,7 @@ test('reading the playlists that set the date range logs its progress', async (t
   const w = world(t, fixtureCtx({ userId: 'user-1' }));
   const log = recordingLog();
 
-  await runFill(w.options({ handlers: log.handlers }));
+  await runFill(w.options({ onEvent: log.onEvent }));
 
   const reading = log.lines.indexOf(
     'Loading playlists to determine date range...',
@@ -329,12 +337,12 @@ test('a sync failure is logged as a warning, fails nothing, and stays pending', 
   });
   const w = world(t, ctx);
   await seedPending(w.cache);
-  const syncHandlers = recordingSyncHandlers();
+  const log = recordingLog();
 
-  const result = await runFill(w.options({ syncHandlers }));
+  const result = await runFill(w.options({ onEvent: log.onEvent }));
 
   assert.equal(result.syncedPlaylists, null);
-  assert.ok(syncHandlers.logs.some((l) => l.includes('Post-fill sync failed')));
+  assert.ok(log.lines.some((l) => l.startsWith('warn: Post-fill sync failed')));
   assert.deepEqual(await w.cache.load(PENDING_PRIORITY_CHANGES), [DEMOTION]);
 });
 
@@ -386,13 +394,12 @@ test('a fill aborted after a mid-fill recalculation leaves the sync for the next
     allWeeklySnapshot: 'aw-1',
     bestOfAllWeeklySnapshot: 'boaw-1',
   });
-  const handlers = {
-    onRecalculated: () => {
-      throw abortError; // the user stops the fill right after it re-scored
-    },
-  } as EventHandlers<PlaylistFillerEventMap>;
+  const onEvent = (e: FillEvent) => {
+    // The user stops the fill right after it re-scored.
+    if (e.kind === 'recalculated') throw abortError;
+  };
 
-  await assert.rejects(runFill(first.options({ handlers })), /Stopped/);
+  await assert.rejects(runFill(first.options({ onEvent })), /Stopped/);
   const pending = await first.cache.load(PENDING_PRIORITY_CHANGES);
   assert.equal(pending?.[0]?.artist, 'Demoted Artist');
   assert.equal(pending?.[0]?.from, 1);
@@ -524,8 +531,7 @@ function memoryWorld(t: { after: (fn: () => void) => void }, ports: FillPorts) {
         storage,
         cache,
         ports,
-        handlers: {} as EventHandlers<PlaylistFillerEventMap>,
-        syncHandlers: recordingSyncHandlers(),
+        onEvent: () => {},
         aiFindsAvailable: false,
         ...overrides,
       };
@@ -541,17 +547,17 @@ test('a fill collects one unfilled Friday and writes it to a new weekly playlist
   ]);
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_P1);
-  const created: string[] = [];
+  const rec = recordingEvents();
 
-  const result = await runFill(
-    w.options({
-      handlers: {
-        onPlaylistCreated: (date) => created.push(date),
-      } as EventHandlers<PlaylistFillerEventMap>,
-    }),
+  const result = await runFill(w.options({ onEvent: rec.onEvent }));
+
+  assert.deepEqual(
+    rec
+      .of('written')
+      .filter((e) => e.write.outcome === 'created')
+      .map((e) => e.write.date),
+    [THIS_FRIDAY],
   );
-
-  assert.deepEqual(created, [THIS_FRIDAY]);
   assert.deepEqual(
     weekly.created.map((p) => p.name),
     [THIS_FRIDAY],
@@ -563,6 +569,26 @@ test('a fill collects one unfilled Friday and writes it to a new weekly playlist
   assert.equal(w.storage.history.length, 1);
 });
 
+test('a fill logs a release as discovered live and as added once it lands', async (t) => {
+  const { ports } = memoryPorts(alphaCatalog(), [
+    { id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 },
+  ]);
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_P1);
+  const log = recordingLog();
+
+  await runFill(w.options({ onEvent: log.onEvent }));
+
+  assert.deepEqual(
+    log.lines.filter((l) => /Discovered|Added|Created playlist/.test(l)),
+    [
+      '  Discovered: Alpha — X (album)',
+      '  Added: Alpha — X (album)',
+      `Created playlist: ${THIS_FRIDAY}`,
+    ],
+  );
+});
+
 test("a failed track write is recorded as the date's error, not as success", async (t) => {
   const { ports, weekly } = memoryPorts(alphaCatalog(), [
     { id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 },
@@ -570,17 +596,14 @@ test("a failed track write is recorded as the date's error, not as success", asy
   weekly.failAddWith = new Error('rate limited');
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_P1);
-  const errors: string[] = [];
+  const rec = recordingEvents();
 
-  const result = await runFill(
-    w.options({
-      handlers: {
-        onDateError: (date, err) => errors.push(`${date}: ${err.message}`),
-      } as EventHandlers<PlaylistFillerEventMap>,
-    }),
+  const result = await runFill(w.options({ onEvent: rec.onEvent }));
+
+  assert.deepEqual(
+    rec.of('date-error').map((e) => `${e.date}: ${e.error.message}`),
+    [`${THIS_FRIDAY}: rate limited`],
   );
-
-  assert.deepEqual(errors, [`${THIS_FRIDAY}: rate limited`]);
   assert.equal(result.results[0].error, 'rate limited');
   assert.deepEqual(w.storage.history, []);
 });
@@ -591,17 +614,17 @@ test('an empty weekly playlist for the Friday is reused, never recreated', async
   ]);
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_P1);
-  const reused: string[] = [];
+  const rec = recordingEvents();
 
-  const result = await runFill(
-    w.options({
-      handlers: {
-        onPlaylistReused: (_date, id) => reused.push(id),
-      } as EventHandlers<PlaylistFillerEventMap>,
-    }),
+  const result = await runFill(w.options({ onEvent: rec.onEvent }));
+
+  assert.deepEqual(
+    rec
+      .of('written')
+      .filter((e) => e.write.outcome === 'reused')
+      .map((e) => e.write.playlistId),
+    ['pl-empty'],
   );
-
-  assert.deepEqual(reused, ['pl-empty']);
   assert.deepEqual(weekly.created, []);
   assert.deepEqual(weekly.added.get('pl-empty'), ['t1']);
   assert.equal(result.results[0].playlistId, 'pl-empty');
@@ -671,17 +694,14 @@ test('a fill resumes a checkpointed week: searched artists are skipped and repor
   };
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_BETA_P1);
-  const resumed: Array<[string | undefined, string[]]> = [];
+  const rec = recordingEvents();
 
-  await runFill(
-    w.options({
-      handlers: {
-        onResumed: (date, names) => resumed.push([date, names]),
-      } as EventHandlers<PlaylistFillerEventMap>,
-    }),
+  await runFill(w.options({ onEvent: rec.onEvent }));
+
+  assert.deepEqual(
+    rec.of('resumed').map((e) => [e.date, e.artists]),
+    [[THIS_FRIDAY, ['Alpha']]],
   );
-
-  assert.deepEqual(resumed, [[THIS_FRIDAY, ['Alpha']]]);
   assert.deepEqual(reads.searchCalls, ['Beta']);
   assert.deepEqual(weekly.added.get('pl-1'), ['t2']);
 });
@@ -722,18 +742,11 @@ test('--fresh drops the checkpoint: every artist is searched again', async (t) =
   };
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_BETA_P1);
-  const resumed: unknown[] = [];
+  const rec = recordingEvents();
 
-  await runFill(
-    w.options({
-      fresh: true,
-      handlers: {
-        onResumed: (...args) => resumed.push(args),
-      } as EventHandlers<PlaylistFillerEventMap>,
-    }),
-  );
+  await runFill(w.options({ fresh: true, onEvent: rec.onEvent }));
 
-  assert.deepEqual(resumed, []);
+  assert.deepEqual(rec.of('resumed'), []);
   assert.deepEqual(reads.searchCalls, ['Alpha', 'Beta']);
   assert.deepEqual(weekly.added.get('pl-1'), ['t1', 't2']);
 });
@@ -936,16 +949,6 @@ function aiPorts(
   return { ...m, candidates, judge, builtFor };
 }
 
-/** Log and warning lines, in order. */
-function recordingLog() {
-  const lines: string[] = [];
-  const handlers = {
-    onLog: (msg) => lines.push(msg),
-    onWarning: (msg) => lines.push(`warn: ${msg}`),
-  } as EventHandlers<PlaylistFillerEventMap>;
-  return { lines, handlers };
-}
-
 const aiLines = (lines: string[]) => lines.filter((l) => /\bAI\b/.test(l));
 
 test('an opted-in week keeps its AI picks beside the weekly playlist', async (t) => {
@@ -995,7 +998,7 @@ test('a user who has not opted in gets no AI input, record or log lines', async 
   await seedRoster(w.cache, ALPHA_P1);
   const log = recordingLog();
 
-  await runFill(w.options({ aiFindsAvailable: true, handlers: log.handlers }));
+  await runFill(w.options({ aiFindsAvailable: true, onEvent: log.onEvent }));
 
   assert.deepEqual(builtFor, []);
   assert.equal(candidates.requests.length, 0);
@@ -1155,7 +1158,7 @@ test('the Live Log shows each pick, a warning per skip, and the summary with cos
     w.options({
       userConfig: AI_ON,
       aiFindsAvailable: true,
-      handlers: log.handlers,
+      onEvent: log.onEvent,
     }),
   );
 
@@ -1163,6 +1166,8 @@ test('the Live Log shows each pick, a warning per skip, and the summary with cos
     'warn: AI pick skipped (not on Spotify): Gamma — G0',
     'AI pick: Gamma — G (80) — close to Alpha',
     'AI finds: 1 picks from 2 candidates, $0.06',
+    // Landed with the week's other releases.
+    '  Added: Gamma — G (single) [AI]',
   ]);
 });
 
@@ -1184,7 +1189,7 @@ test('the Live Log counts the related-artist top-up and sums up failed seeds', a
     w.options({
       userConfig: AI_ON,
       aiFindsAvailable: true,
-      handlers: log.handlers,
+      onEvent: log.onEvent,
     }),
   );
 
@@ -1214,7 +1219,7 @@ test('a skipped week logs its reason as a warning', async (t) => {
     w.options({
       userConfig: AI_ON,
       aiFindsAvailable: true,
-      handlers: log.handlers,
+      onEvent: log.onEvent,
     }),
   );
 

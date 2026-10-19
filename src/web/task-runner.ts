@@ -45,12 +45,6 @@ export interface TaskContext<E extends BaseEvents = BaseEvents> {
   userConfigStore: IUserConfigStore;
   dataDir: string;
   userId: string;
-  /**
-   * Untyped broadcast — interop escape hatch for helpers that take a generic
-   * `(type, data) => void` (e.g. `broadcastEvents`, `broadcastHandlers`,
-   * the sync handlers). For direct task emissions use `emit` or `log`.
-   */
-  broadcast: (type: string, data: unknown) => void;
   /** Throws `TaskAborted` if the user requested abort. */
   checkAbort: () => void;
   /** Where the task is, shown to its owner only (ADR-0006). */
@@ -357,7 +351,6 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       userConfigStore: session.userConfigStore,
       dataDir: session.dataDir,
       userId: session.userId,
-      broadcast: userBroadcast,
       checkAbort,
       progress,
       // Mirror every save to the browser's localStorage under the

@@ -1,7 +1,6 @@
-import { broadcastEvents } from '../../lib/service-events.js';
 import { forgetAiPicks } from '../../services/ai-picks.js';
 import {
-  type PlaylistClearerEventMap,
+  describeClear,
   PlaylistClearerService,
 } from '../../services/playlist-clearer.js';
 import type { TaskDefinition } from '../task-runner.js';
@@ -19,24 +18,9 @@ export const clearTask: TaskDefinition = {
   async run(tc) {
     const name = (tc.body.name as string).trim();
     tc.log('info', `Clearing playlist "${name}"...`);
-    // clear:complete goes out through broadcastEvents, so it uses the
-    // untyped tc.broadcast like the other service-event tasks.
-    const service = new PlaylistClearerService(
-      tc.ctx,
-      broadcastEvents<PlaylistClearerEventMap>(tc.broadcast, {
-        playlistFound: {
-          log: (n, count) => `Found "${n}" (${count} tracks)`,
-        },
-        playlistNotFound: {
-          log: (n) => `Playlist "${n}" not found`,
-          level: 'warn',
-        },
-        cleared: {
-          type: 'clear:complete',
-          pack: (n, count) => ({ name: n, cleared: count }),
-        },
-      }),
-    );
+    const service = new PlaylistClearerService(tc.ctx, (e) => {
+      for (const l of describeClear(e)) tc.log(l.level, l.message);
+    });
     await service.clear(name);
     // A cleared weekly playlist is an unfilled Friday again: its AI picks go.
     await forgetAiPicks(tc.cache, name);

@@ -314,7 +314,8 @@ app.post('/api/clear-logs', async (req, res) => {
   }
 });
 
-// The last week of the log as text, one line per message.
+// The last week of the log as text, one line per log message: the same
+// lines the panel shows (ADR-0007). Task results are data and are left out.
 app.get('/api/logs/export', async (req, res) => {
   const session = ctx.requireSession(req, res);
   if (!session) return;
@@ -328,12 +329,15 @@ app.get('/api/logs/export', async (req, res) => {
           ? `${when}${task} ${d}`
           : `${when}${task} ${d.level ?? 'info'}: ${d.message}`;
       }
-      return `${when}${task} ${m.type} ${JSON.stringify(m.data)}`;
+      if (m.type === 'server:restarted') {
+        return `${when} server restarted ${JSON.stringify(m.data)}`;
+      }
+      return null;
     });
     res
       .type('text/plain')
       .attachment(`log-${session.userId}.txt`)
-      .send(`${lines.join('\n')}\n`);
+      .send(`${lines.filter((l) => l !== null).join('\n')}\n`);
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) });
   }
