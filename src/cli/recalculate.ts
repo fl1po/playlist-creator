@@ -1,15 +1,15 @@
 import { FileConfigStore } from '../lib/config.js';
 import { createDurableCache } from '../lib/durable-cache.js';
 import { createCliGateway } from '../lib/spotify/gateway.js';
+import { printLines } from '../lib/task-log.js';
 import { secondaryLabel, UserConfigStore } from '../lib/user-config.js';
-import { consoleSyncHandlers } from '../services/promotion-sync/subscribers.js';
 import { spotifyRecalculationPorts } from '../services/recalculation/adapters.js';
-import { recalculate, syncPending } from '../services/recalculation/index.js';
 import {
-  consoleRecalculationProgress,
   describeChange,
-  syncProgressTo,
-} from '../services/recalculation/subscribers.js';
+  describeSync,
+} from '../services/recalculation/describe.js';
+import { recalculate, syncPending } from '../services/recalculation/index.js';
+import { consoleRecalculationProgress } from '../services/recalculation/subscribers.js';
 
 // Usage: pnpm recalculate [--force] [--no-sync]
 //   --force    re-score even if neither source playlist changed
@@ -78,9 +78,7 @@ if (result.pending.length === 0) {
     `\n${result.pending.length} priority change(s) left pending (--no-sync); the next fill syncs them.`,
   );
 } else {
-  const sync = consoleSyncHandlers();
-  const synced = await syncPending(userConfig, deps, syncProgressTo(sync));
-  if (synced) sync.onComplete(synced);
+  await syncPending(userConfig, deps, (e) => printLines(describeSync(e)));
 }
 
 console.log('\n=== Done! ===\n');

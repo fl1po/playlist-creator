@@ -1,23 +1,5 @@
 import type { TaskProgress } from '../../lib/task-progress.js';
-import type { PriorityChange } from '../promotion-sync/index.js';
-import type { SyncHandlers } from '../promotion-sync/subscribers.js';
-import type { RecalculationProgress, SyncProgress } from './index.js';
-
-/** Route `syncPending`'s progress into the existing promotion-sync renderers. */
-export function syncProgressTo(
-  handlers: SyncHandlers,
-): (e: SyncProgress) => void {
-  return (e) =>
-    e.phase === 'log'
-      ? handlers.onLog(e.message, e.level)
-      : handlers.onProgress(e);
-}
-
-export function describeChange(c: PriorityChange): string {
-  const from = c.from === null ? 'new' : `P${c.from}`;
-  const to = c.to === null ? 'none' : `P${c.to}`;
-  return `${from} → ${to}: ${c.artist}`;
-}
+import type { RecalculationProgress } from './index.js';
 
 // ── Console subscriber (CLI) ────────────────────────────────────────────────
 

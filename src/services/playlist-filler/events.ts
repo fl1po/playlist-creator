@@ -1,51 +1,35 @@
 import type { DateResult } from '../../lib/types.js';
 import type { PriorityChange } from '../promotion-sync/index.js';
+import type { SyncProgress } from '../recalculation/index.js';
+import type {
+  CollectionDecision,
+  WeekProgressEvent,
+} from '../week-collection/index.js';
+import type { WeeklyWrite } from '../weekly-playlists/index.js';
 
-export type PlaylistFillerEventMap = {
-  /** Emitted at the start of a run when saved week progress exists.
-   *  `resumedArtistNames` are the artists already searched in the previous run. */
-  resumed: [resumeDate: string | undefined, resumedArtistNames: string[]];
-  start: [datesToProcess: string[]];
-  dateStart: [date: string, index: number, total: number];
-  dateSkipped: [date: string, reason: string, trackCount: number];
-  playlistCreated: [date: string, playlistId: string];
-  playlistReused: [date: string, playlistId: string];
-  artistSearchProgress: [searched: number, total: number, artistName: string];
-  weekProgressSaved: [searched: number, total: number];
-  releaseFound: [
-    artist: string,
-    release: string,
-    type: string,
-    source?: string,
-  ];
-  variantPicked: [name: string, variantCount: number, isExplicit: boolean];
-  filtered: [reason: string, artist: string, release: string, detail?: string];
-  deluxeDetected: [
-    name: string,
-    baseName: string,
-    originalTrackCount: number,
-    bonusTracks: number,
-  ];
-  titleTrackOnly: [
-    releaseName: string,
-    trackName: string,
-    oldTracks: number,
-    totalOther: number,
-  ];
-  singleSkipped: [name: string];
-  dateCompleted: [result: DateResult];
-  dateError: [date: string, error: Error];
-  rateLimitSleep: [hours: number, wakeTime: Date];
-  rateLimitWait: [seconds: number, wakeTime: Date];
-  batchComplete: [results: DateResult[], durationMinutes: number];
-  recalculating: [];
+/**
+ * What a fill reports as it runs: its own steps plus the week collection's,
+ * the weekly-playlist writes' and the trailing sync's events, each kept in
+ * its owner's shape. `describeFill` words them (ADR-0007).
+ */
+export type FillEvent =
+  /** The fill's own narration, worded where it happens. */
+  | { kind: 'log'; message: string; level?: 'info' | 'warn' }
+  /** Saved week progress exists; `artists` were already searched. */
+  | { kind: 'resumed'; date: string; artists: string[] }
+  | { kind: 'start'; dates: string[] }
+  | { kind: 'date-start'; date: string; index: number; total: number }
+  | { kind: 'week'; event: WeekProgressEvent }
+  | { kind: 'decision'; decision: CollectionDecision }
+  | { kind: 'written'; write: WeeklyWrite }
+  | { kind: 'recalculating' }
   /** Tier moves from one mid-fill recalculation, already sorted. */
-  recalculated: [tierChanges: PriorityChange[]];
-  pacerWait: [intervalMs: number];
-  log: [message: string];
-  /** A log line that wants attention, e.g. a skipped AI phase. */
-  warning: [message: string];
-};
+  | { kind: 'recalculated'; changes: PriorityChange[] }
+  | { kind: 'date-complete'; result: DateResult }
+  | { kind: 'date-error'; date: string; error: Error }
+  | { kind: 'complete'; results: DateResult[]; durationMinutes: number }
+  /** The trailing promotion sync. */
+  | { kind: 'sync'; event: SyncProgress };
 
 export interface ExternalPlaylistSource {
   userId: string;

@@ -2,20 +2,19 @@ import { aiFindsAvailable } from '../../lib/anthropic-key.js';
 import { fillPorts } from '../../services/playlist-filler/adapters.js';
 import { runFill } from '../../services/playlist-filler/fill-run.js';
 import { DurableFillStorage } from '../../services/playlist-filler/storage.js';
-import { broadcastHandlers } from '../../services/playlist-filler/subscribers.js';
-import { broadcastSyncHandlers } from '../../services/promotion-sync/subscribers.js';
+import {
+  type FillResultEvents,
+  type WebFillSinkOptions,
+  webFillSink,
+} from '../../services/playlist-filler/subscribers.js';
 import type {
   BaseEvents,
   TaskContext,
   TaskDefinition,
 } from '../task-runner.js';
 
-interface FillEvents extends BaseEvents {
+interface FillEvents extends BaseEvents, FillResultEvents {
   'fill:stopped': Record<string, never>;
-  'fill:error': { date: string; message: string };
-  // fill:start / fill:releaseFound / fill:dateComplete / fill:recalculated /
-  // fill:complete are emitted through broadcastHandlers using the raw
-  // tc.broadcast interop surface; progress goes through tc.progress.
 }
 
 export const fillTask: TaskDefinition<FillEvents> = {
@@ -28,11 +27,6 @@ export const fillTask: TaskDefinition<FillEvents> = {
     tc.log('info', `Starting playlist fill (fresh=${freshMode})...`);
 
     const userConfig = await tc.userConfig();
-
-    const handlers = broadcastHandlers(tc.broadcast, {
-      progress: tc.progress,
-      checkAbort: tc.checkAbort,
-    });
 
     const storage = new DurableFillStorage(tc.cache, tc.dataDir);
     await runFill({
@@ -47,15 +41,20 @@ export const fillTask: TaskDefinition<FillEvents> = {
         storage,
         cache: tc.cache,
       }),
-      handlers,
-      syncHandlers: broadcastSyncHandlers(tc.broadcast),
+      onEvent: webFillSink({
+        log: tc.log,
+        // FillEvents extends FillResultEvents, so this narrows soundly.
+        emit: tc.emit as WebFillSinkOptions['emit'],
+        progress: tc.progress,
+        checkAbort: tc.checkAbort,
+      }),
       fresh: freshMode,
       aiFindsAvailable: aiFindsAvailable(),
     });
   },
 
-  onError(tc, error, aborted) {
+  // A failure is logged by the runner; a stop still reloads what was filled.
+  onError(tc, _error, aborted) {
     if (aborted) tc.emit('fill:stopped', {});
-    else tc.emit('fill:error', { date: 'batch', message: String(error) });
   },
 };

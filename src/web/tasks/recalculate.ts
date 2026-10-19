@@ -1,15 +1,12 @@
 import type { TrustedArtistsFile } from '../../lib/types.js';
 import type { PriorityChange } from '../../services/promotion-sync/index.js';
-import { broadcastSyncHandlers } from '../../services/promotion-sync/subscribers.js';
 import { spotifyRecalculationPorts } from '../../services/recalculation/adapters.js';
+import { describeSync } from '../../services/recalculation/describe.js';
 import {
   recalculate,
   syncPending,
 } from '../../services/recalculation/index.js';
-import {
-  broadcastRecalculationProgress,
-  syncProgressTo,
-} from '../../services/recalculation/subscribers.js';
+import { broadcastRecalculationProgress } from '../../services/recalculation/subscribers.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -59,8 +56,8 @@ export const recalculateTask: TaskDefinition<RecalculateEvents> = {
 
     // Runs even when unchanged: it also finishes any sync an earlier
     // recalculation or fill left pending.
-    const sync = broadcastSyncHandlers(tc.broadcast);
-    const synced = await syncPending(userConfig, deps, syncProgressTo(sync));
-    if (synced) sync.onComplete(synced);
+    await syncPending(userConfig, deps, (e) => {
+      for (const l of describeSync(e)) tc.log(l.level, l.message);
+    });
   },
 };

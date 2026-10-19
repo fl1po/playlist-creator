@@ -1464,37 +1464,10 @@ function handleMessage({ type, data }) {
       break;
     }
 
-    // Fill events
-    case 'fill:start':
-      log('info', `Fill started — ${data.dates.length} dates to process`);
-      log('info', `Dates: ${data.dates.join(', ')}`);
-      break;
-    // Before ADR-0006 progress travelled as events; history from then still
-    // carries this one, whose line the server now logs itself.
-    case 'fill:progress':
-      log('info', `[${data.index + 1}/${data.total}] Processing: ${data.date}`);
-      break;
-    case 'fill:releaseFound':
-      log('info', `  Found: ${data.artist} — ${data.release} (${data.type})${data.source ? ` [${data.source}]` : ''}`);
-      break;
-    case 'fill:dateComplete': {
-      log('success', `  ${data.date}: ${data.tracksAdded} tracks added (${data.albumsCount} albums, ${data.singlesCount} singles, ${data.skippedCount} skipped)`);
-      if (data.playlistUrl) log('info', `  URL: ${data.playlistUrl}`);
-      break;
-    }
-    case 'fill:error':
-      log('error', `Fill error [${data.date}]: ${data.message}`);
-      break;
-    case 'fill:complete': {
-      const totalTracks = data.results.reduce((s, r) => s + (r.tracksAdded || 0), 0);
-      const skipped = data.results.filter(r => r.skipped).length;
-      const errors = data.results.filter(r => r.error).length;
-      log('success', `Fill complete — ${data.duration.toFixed(1)} min`);
-      log('success', `  ${data.results.length} dates: ${data.results.length - skipped - errors} created, ${skipped} skipped, ${errors} errors`);
-      log('success', `  Total tracks added: ${totalTracks}`);
+    // Task results: their lines arrive as log messages (ADR-0007).
+    case 'fill:complete':
       reloadSoon('artists', 'aiPicks', 'stats');
       break;
-    }
     case 'fill:stopped':
       // A stopped fill keeps the weeks it finished.
       reloadSoon('artists', 'aiPicks', 'stats');
@@ -1508,7 +1481,6 @@ function handleMessage({ type, data }) {
       break;
     }
     case 'fill:recalculated':
-      logPriorityChanges(data.changes);
       reloadSoon('artists');
       break;
     // Recalc events
@@ -1527,21 +1499,6 @@ function handleMessage({ type, data }) {
 
     // Lookup — results rendered from HTTP response in findArtist()
     case 'lookup:result':
-      break;
-
-    // Sync events
-    case 'sync:start':
-      log('info', `Playlist sync started — ${data.demoted} demoted, ${data.promoted} promoted, ${data.playlists} playlist(s)`);
-      break;
-    case 'sync:playlistSync': {
-      let detail = '';
-      if (data.removedArtists?.length) detail += ` (removed ${data.removedArtists.join(', ')})`;
-      if (data.addedArtists?.length) detail += ` (added ${data.addedArtists.join(', ')})`;
-      log('info', `  Synced "${data.name}": −${data.removed} +${data.added}${detail}`);
-      break;
-    }
-    case 'sync:complete':
-      log('success', `Playlist sync complete — ${data.totalRemoved} removed, ${data.totalAdded} added across ${data.playlistsSynced} playlist(s)`);
       break;
 
     // Clear

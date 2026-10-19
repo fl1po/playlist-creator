@@ -104,7 +104,9 @@ export type RecalculationProgress =
 
 export type SyncProgress =
   | PromotionProgressEvent
-  | { phase: 'log'; message: string; level: 'info' | 'debug' };
+  | { phase: 'log'; message: string; level: 'info' | 'debug' }
+  /** The sync succeeded and its changes are no longer pending. */
+  | { phase: 'complete'; result: PromotionSyncResult };
 
 export interface RecalculationResult {
   outcome: 'unchanged' | 'recalculated';
@@ -364,5 +366,6 @@ export async function syncPending(
   await cache.delete(PENDING_PRIORITY_CHANGES);
   if (result.removed > 0 || result.added > 0)
     await ports.unprocessed.invalidate();
+  onProgress({ phase: 'complete', result });
   return result;
 }

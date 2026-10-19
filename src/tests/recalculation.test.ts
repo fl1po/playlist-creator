@@ -17,6 +17,7 @@ import {
 } from '../lib/types.js';
 import { DEFAULT_USER_CONFIG, type UserConfig } from '../lib/user-config.js';
 import type { PlaylistWrites } from '../services/promotion-sync/index.js';
+import { describeSync } from '../services/recalculation/describe.js';
 import {
   type RecalculationDeps,
   recalculate,
@@ -296,10 +297,19 @@ test('a P2 → P3 crossing is pending until promotion sync removes its album', a
   assert.deepEqual(result.changes, [{ artist: 'Fading', from: 2, to: 3 }]);
   assert.deepEqual(result.pending, [{ artist: 'Fading', from: 2, to: 3 }]);
 
-  const sync = await syncPending(config(), deps);
+  const lines: string[] = [];
+  const sync = await syncPending(config(), deps, (e) => {
+    for (const l of describeSync(e)) lines.push(l.message);
+  });
 
   assert.equal(sync?.removed, 1);
   assert.deepEqual(weeklies.removed, { 'pl-1': ['fading-1'] });
+  // Each playlist's removals, and the result exactly once.
+  assert.ok(
+    lines.includes('  Synced "pl-1": −1 +0 (removed Fading)'),
+    String(lines),
+  );
+  assert.equal(lines.filter((l) => /sync complete/i.test(l)).length, 1);
   assert.equal(await syncPending(config(), deps), null); // cleared
 });
 
