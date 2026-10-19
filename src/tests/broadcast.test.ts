@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Response } from 'express';
-import { createBroadcaster } from '../web/broadcast.js';
+import {
+  createBroadcaster,
+  REPLAY_DONE,
+  REPLAY_RESET,
+} from '../web/broadcast.js';
 import { memoryLogStore } from '../web/log-store.js';
 
 // ── Fake SSE response ────────────────────────────────────────────────────────
@@ -10,8 +14,10 @@ interface FakeClient {
   res: Response;
   /** Raw SSE frames written to this client. */
   frames: string[];
-  /** `data:` payloads, parsed. */
+  /** `data:` payloads, parsed, without the end-of-replay marker. */
   messages(): { type: string; data: unknown }[];
+  /** Every `data:` payload, the marker included. */
+  allMessages(): { type: string; data: unknown }[];
   /** The most recent `id:` seen — what EventSource would resend on reconnect. */
   lastEventId(): string | null;
 }
@@ -30,14 +36,16 @@ function fakeClient(): FakeClient {
   } as unknown as Response;
 
   const lines = () => frames.join('').split('\n');
+  const allMessages = () =>
+    lines()
+      .filter((l) => l.startsWith('data: '))
+      .map((l) => JSON.parse(l.slice(6)));
 
   return {
     res,
     frames,
-    messages: () =>
-      lines()
-        .filter((l) => l.startsWith('data: '))
-        .map((l) => JSON.parse(l.slice(6))),
+    messages: () => allMessages().filter((m) => m.type !== REPLAY_DONE),
+    allMessages,
     lastEventId: () => {
       const ids = lines().filter((l) => l.startsWith('id: '));
       return ids.length ? (ids[ids.length - 1] as string).slice(4) : null;
@@ -292,4 +300,75 @@ test('the restart marker carries what was deployed', async () => {
 
   const marker = client.messages().find((m) => m.type === 'server:restarted');
   assert.deepEqual(marker?.data, deploy);
+});
+
+test('a connecting client is told where its replay ends', () => {
+  const b = createBroadcaster();
+  b.broadcastTo('u1', 'log', { level: 'info', message: 'old' });
+  const client = fakeClient();
+  b.addClient(client.res, 'u1');
+  b.broadcastTo('u1', 'log', { level: 'info', message: 'live' });
+
+  assert.deepEqual(
+    client.allMessages().map((m) => m.type),
+    ['log', REPLAY_DONE, 'log'],
+  );
+});
+
+test('a replay carries only the newest browser save per key', () => {
+  const b = createBroadcaster();
+  b.broadcastTo('u1', 'data:save', { key: 'tokens', value: 'first' });
+  b.broadcastTo('u1', 'log', { level: 'info', message: 'between' });
+  b.broadcastTo('u1', 'data:save', { key: 'tokens', value: 'second' });
+  b.broadcastTo('u1', 'data:save', { key: 'config', value: 'only' });
+
+  const client = fakeClient();
+  b.addClient(client.res, 'u1');
+
+  assert.deepEqual(
+    client
+      .messages()
+      .map((m) =>
+        m.type === 'data:save'
+          ? (m.data as { value: string }).value
+          : (m.data as { message: string }).message,
+      ),
+    ['between', 'second', 'only'],
+  );
+});
+
+test('a client resuming from before a clear is told to drop what it kept', async () => {
+  const b = createBroadcaster();
+  const first = fakeClient();
+  b.addClient(first.res, 'u1');
+  b.broadcastTo('u1', 'log', { level: 'info', message: 'cleared' });
+  const since = first.lastEventId();
+  await b.clearHistory('u1');
+  b.broadcastTo('u1', 'log', { level: 'info', message: 'after' });
+
+  const back = fakeClient();
+  b.addClient(back.res, 'u1', since);
+
+  assert.deepEqual(
+    back.allMessages().map((m) => m.type),
+    [REPLAY_RESET, 'log', REPLAY_DONE],
+  );
+});
+
+test('a client resuming after the last clear gets no reset', async () => {
+  const b = createBroadcaster();
+  await b.clearHistory('u1');
+  const first = fakeClient();
+  b.addClient(first.res, 'u1');
+  b.broadcastTo('u1', 'log', { level: 'info', message: 'seen' });
+  const since = first.lastEventId();
+  b.broadcastTo('u1', 'log', { level: 'info', message: 'missed' });
+
+  const back = fakeClient();
+  b.addClient(back.res, 'u1', since);
+
+  assert.deepEqual(
+    back.allMessages().map((m) => m.type),
+    ['log', REPLAY_DONE],
+  );
 });

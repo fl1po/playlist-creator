@@ -29,6 +29,8 @@ export const BATCH_CACHE: CacheDescriptor<BatchCache> = {
   redisName: 'batchCache',
   file: 'batch-cache.json',
   isEmpty: (v) => !v || Object.keys(v).length === 0,
+  // Hundreds of KB, re-saved every 50 artists of a fill; the page never reads it.
+  browserMirror: false,
 };
 
 /** Owned by the Recalculation module: source snapshots + reusable scans. */

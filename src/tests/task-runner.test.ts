@@ -14,7 +14,7 @@ import {
 } from '../lib/spotify/gateway.js';
 import type { SpotifyConfig } from '../lib/types.js';
 import type { IUserConfigStore } from '../lib/user-config.js';
-import { createBroadcaster } from '../web/broadcast.js';
+import { createBroadcaster, REPLAY_DONE } from '../web/broadcast.js';
 import type { UserSession } from '../web/route-context.js';
 import {
   createTaskRunner,
@@ -47,7 +47,8 @@ function fakeClient() {
       .join('')
       .split('\n')
       .filter((l) => l.startsWith('data: '))
-      .map((l) => JSON.parse(l.slice(6)));
+      .map((l) => JSON.parse(l.slice(6)))
+      .filter((m: Message) => m.type !== REPLAY_DONE);
   return {
     res,
     messages,

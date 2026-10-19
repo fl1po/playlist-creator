@@ -194,7 +194,8 @@
     padding: 12px; height: 280px; overflow-y: auto; font-family: 'SF Mono', Monaco, Consolas, monospace;
     font-size: 12px; line-height: 1.6;
   }
-  .log-entry { white-space: pre-wrap; word-break: break-word; }
+  /* Off-screen lines skip layout and paint, so a long replayed log stays cheap. */
+  .log-entry { white-space: pre-wrap; word-break: break-word; content-visibility: auto; contain-intrinsic-size: auto 19px; }
   .log-entry .ts { color: #555; }
   /* Entries from an earlier day carry their date and a dimmer, warmer stamp */
   .log-entry .ts.past { color: #8a7538; }
@@ -1198,6 +1199,25 @@ let currentEventTs = null;
 // Name of the process (e.g. "fill") that sent the event being handled; log()
 // tags its lines with it so the panel can be filtered by process.
 let currentEventTask = null;
+// True while the first connection replays history. The page loads artists,
+// picks and stats itself on startup, so replayed completions needn't reload
+// them; a reconnect's replay carries events the page missed, so those do.
+let initialReplay = true;
+const pendingReloads = new Set();
+// Coalesce reloads so a burst of completions costs one fetch each.
+function reloadSoon(...what) {
+  if (initialReplay) return;
+  if (!pendingReloads.size) {
+    setTimeout(() => {
+      const due = [...pendingReloads];
+      pendingReloads.clear();
+      if (due.includes('artists')) loadArtists();
+      if (due.includes('aiPicks')) loadAiPicks();
+      if (due.includes('stats') && statsVisible) loadStats();
+    });
+  }
+  for (const w of what) pendingReloads.add(w);
+}
 
 // The label is hidden on narrow screens, so mirror it onto the dot's tooltip.
 function setStatusText(text) {
@@ -1215,15 +1235,118 @@ function logPriorityChanges(changes) {
   for (const c of changes) log('info', `  ${c.artist}: ${label(c.from)} → ${label(c.to)}`);
 }
 
+// ── Log cache ───────────────────────────────────────────────────
+// The history events a page was sent are kept in IndexedDB, so a reload
+// replays them locally and asks the server only for what came after them.
+// Raw events rather than rendered lines: replaying them through
+// handleMessage rebuilds a running task's progress just as the server's
+// replay does.
+const LOG_CACHE_MAX = 2000; // the server's MAX_LOG_HISTORY
+const LOG_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // the server's retention
+// The server's SKIP_HISTORY: transient, never part of a replay. data:save is
+// left out too, since replaying an old save would undo a newer one.
+const LOG_CACHE_SKIP = new Set([
+  'status', 'reload', 'auth', 'fill:searchProgress', 'recalc:scanProgress',
+  'listeningTime:progress', 'data:save',
+]);
+const LogCache = {
+  dbPromise: null,
+  queue: [],
+  flushTimer: null,
+  open() {
+    this.dbPromise ??= new Promise((resolve) => {
+      try {
+        const req = indexedDB.open('playlists-log', 1);
+        req.onupgradeneeded = () =>
+          req.result.createObjectStore('events', { keyPath: ['user', 'seq'] });
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+        req.onblocked = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+    return this.dbPromise;
+  },
+  range(user, from = -Infinity) {
+    return IDBKeyRange.bound([user, from], [user, Infinity]);
+  },
+  // The user's cached events, oldest first, trimmed as the server trims.
+  async load(user) {
+    const db = await this.open();
+    if (!db) return [];
+    return new Promise((resolve) => {
+      const tx = db.transaction('events', 'readwrite');
+      const store = tx.objectStore('events');
+      const req = store.getAll(this.range(user));
+      req.onsuccess = () => {
+        const cutoff = Date.now() - LOG_CACHE_AGE_MS;
+        const all = req.result;
+        const kept = all.filter(r => r.ts >= cutoff).slice(-LOG_CACHE_MAX);
+        if (kept.length < all.length) {
+          // Kept records are the newest, so everything older goes.
+          const firstKept = kept[0]?.seq ?? Infinity;
+          store.delete(IDBKeyRange.bound([user, -Infinity], [user, firstKept], false, true));
+        }
+        resolve(kept);
+      };
+      req.onerror = () => resolve([]);
+    });
+  },
+  add(user, seq, ts, msg) {
+    this.queue.push({ user, seq, ts, msg });
+    this.flushTimer ??= setTimeout(() => this.flush(), 500);
+  },
+  async flush() {
+    this.flushTimer = null;
+    const batch = this.queue;
+    this.queue = [];
+    const db = await this.open();
+    if (!db || !batch.length) return;
+    const store = db.transaction('events', 'readwrite').objectStore('events');
+    for (const r of batch) store.put(r);
+  },
+  async clear(user) {
+    this.queue = this.queue.filter(r => r.user !== user);
+    const db = await this.open();
+    db?.transaction('events', 'readwrite').objectStore('events').delete(this.range(user));
+  },
+};
+window.addEventListener('pagehide', () => LogCache.flush());
+
+// Run one stream message through the handlers, stamped with its own time.
+function dispatch(msg) {
+  // Most handlers below log without passing a timestamp; while one is
+  // running, log() adopts the event's own so replayed history keeps the
+  // time the work happened.
+  currentEventTs = msg.ts ?? null;
+  currentEventTask = msg.task ?? null;
+  try {
+    handleMessage(msg);
+  } finally {
+    currentEventTs = null;
+    currentEventTask = null;
+  }
+}
+
 async function connect() {
+  const user = Store.getUserId();
   // EventSource can't send the Bearer headers, so trade them for a signed
   // stream ticket. Cookie sessions are identified by the cookie itself.
-  let url = '/api/events';
-  if (Store.getTokens()?.accessToken) {
-    const res = await api('GET', '/api/events/ticket');
-    if (res.ticket) url += `?ticket=${encodeURIComponent(res.ticket)}`;
-  }
-  const es = new EventSource(url);
+  const [cached, ticket] = await Promise.all([
+    user ? LogCache.load(user) : [],
+    Store.getTokens()?.accessToken
+      ? api('GET', '/api/events/ticket').then(res => res.ticket)
+      : null,
+  ]);
+  for (const r of cached) dispatch(JSON.parse(r.msg));
+  const params = new URLSearchParams();
+  if (ticket) params.set('ticket', ticket);
+  if (cached.length) params.set('since', cached[cached.length - 1].seq);
+  const es = new EventSource(`/api/events?${params}`);
+  // Events without an id (snapshots, broadcasts) keep the previous one in
+  // lastEventId, so only a changed id marks a numbered event.
+  let lastId = '';
 
   let authProbedThisDisconnect = false;
 
@@ -1254,22 +1377,25 @@ async function connect() {
 
   es.onmessage = (e) => {
     const msg = JSON.parse(e.data);
-    // Most handlers below log without passing a timestamp; while one is
-    // running, log() adopts the event's own so replayed history keeps the
-    // time the work happened.
-    currentEventTs = msg.ts ?? null;
-    currentEventTask = msg.task ?? null;
-    try {
-      handleMessage(msg);
-    } finally {
-      currentEventTs = null;
-      currentEventTask = null;
+    dispatch(msg);
+    const numbered = e.lastEventId && e.lastEventId !== lastId;
+    lastId = e.lastEventId;
+    if (user && numbered && !LOG_CACHE_SKIP.has(msg.type)) {
+      LogCache.add(user, Number(e.lastEventId), msg.ts, e.data);
     }
   };
 }
 
 function handleMessage({ type, data }) {
   switch (type) {
+    case 'replay:done':
+      initialReplay = false;
+      break;
+    // The log was cleared since this page's cache; a full replay follows.
+    case 'replay:reset':
+      resetLogPanel();
+      LogCache.clear(Store.getUserId());
+      break;
     case 'status':
       // Only the owner learns which task is running (ADR-0003).
       busy = data.busy;
@@ -1345,9 +1471,7 @@ function handleMessage({ type, data }) {
       log('success', `Fill complete — ${data.duration.toFixed(1)} min`);
       log('success', `  ${data.results.length} dates: ${data.results.length - skipped - errors} created, ${skipped} skipped, ${errors} errors`);
       log('success', `  Total tracks added: ${totalTracks}`);
-      loadArtists();
-      loadAiPicks();
-      if (statsVisible) loadStats();
+      reloadSoon('artists', 'aiPicks', 'stats');
       break;
     }
     case 'fill:stopped': {
@@ -1360,10 +1484,8 @@ function handleMessage({ type, data }) {
       const segBar2 = document.getElementById('fillSegBar');
       const totalTxt2 = document.getElementById('fillTotalProgressText');
       setTimeout(() => { segBar2.classList.remove('visible'); totalTxt2.classList.remove('visible'); }, 1500);
-      loadArtists();
       // A stopped fill keeps the weeks it finished.
-      loadAiPicks();
-      if (statsVisible) loadStats();
+      reloadSoon('artists', 'aiPicks', 'stats');
       break;
     }
     // Marks a deploy in the replayed log: whatever ran before it was cut off
@@ -1386,7 +1508,7 @@ function handleMessage({ type, data }) {
     }
     case 'fill:recalculated':
       logPriorityChanges(data.changes);
-      loadArtists();
+      reloadSoon('artists');
       break;
     case 'spotify:rateLimited':
       startRateLimitCountdown(data.wakeTime);
@@ -1433,8 +1555,7 @@ function handleMessage({ type, data }) {
       setFetching(false);
       hideProgress('recalc');
       log('success', `Priorities: P1=${data.p1Count} P2=${data.p2Count} P3=${data.p3Count} P4=${data.p4Count}`);
-      loadArtists();
-      if (statsVisible) loadStats();
+      reloadSoon('artists', 'stats');
       break;
     case 'recalc:changes':
       logPriorityChanges(data.changes);
@@ -1727,21 +1848,22 @@ function setAuthenticated(ok, displayName, reason) {
   }
 }
 
+// Mobile redirect auth flow: exchange the URL's auth_token for tokens.
+async function completeRedirectAuth() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const authToken = urlParams.get('auth_token');
+  if (!authToken) return;
+  history.replaceState(null, '', '/');
+  const tokenRes = await api('GET', `/api/auth/complete?token=${encodeURIComponent(authToken)}&format=json`);
+  if (tokenRes.userId && tokenRes.accessToken) {
+    Store.setTokens({ accessToken: tokenRes.accessToken, refreshToken: tokenRes.refreshToken });
+    Store.setUserId(tokenRes.userId);
+  }
+}
+
 async function checkAuth() {
   document.getElementById('authStatus').textContent = 'Checking authentication...';
   document.getElementById('authConnectBtn').style.display = 'none';
-
-  // Handle mobile redirect auth flow: exchange auth_token from URL
-  const urlParams = new URLSearchParams(window.location.search);
-  const authToken = urlParams.get('auth_token');
-  if (authToken) {
-    history.replaceState(null, '', '/');
-    const tokenRes = await api('GET', `/api/auth/complete?token=${encodeURIComponent(authToken)}&format=json`);
-    if (tokenRes.userId && tokenRes.accessToken) {
-      Store.setTokens({ accessToken: tokenRes.accessToken, refreshToken: tokenRes.refreshToken });
-      Store.setUserId(tokenRes.userId);
-    }
-  }
 
   let res = await api('GET', '/api/auth/status');
   // Transient Spotify error (5xx/429/network) — retry once before deciding.
@@ -2225,6 +2347,29 @@ function updateButtons() {
 }
 
 let shouldScrollToLog = false;
+// Lines kept in the panel; older ones stay in the server's week (Download).
+const MAX_LOG_LINES = 5000;
+const logTimeFmt = new Intl.DateTimeFormat(undefined, { timeStyle: 'medium' });
+const logDayFmt = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
+// A replay renders thousands of lines in one go; scrolling after each one
+// forces a layout per line, so scroll once per frame instead.
+let logScrollQueued = false;
+function scrollLogSoon() {
+  if (logScrollQueued) return;
+  logScrollQueued = true;
+  requestAnimationFrame(() => {
+    logScrollQueued = false;
+    const panel = document.getElementById('logPanel');
+    if (document.getElementById('logAutoScroll').checked) {
+      panel.scrollTop = panel.scrollHeight;
+    }
+    if (shouldScrollToLog) {
+      shouldScrollToLog = false;
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+}
+
 function log(level, message, ts, task) {
   const panel = document.getElementById('logPanel');
   const entry = document.createElement('div');
@@ -2238,8 +2383,8 @@ function log(level, message, ts, task) {
   const d = new Date(ts ?? currentEventTs ?? Date.now());
   const isToday = d.toDateString() === new Date().toDateString();
   const tsStr = isToday
-    ? d.toLocaleTimeString()
-    : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString()}`;
+    ? logTimeFmt.format(d)
+    : `${logDayFmt.format(d)} ${logTimeFmt.format(d)}`;
   entry.innerHTML = `<span class="ts${isToday ? '' : ' past'}">${tsStr}</span> ${esc(message)}`;
   // Replayed history arrives after whatever the client logged live on connect,
   // so place by timestamp rather than appending — otherwise a "now" line sits
@@ -2251,13 +2396,8 @@ function log(level, message, ts, task) {
     prev = prev.previousElementSibling;
   }
   panel.insertBefore(entry, prev ? prev.nextElementSibling : panel.firstChild);
-  if (document.getElementById('logAutoScroll').checked) {
-    panel.scrollTop = panel.scrollHeight;
-  }
-  if (shouldScrollToLog) {
-    shouldScrollToLog = false;
-    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
+  while (panel.childElementCount > MAX_LOG_LINES) panel.firstElementChild.remove();
+  scrollLogSoon();
 }
 
 function addLogFilterOption(task) {
@@ -2298,9 +2438,15 @@ async function downloadLog() {
   URL.revokeObjectURL(a.href);
 }
 
-function clearLog() {
+function resetLogPanel() {
   document.getElementById('logPanel').innerHTML = '';
   document.getElementById('logTaskFilter').length = 1;
+}
+
+function clearLog() {
+  resetLogPanel();
+  const user = Store.getUserId();
+  if (user) LogCache.clear(user);
   api('POST', '/api/clear-logs');
 }
 
@@ -3239,10 +3385,12 @@ new ResizeObserver(([entry]) => {
 layoutPins();
 
 // ── Init ─────────────────────────────────────────────────────────
-// After checkAuth: it may exchange a mobile-redirect auth_token for the
-// tokens the stream ticket is requested with.
-checkAuth().then(() => {
+// The stream needs the tokens a mobile redirect brings, but not the auth
+// check (a Spotify round trip) or the data sync, so it opens alongside them.
+completeRedirectAuth().then(() => {
   connect();
+  return checkAuth();
+}).then(() => {
   const overlay = document.getElementById('authOverlay');
   if (overlay.classList.contains('hidden')) {
     loadArtists();

@@ -160,10 +160,13 @@ app.get('/api/events', (req, res) => {
   } catch {
     /* no config */
   }
+  // EventSource sends Last-Event-ID only when it reconnects by itself; a
+  // fresh page passes the position it cached as `since` instead.
+  const since = typeof req.query.since === 'string' ? req.query.since : null;
   broadcaster.addClient(
     res,
     userId,
-    (req.headers['last-event-id'] as string) ?? null,
+    (req.headers['last-event-id'] as string | undefined) ?? since,
   );
   // Comment frames keep idle proxies (Railway drops at ~5min) from killing the
   // stream, which otherwise reconnects endlessly during quiet periods.

@@ -93,11 +93,28 @@ const SKIP_HISTORY = new Set([
 /** Replayed, but not worth persisting: the browser's storage mirror. */
 const SKIP_PERSIST = new Set(['data:save']);
 
+/**
+ * Sent after a connecting client's history, so it can tell replayed events
+ * (already reflected in what the page loads) from live ones.
+ */
+export const REPLAY_DONE = 'replay:done';
+
+/**
+ * Sent before a full replay to a client resuming from before its log was
+ * cleared: whatever it kept of the old log is gone here too.
+ */
+export const REPLAY_RESET = 'replay:reset';
+
 export function createBroadcaster(opts: BroadcasterOptions = {}): Broadcaster {
   const { store = null, now = Date.now } = opts;
   const clients = new Map<Response, string | null>(); // res -> userId
   const logHistory = new Map<string, StoredEntry[]>(); // userId -> messages
   const pending = new Map<string, StoredEntry[]>(); // userId -> not yet stored
+  // userId -> storage key -> its latest mirror save in logHistory. Only the
+  // newest value per key matters to a replaying browser, and a fill re-saves
+  // the same large datasets many times over.
+  const latestSave = new Map<string, Map<string, StoredEntry>>();
+  const clearedAt = new Map<string, number>(); // userId -> seq of last clear
   const snapshots: Array<(userId: string | null) => SnapshotMessage[]> = [];
   // Starts at the clock so ids keep rising across restarts (see resumeSeq).
   let seq = 0;
@@ -120,6 +137,27 @@ export function createBroadcaster(opts: BroadcasterOptions = {}): Broadcaster {
       logHistory.set(userId, h);
     }
     return h;
+  }
+
+  function dropStaleSave(
+    userId: string,
+    history: StoredEntry[],
+    data: unknown,
+    entry: StoredEntry,
+  ) {
+    const key = (data as { key?: unknown } | null)?.key;
+    if (typeof key !== 'string') return;
+    let saves = latestSave.get(userId);
+    if (!saves) {
+      saves = new Map();
+      latestSave.set(userId, saves);
+    }
+    const stale = saves.get(key);
+    if (stale) {
+      const i = history.indexOf(stale);
+      if (i !== -1) history.splice(i, 1);
+    }
+    saves.set(key, entry);
   }
 
   function stampLog(type: string, data: unknown): unknown {
@@ -159,6 +197,7 @@ export function createBroadcaster(opts: BroadcasterOptions = {}): Broadcaster {
     const entry = { seq: nextSeq(), ts, msg };
     if (!SKIP_HISTORY.has(type)) {
       const history = getUserHistory(userId);
+      if (type === 'data:save') dropStaleSave(userId, history, data, entry);
       history.push(entry);
       if (history.length > MAX_LOG_HISTORY)
         history.splice(0, history.length - MAX_LOG_HISTORY);
@@ -198,11 +237,20 @@ export function createBroadcaster(opts: BroadcasterOptions = {}): Broadcaster {
     // its last id automatically, so a dropped connection (idle proxy timeout,
     // sleeping tab) resumes instead of re-appending the whole log.
     if (userId) {
-      const from = resumeSeq(lastEventId);
+      let from = resumeSeq(lastEventId);
+      const cleared = clearedAt.get(userId);
+      if (from > 0 && cleared !== undefined && from < cleared) {
+        send(
+          res,
+          JSON.stringify({ type: REPLAY_RESET, data: null, ts: now() }),
+        );
+        from = 0;
+      }
       for (const entry of logHistory.get(userId) ?? []) {
         if (entry.seq > from) send(res, entry.msg, String(entry.seq));
       }
     }
+    send(res, JSON.stringify({ type: REPLAY_DONE, data: null, ts: now() }));
     res.on('close', () => clients.delete(res));
   }
 
@@ -212,6 +260,8 @@ export function createBroadcaster(opts: BroadcasterOptions = {}): Broadcaster {
 
   async function clearHistory(userId: string) {
     logHistory.delete(userId);
+    latestSave.delete(userId);
+    clearedAt.set(userId, nextSeq());
     pending.delete(userId);
     await store?.clear(userId);
   }
