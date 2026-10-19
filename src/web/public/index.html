@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="replaying">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -130,6 +130,9 @@
     display: none; gap: 2px; margin-top: 12px; height: 6px;
   }
   .segmented-bar.visible { display: flex; }
+  /* History replays through the live handlers; until it ends and the status
+     says whether a task is still running, its progress is not news. */
+  .replaying .progress-bar, .replaying .progress-text, .replaying .segmented-bar { visibility: hidden; }
   .segmented-bar .seg {
     flex: 1; background: #282828; border-radius: 2px; overflow: hidden;
     position: relative;
@@ -1390,6 +1393,15 @@ function handleMessage({ type, data }) {
   switch (type) {
     case 'replay:done':
       initialReplay = false;
+      // The status snapshot came before the history: with no task of ours
+      // running, whatever progress the replay drew belongs to finished runs.
+      if (!ownTask) {
+        clearProgressUi();
+        searchedArtists = new Set();
+        currentSearchArtist = null;
+        clearArtistMarks();
+      }
+      document.documentElement.classList.remove('replaying');
       break;
     // The log was cleared since this page's cache; a full replay follows.
     case 'replay:reset':
@@ -1597,10 +1609,12 @@ function handleMessage({ type, data }) {
       break;
     }
     case 'dedup:scanComplete':
-      dedupScanResult = data;
+      // A replayed scan may be days old; removing by it could take out
+      // tracks added since, so only a scan seen live arms the button.
+      if (!initialReplay) dedupScanResult = data;
       if (data.totalDuplicates > 0) {
         log('warn', `Scan complete: ${data.totalDuplicates} duplicates in ${data.playlists.length} playlists`);
-        document.getElementById('dedupRemoveBtn').disabled = false;
+        if (!initialReplay) document.getElementById('dedupRemoveBtn').disabled = false;
       } else {
         log('success', 'Scan complete: no duplicates found');
       }
@@ -2317,6 +2331,16 @@ function showProgress(prefix, value, total, text) {
   txt.classList.add('visible');
   fill.style.width = total > 0 ? `${(value / total * 100).toFixed(1)}%` : '0%';
   txt.textContent = text;
+}
+
+// Hide every task's progress at once, without hideProgress's lingering 100%.
+function clearProgressUi() {
+  setFetching(false);
+  clearRateLimitCountdown();
+  for (const id of ['fillCurrentProgress', 'fillCurrentProgressText', 'fillTotalProgressText',
+    'fillSegBar', 'recalcProgress', 'recalcProgressText', 'ltProgressText', 'awProgressText']) {
+    document.getElementById(id).classList.remove('visible');
+  }
 }
 
 function hideProgress(prefix) {
