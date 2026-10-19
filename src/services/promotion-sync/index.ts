@@ -1,6 +1,7 @@
 import { filterByPriority } from '../../domain/artists.js';
 import { getValidDates, parseDate } from '../../domain/tracks.js';
 import type { PlaylistTrackWithArtists } from '../../lib/pagination.js';
+import { trackKey } from '../../lib/track-utils.js';
 import type {
   FoundRelease,
   SimplePlaylist,
@@ -266,9 +267,13 @@ export async function syncPriorityChanges(
       const { kept } = await gate(run, foundReleases, minPopularity);
       if (kept.size === 0) continue;
 
-      const existing = new Set(await reads.playlistTrackIds(pl.id));
-      const exclude = new Set<string>([...awTrackIds, ...existing]);
-      const { collected } = await collect(run, kept, exclude);
+      // By key too: a single of a song the playlist already holds from its
+      // album has its own track id.
+      const existing = await reads.playlistTracksWithArtists(pl.id);
+      const { collected } = await collect(run, kept, {
+        ids: new Set([...awTrackIds, ...existing.map((t) => t.id)]),
+        keys: new Set(existing.map((t) => trackKey(t.artistNames, t.name))),
+      });
       const trackIds = collected.flatMap((c) => c.trackIds);
 
       if (trackIds.length > 0) {

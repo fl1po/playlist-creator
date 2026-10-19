@@ -280,6 +280,61 @@ test('addition: a release whose tracks are all already in the playlist is not re
   assert.deepEqual(kinds(result.decisions), []);
 });
 
+test('addition: a single is not added when its song is already in the playlist from the album', async () => {
+  // The fill added Delta's album; Delta is promoted later, and the backfill
+  // finds an in-window single of an album song under its own track id.
+  const catalog: Catalog = {
+    artists: [
+      {
+        id: 'art-d',
+        name: 'Delta',
+        albums: [
+          {
+            id: 'alb-x',
+            name: 'X',
+            type: 'album',
+            release_date: IN_WINDOW,
+            tracks: [
+              { id: 't1', name: 'One', key: 'delta::one' },
+              { id: 't2', name: 'Two', key: 'delta::two' },
+            ],
+          },
+          {
+            id: 'sgl-two',
+            name: 'Two',
+            type: 'single',
+            release_date: IN_WINDOW,
+            tracks: [{ id: 's2', name: 'Two', key: 'delta::two' }],
+          },
+        ],
+      },
+    ],
+    playlists: [
+      {
+        id: 'pl1',
+        name: WEEK,
+        tracks: [
+          { id: 't1', name: 'One', artistNames: ['Delta'], albumId: 'alb-x' },
+          { id: 't2', name: 'Two', artistNames: ['Delta'], albumId: 'alb-x' },
+        ],
+      },
+    ],
+  };
+  const writes = recordingWrites();
+
+  const result = await syncPriorityChanges(
+    [{ artist: 'Delta', from: null, to: 1 }],
+    input({
+      unprocessedPlaylists: playlistList(catalog),
+      trustedArtists: trusted({ Delta: ac(1, 100, 'art-d') }),
+    }),
+    ports(fixtureReads(catalog), writes, { 'alb-x': 70, 'sgl-two': 70 }),
+  );
+
+  assert.equal(writes.added.size, 0);
+  assert.equal(result.added, 0);
+});
+
 test('addition: releases dropped by the popularity or variant filters show only their drop decision', async () => {
   const catalog: Catalog = {
     artists: [

@@ -100,6 +100,16 @@ export async function gate(
 // ── Collection ───────────────────────────────────────────────────────────────
 
 /**
+ * Tracks removed outright: by id, and optionally by normalized key, which also
+ * catches the same song under another release's track id (a single of an album
+ * track already present).
+ */
+export interface Exclusion {
+  ids: Set<string>;
+  keys?: Set<string>;
+}
+
+/**
  * The qualifying tracks of `releases`: strip alternate versions of kept
  * releases, then apply the track rules (see `collectTracks`). A release whose
  * reads throw fails the collection, unless `contain` returns true for it: then
@@ -108,7 +118,7 @@ export async function gate(
 export async function collect(
   run: Run,
   releases: Map<string, FoundRelease>,
-  exclude: Set<string>,
+  exclude: Exclusion,
   contain?: (release: FoundRelease, error: unknown) => boolean,
 ): Promise<{
   collected: Collected[];
@@ -285,14 +295,14 @@ export async function chooseVariant(
 
 /**
  * Collect playable track ids for the given releases, applying deluxe,
- * title-track-only, and album/single dedup rules. `exclude` holds track ids
+ * title-track-only, and album/single dedup rules. `exclude` holds the tracks
  * removed outright (the listening history for a week collection; the All Weekly
- * ids plus the playlist's existing tracks for a promotion sync).
+ * ids plus the playlist's existing tracks, by id and key, for a promotion sync).
  */
 async function collectTracks(
   run: Run,
   foundReleases: Map<string, FoundRelease>,
-  exclude: Set<string>,
+  exclude: Exclusion,
   contain?: (release: FoundRelease, error: unknown) => boolean,
 ): Promise<{
   collected: Collected[];
@@ -371,7 +381,7 @@ async function collectTracks(
         skippedCount++;
         continue;
       }
-      if (exclude.has(track.id)) {
+      if (exclude.ids.has(track.id) || exclude.keys?.has(track.key)) {
         skippedCount++;
         continue;
       }

@@ -609,7 +609,7 @@ export async function collectWeek(
   const { collected, skippedCount, contained } = await collect(
     run,
     kept,
-    listeningHistory,
+    { ids: listeningHistory },
     aiPhase ? isContainedPickFailure : undefined,
   );
 

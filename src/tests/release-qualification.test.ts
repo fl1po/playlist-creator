@@ -330,7 +330,7 @@ test('alternate versions are stripped when the original is kept', async () => {
   const { collected } = await collect(
     r,
     found(catalog, ['alb-z', 'alb-zi', 'alb-sped']),
-    new Set(),
+    { ids: new Set() },
   );
 
   assert.deepEqual(
@@ -380,7 +380,7 @@ test('excluded tracks are skipped and counted', async () => {
   const { collected, skippedCount } = await collect(
     run(fixtureReads(catalog)),
     found(catalog, ['alb-x']),
-    new Set(['t2']),
+    { ids: new Set(['t2']) },
   );
 
   assert.deepEqual(
@@ -427,7 +427,7 @@ test('deluxe release: only tracks absent from the base album qualify', async () 
   const { collected, skippedCount } = await collect(
     r,
     found(catalog, ['alb-dlx']),
-    new Set(),
+    { ids: new Set() },
   );
 
   assert.deepEqual(
@@ -483,7 +483,7 @@ test('title-track-only: single promotion contributes only the title track', asyn
   const { collected, skippedCount } = await collect(
     r,
     found(catalog, ['alb-hit']),
-    new Set(),
+    { ids: new Set() },
   );
 
   assert.deepEqual(
@@ -530,11 +530,9 @@ test('a single duplicating an album track is skipped with a decision', async () 
   const r = run(fixtureReads(catalog));
 
   // The single comes first in the input; albums are collected first anyway.
-  const { collected } = await collect(
-    r,
-    found(catalog, ['sgl-h', 'alb-h']),
-    new Set(),
-  );
+  const { collected } = await collect(r, found(catalog, ['sgl-h', 'alb-h']), {
+    ids: new Set(),
+  });
 
   assert.deepEqual(
     collected.map((c) => c.release.id),
@@ -568,7 +566,9 @@ test('an all-instrumental release is stripped', async () => {
   };
   const r = run(fixtureReads(catalog));
 
-  const { collected } = await collect(r, found(catalog, ['alb-i']), new Set());
+  const { collected } = await collect(r, found(catalog, ['alb-i']), {
+    ids: new Set(),
+  });
 
   assert.deepEqual(collected, []);
   assert.deepEqual(kinds(r.decisions), ['variant-stripped']);
@@ -609,12 +609,15 @@ test('a release whose reads throw fails collection unless contained', async () =
   };
   const releases = found(catalog, ['alb-ok', 'alb-bad']);
 
-  await assert.rejects(collect(run(reads), releases, new Set()), /boom/);
+  await assert.rejects(
+    collect(run(reads), releases, { ids: new Set() }),
+    /boom/,
+  );
 
   const { collected, contained } = await collect(
     run(reads),
     releases,
-    new Set(),
+    { ids: new Set() },
     () => true,
   );
   assert.deepEqual(
@@ -670,7 +673,7 @@ test('a release is found only once it lands, keeping its source', async () => {
   const r = run(fixtureReads(catalog));
 
   // alb-heard's only track is excluded; alb-sped is stripped.
-  await collect(r, releases, new Set(['h1']));
+  await collect(r, releases, { ids: new Set(['h1']) });
 
   assert.deepEqual(
     r.decisions.filter((d) => d.kind === 'release-found'),
