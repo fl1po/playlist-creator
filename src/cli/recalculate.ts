@@ -5,7 +5,7 @@ import { printLines } from '../lib/task-log.js';
 import { secondaryLabel, UserConfigStore } from '../lib/user-config.js';
 import { spotifyRecalculationPorts } from '../services/recalculation/adapters.js';
 import {
-  describeChange,
+  describeRecalculationResult,
   describeSync,
 } from '../services/recalculation/describe.js';
 import { recalculate, syncPending } from '../services/recalculation/index.js';
@@ -44,19 +44,10 @@ const result = await recalculate(userConfig, deps, {
   onProgress: consoleRecalculationProgress(),
 });
 
-if (result.outcome === 'unchanged') {
-  console.log(
-    'Snapshots unchanged — nothing to recalculate (--force to re-score).',
-  );
-} else {
-  const { stats } = result.roster.metadata;
-  const t = userConfig.scoring.priorityThresholds;
-  console.log('\n=== Priority Distribution ===');
-  console.log(`P1 (score >= ${t.p1}): ${stats.p1Count}`);
-  console.log(`P2 (score ${t.p2}-${t.p1 - 1}): ${stats.p2Count}`);
-  console.log(`P3 (score ${t.p3}-${t.p2 - 1}): ${stats.p3Count}`);
-  console.log(`P4 (score ${t.p4}-${t.p3 - 1}): ${stats.p4Count}`);
+printLines(describeRecalculationResult(result));
 
+// A CLI-only report on top of the task log.
+if (result.outcome === 'recalculated') {
   console.log('\n=== Top 30 Artists ===');
   const top = Object.entries(result.roster.artistCounts)
     .sort((a, b) => b[1].score - a[1].score)
@@ -66,9 +57,6 @@ if (result.outcome === 'unchanged') {
       `P${data.priority} [${data.score}] ${name} - AW:${data.allWeekly} ${sl}:${data.bestOfAllWeekly} (recAW:+${data.recencyBonusAW} rec${sl}:+${data.recencyBonusBoAW})`,
     );
   }
-
-  console.log(`\n=== Tier changes (${result.changes.length}) ===`);
-  for (const c of result.changes) console.log(`  ${describeChange(c)}`);
 }
 
 if (result.pending.length === 0) {

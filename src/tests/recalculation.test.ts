@@ -17,7 +17,10 @@ import {
 } from '../lib/types.js';
 import { DEFAULT_USER_CONFIG, type UserConfig } from '../lib/user-config.js';
 import type { PlaylistWrites } from '../services/promotion-sync/index.js';
-import { describeSync } from '../services/recalculation/describe.js';
+import {
+  describeRecalculationResult,
+  describeSync,
+} from '../services/recalculation/describe.js';
 import {
   type RecalculationDeps,
   recalculate,
@@ -296,6 +299,16 @@ test('a P2 → P3 crossing is pending until promotion sync removes its album', a
 
   assert.deepEqual(result.changes, [{ artist: 'Fading', from: 2, to: 3 }]);
   assert.deepEqual(result.pending, [{ artist: 'Fading', from: 2, to: 3 }]);
+  assert.deepEqual(
+    describeRecalculationResult(result)
+      .slice(1)
+      .map((l) => l.message),
+    [
+      '1 artist(s) changed priority:',
+      '  P2 → P3: Fading',
+      'Priorities recalculated and saved',
+    ],
+  );
 
   const lines: string[] = [];
   const sync = await syncPending(config(), deps, (e) => {

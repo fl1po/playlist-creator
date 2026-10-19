@@ -1276,16 +1276,6 @@ function setStatusText(text) {
   document.getElementById('statusDot').title = text;
 }
 
-function logPriorityChanges(changes) {
-  if (!changes?.length) {
-    log('info', 'No priority changes detected');
-    return;
-  }
-  const label = (p) => p === null ? 'none' : `P${p}`;
-  log('info', `${changes.length} artist(s) changed priority:`);
-  for (const c of changes) log('info', `  ${c.artist}: ${label(c.from)} → ${label(c.to)}`);
-}
-
 // ── Log cache ───────────────────────────────────────────────────
 // The history events a page was sent are kept in IndexedDB, so a reload
 // replays them locally and asks the server only for what came after them.
@@ -1483,18 +1473,8 @@ function handleMessage({ type, data }) {
     case 'fill:recalculated':
       reloadSoon('artists');
       break;
-    // Recalc events
-    case 'recalc:scanStart':
-      log('info', `Scanning ${data.playlist}...`);
-      break;
     case 'recalc:complete':
-      log('success', `Priorities: P1=${data.p1Count} P2=${data.p2Count} P3=${data.p3Count} P4=${data.p4Count}`);
       reloadSoon('artists', 'stats');
-      break;
-    case 'recalc:changes':
-      logPriorityChanges(data.changes);
-      break;
-    case 'recalc:topArtists':
       break;
 
     // Lookup — results rendered from HTTP response in findArtist()
