@@ -1,6 +1,4 @@
 import { filterByPriority } from '../../domain/artists.js';
-import { TRUSTED_ARTISTS } from '../../lib/cache-files.js';
-import type { DurableCache } from '../../lib/durable-cache.js';
 import { sleep } from '../../lib/spotify/clock.js';
 import {
   isAbort,
@@ -9,6 +7,8 @@ import {
 } from '../../lib/spotify/gateway.js';
 import type { DateResult, TrustedArtistsFile } from '../../lib/types.js';
 import type { UserConfig } from '../../lib/user-config.js';
+import type { UserData } from '../../lib/user-data/index.js';
+import { TRUSTED_ARTISTS } from '../../lib/user-data/index.js';
 import { saveAiPicks } from '../ai-picks.js';
 import type {
   PriorityChange,
@@ -31,7 +31,7 @@ import {
   weeklyPlaylists,
 } from '../weekly-playlists/index.js';
 import type { FillEvent } from './events.js';
-import type { FillHistoryEntry, FillStorage, ProgressFile } from './storage.js';
+import type { FillHistoryEntry, FillStorage } from './storage.js';
 
 // ── Ports (the seam) ─────────────────────────────────────────────────────────
 
@@ -64,10 +64,10 @@ export interface FillRunOptions {
   ctx: SpotifyGateway;
   userId: string;
   userConfig: UserConfig;
-  /** The fill's own persistence: progress file and fill history. */
+  /** The fill's own persistence: week progress and fill history. */
   storage: FillStorage;
   /** Holds the roster, recalculation state and pending priority changes. */
-  cache: DurableCache;
+  data: UserData;
   ports: FillPorts;
   /** Everything the fill reports — `consoleFillSink` or `webFillSink`. */
   onEvent: (e: FillEvent) => void;
@@ -127,21 +127,7 @@ function toDateResult(week: WeekCollection, w: WeeklyWrite): DateResult {
   };
 }
 
-// ── Progress file, history, resume hint ──────────────────────────────────────
-
-async function writeProgressFile(
-  storage: FillStorage,
-  results: DateResult[],
-): Promise<void> {
-  const completed = results.filter((r) => !(r.error || r.skipped));
-  const progress: ProgressFile = {
-    completed: completed.length,
-    total: results.length,
-    lastProcessed: results[results.length - 1]?.date,
-    results,
-  };
-  await storage.saveProgress(progress);
-}
+// ── History, resume hint ─────────────────────────────────────────────────────
 
 /** Append a fill-history entry if any tracks were added. */
 async function maybeAppendFillHistory(
@@ -187,7 +173,7 @@ async function emitResumedIfAny(
     for (const date of dates) {
       const progress = await opts.ports.week.checkpoints.load(date);
       if (!progress || progress.artistsSearched <= 0) continue;
-      const trusted = await opts.cache.load(TRUSTED_ARTISTS);
+      const trusted = await opts.data.load(TRUSTED_ARTISTS);
       if (!trusted) return;
       // Week progress stores only a count; the roster is searched in P1/P2
       // order, so the searched artists are its first `count` names.
@@ -207,7 +193,7 @@ async function emitResumedIfAny(
 
 /**
  * Common tail for every fill, regardless of how many dates were processed:
- * persist progress/history, then promotion-sync whatever priority changes are
+ * append fill history, then promotion-sync whatever priority changes are
  * pending — this fill's mid-fill recalculations', or ones an earlier run left.
  * Both callers (CLI and web) get this for free — a fill isn't done until this
  * has run.
@@ -220,7 +206,6 @@ async function finishFill(
   durationMinutes: number,
 ): Promise<FillResult> {
   const { storage, onEvent } = opts;
-  await writeProgressFile(storage, results);
   await maybeAppendFillHistory(storage, results);
 
   // A sync failure shouldn't fail an otherwise-successful fill: the changes
@@ -247,11 +232,11 @@ async function finishFill(
 // ── Interface ────────────────────────────────────────────────────────────────
 
 export async function runFill(opts: FillRunOptions): Promise<FillResult> {
-  const { ctx, userId, userConfig, cache, ports } = opts;
+  const { ctx, userId, userConfig, data, ports } = opts;
   const emit = opts.onEvent;
   const log = (message: string) => emit({ kind: 'log', message });
   const recalculation: RecalculationDeps = {
-    cache,
+    data,
     ports: ports.recalculation,
   };
   const weekly = weeklyPlaylists({
@@ -286,7 +271,7 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
 
   // ── Trusted artists ──────────────────────────────────────────────────────
   let trustedArtists: TrustedArtistsFile | null =
-    await cache.load(TRUSTED_ARTISTS);
+    await data.load(TRUSTED_ARTISTS);
   let p1p2Artists = trustedArtists
     ? filterByPriority(trustedArtists.artistCounts, [1, 2])
     : [];
@@ -380,7 +365,7 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
       // write leaves none. A failed save mustn't fail a written week.
       if (week.aiPicks && written.outcome !== 'skipped') {
         try {
-          await saveAiPicks(cache, targetDate, week.aiPicks);
+          await saveAiPicks(data, targetDate, week.aiPicks);
         } catch (saveErr) {
           if (isAbort(saveErr)) throw saveErr;
           emit({

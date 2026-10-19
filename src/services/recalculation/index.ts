@@ -1,11 +1,4 @@
 import {
-  BATCH_CACHE,
-  PENDING_PRIORITY_CHANGES,
-  RECALCULATION_STATE,
-  TRUSTED_ARTISTS,
-} from '../../lib/cache-files.js';
-import type { DurableCache } from '../../lib/durable-cache.js';
-import {
   type CachedScanResult,
   isRoleTaggedCache,
   type PlaylistScanResult,
@@ -16,6 +9,13 @@ import {
   toScanResult,
 } from '../../lib/types.js';
 import { secondarySourceName, type UserConfig } from '../../lib/user-config.js';
+import type { UserData } from '../../lib/user-data/index.js';
+import {
+  BATCH_CACHE,
+  PENDING_PRIORITY_CHANGES,
+  RECALCULATION_STATE,
+  TRUSTED_ARTISTS,
+} from '../../lib/user-data/index.js';
 import {
   type PriorityChange,
   type PromotionProgressEvent,
@@ -76,7 +76,7 @@ export interface RecalculationPorts {
 
 export interface RecalculationDeps {
   /** Holds the roster, recalculation state and pending priority changes. */
-  cache: DurableCache;
+  data: UserData;
   ports: RecalculationPorts;
 }
 
@@ -139,11 +139,11 @@ function byTier(a: PriorityChange, b: PriorityChange): number {
  * its own descriptor, after which the fallback is never hit again.
  */
 async function loadState(
-  cache: DurableCache,
+  data: UserData,
 ): Promise<{ state: RecalculationState; migrated: boolean }> {
-  const own = await cache.load(RECALCULATION_STATE);
+  const own = await data.load(RECALCULATION_STATE);
   if (own) return { state: own, migrated: false };
-  const legacy = await cache.load(BATCH_CACHE);
+  const legacy = await data.load(BATCH_CACHE);
   if (!legacy?.allWeeklySnapshot) return { state: {}, migrated: false };
   const { artistSearchProgress: _, ...state } = legacy;
   return { state, migrated: true };
@@ -256,13 +256,13 @@ export async function recalculate(
   deps: RecalculationDeps,
   opts: RecalculateOptions = {},
 ): Promise<RecalculationResult> {
-  const { cache, ports } = deps;
+  const { data, ports } = deps;
   const onProgress = opts.onProgress ?? (() => {});
 
   const [{ state, migrated }, prior, pending, live] = await Promise.all([
-    loadState(cache),
-    cache.load(TRUSTED_ARTISTS),
-    cache.load(PENDING_PRIORITY_CHANGES),
+    loadState(data),
+    data.load(TRUSTED_ARTISTS),
+    data.load(PENDING_PRIORITY_CHANGES),
     ports.sources.snapshots(userConfig.sourcePlaylists),
   ]);
   const aw = planSource(state.allWeeklySnapshot, live.aw, state.awScanCache);
@@ -273,7 +273,7 @@ export async function recalculate(
   );
 
   if (prior && !(opts.force || aw.changed || boaw.changed)) {
-    if (migrated) await cache.save(RECALCULATION_STATE, state);
+    if (migrated) await data.save(RECALCULATION_STATE, state);
     return {
       outcome: 'unchanged',
       roster: prior,
@@ -306,10 +306,10 @@ export async function recalculate(
   // Pending first: if we stop before the roster is saved, the next run
   // re-derives the same changes and the merge makes that idempotent.
   if (nextPending.length > 0)
-    await cache.save(PENDING_PRIORITY_CHANGES, nextPending);
-  else await cache.delete(PENDING_PRIORITY_CHANGES);
-  await cache.save(TRUSTED_ARTISTS, roster);
-  await cache.save(RECALCULATION_STATE, {
+    await data.save(PENDING_PRIORITY_CHANGES, nextPending);
+  else await data.delete(PENDING_PRIORITY_CHANGES);
+  await data.save(TRUSTED_ARTISTS, roster);
+  await data.save(RECALCULATION_STATE, {
     allWeeklySnapshot: aw.snapshot,
     bestOfAllWeeklySnapshot: boaw.snapshot,
     awScanCache: toCachedScanResult(awScan),
@@ -330,9 +330,9 @@ export async function syncPending(
   deps: RecalculationDeps,
   onProgress: (e: SyncProgress) => void = () => {},
 ): Promise<PromotionSyncResult | null> {
-  const { cache, ports } = deps;
-  const pending = await cache.load(PENDING_PRIORITY_CHANGES);
-  const roster = await cache.load(TRUSTED_ARTISTS);
+  const { data, ports } = deps;
+  const pending = await data.load(PENDING_PRIORITY_CHANGES);
+  const roster = await data.load(TRUSTED_ARTISTS);
   if (!(pending && roster)) return null;
 
   const log = (message: string, level: 'info' | 'debug' = 'info') =>
@@ -344,7 +344,7 @@ export async function syncPending(
   if (playlists.length === 0) {
     // Every later weekly playlist is built from the new roster anyway.
     log('No unprocessed weekly playlists found');
-    await cache.delete(PENDING_PRIORITY_CHANGES);
+    await data.delete(PENDING_PRIORITY_CHANGES);
     return null;
   }
 
@@ -363,7 +363,7 @@ export async function syncPending(
     onProgress,
   );
 
-  await cache.delete(PENDING_PRIORITY_CHANGES);
+  await data.delete(PENDING_PRIORITY_CHANGES);
   if (result.removed > 0 || result.added > 0)
     await ports.unprocessed.invalidate();
   onProgress({ phase: 'complete', result });

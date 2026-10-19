@@ -1,8 +1,5 @@
-import fs from 'node:fs';
 import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import type express from 'express';
-import type { DurableCache } from '../lib/durable-cache.js';
-import { createDurableCache } from '../lib/durable-cache.js';
 import { describeSpotifyEvent } from '../lib/spotify/events.js';
 import { type SpotifyGateway, TaskAborted } from '../lib/spotify/gateway.js';
 import type {
@@ -10,7 +7,8 @@ import type {
   ProgressView,
   TaskProgress,
 } from '../lib/task-progress.js';
-import type { IUserConfigStore, UserConfig } from '../lib/user-config.js';
+import type { UserConfig } from '../lib/user-config.js';
+import type { UserData } from '../lib/user-data/index.js';
 import type { Broadcaster } from './broadcast.js';
 import type { UserSession } from './route-context.js';
 
@@ -23,7 +21,6 @@ export interface BaseEvents extends BroadcastEventMap {
     level: 'info' | 'warn' | 'error' | 'success' | 'debug';
     message: string;
   };
-  'data:save': { key: string; value: unknown };
 }
 
 export type TypedEmit<E extends BroadcastEventMap> = <
@@ -42,18 +39,13 @@ export interface TaskContext<E extends BaseEvents = BaseEvents> {
    */
   ctx: SpotifyGateway;
   body: Record<string, unknown>;
-  userConfigStore: IUserConfigStore;
-  dataDir: string;
   userId: string;
   /** Throws `TaskAborted` if the user requested abort. */
   checkAbort: () => void;
   /** Where the task is, shown to its owner only (ADR-0006). */
   progress: TaskProgress;
-  /**
-   * File-then-Redis durable cache, scoped to this user. Every save is also
-   * mirrored to the browser's localStorage.
-   */
-  cache: DurableCache;
+  /** The owner's user data. */
+  data: UserData;
   /** Typed broadcast — only declared event names + payloads compile. */
   emit: TypedEmit<E>;
   /** Sugar for `emit('log', { level, message })`. */
@@ -284,8 +276,6 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     const tc = createTaskContext(def, session, body, run);
     const done = (async () => {
       try {
-        // Every task assumes its data dir exists (services write cache files into it).
-        fs.mkdirSync(session.dataDir, { recursive: true });
         await def.run(tc);
       } catch (err) {
         const stopped = abort.signal.aborted;
@@ -348,19 +338,10 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     return {
       ctx,
       body,
-      userConfigStore: session.userConfigStore,
-      dataDir: session.dataDir,
       userId: session.userId,
       checkAbort,
       progress,
-      // Mirror every save to the browser's localStorage under the
-      // dataset's name.
-      cache: createDurableCache({
-        userId: session.userId,
-        dataDir: session.dataDir,
-        onSave: (descriptor, value) =>
-          userBroadcast('data:save', { key: descriptor.redisName, value }),
-      }),
+      data: session.data,
       emit: userBroadcast as TypedEmit<E>,
       log: (level, message) => userBroadcast('log', { level, message }),
       iter: async (items, fn) => {
@@ -371,7 +352,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         }
       },
       userConfig: () => {
-        userConfigPromise ??= Promise.resolve(session.userConfigStore.load());
+        userConfigPromise ??= session.data.config.load();
         return userConfigPromise;
       },
       me: () => {

@@ -30,9 +30,9 @@ export const dedupScanTask: TaskDefinition<DedupScanEvents> = {
 
     const { playlists: candidates } = await getNonListenedPlaylists(
       tc.ctx,
+      tc.data,
       me.id,
       userConfig.sourcePlaylists.allWeeklyId,
-      tc.dataDir,
       (msg, level) => tc.log(level ?? 'info', msg),
     );
 

@@ -4,13 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { formatDateISO, formatDdMmYy } from '../domain/tracks.js';
-import {
-  AI_PICKS,
-  PENDING_PRIORITY_CHANGES,
-  RECALCULATION_STATE,
-  TRUSTED_ARTISTS,
-} from '../lib/cache-files.js';
-import { createDurableCache, type DurableCache } from '../lib/durable-cache.js';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
 import { type SpotifyGateway, TaskAborted } from '../lib/spotify/gateway.js';
 import type {
@@ -19,6 +12,14 @@ import type {
   TrustedArtistsFile,
 } from '../lib/types.js';
 import { DEFAULT_USER_CONFIG, type UserConfig } from '../lib/user-config.js';
+import {
+  AI_PICKS,
+  localUserData,
+  PENDING_PRIORITY_CHANGES,
+  RECALCULATION_STATE,
+  TRUSTED_ARTISTS,
+  type UserData,
+} from '../lib/user-data/index.js';
 import { fillPorts } from '../services/playlist-filler/adapters.js';
 import { describeFill } from '../services/playlist-filler/describe.js';
 import type { FillEvent } from '../services/playlist-filler/events.js';
@@ -30,7 +31,6 @@ import {
 import type {
   FillHistoryEntry,
   FillStorage,
-  ProgressFile,
 } from '../services/playlist-filler/storage.js';
 import type {
   RecalculationPorts,
@@ -70,13 +70,9 @@ const FILLED_FRIDAY = formatDdMmYy(mostRecentFriday(new Date()));
 
 // ── Fixture: in-memory FillStorage (the fill's own data) ─────────────────────
 
-function memoryStorage(): FillStorage & {
-  history: FillHistoryEntry[];
-  progress?: ProgressFile;
-} {
+function memoryStorage(): FillStorage & { history: FillHistoryEntry[] } {
   let cache: BatchCache = {};
   const history: FillHistoryEntry[] = [];
-  let progress: ProgressFile | undefined;
   return {
     async loadBatchCache() {
       return cache;
@@ -87,14 +83,8 @@ function memoryStorage(): FillStorage & {
     async appendFillHistory(entry) {
       history.push(entry);
     },
-    async saveProgress(p) {
-      progress = p;
-    },
     get history() {
       return history;
-    },
-    get progress() {
-      return progress;
     },
   };
 }
@@ -235,9 +225,9 @@ function world(
   sources?: SourceReads,
 ) {
   const dataDir = tmpDataDir(t);
-  const cache = createDurableCache({ userId: 'user-1', dataDir, redis: null });
+  const cache = localUserData(dataDir);
   const storage = memoryStorage();
-  const ports = fillPorts(ctx, { userId: 'user-1', dataDir, storage, cache });
+  const ports = fillPorts(ctx, { userId: 'user-1', data: cache, storage });
   if (sources) ports.recalculation = { ...ports.recalculation, sources };
   return {
     cache,
@@ -248,7 +238,7 @@ function world(
         userId: 'user-1',
         userConfig: USER_CONFIG,
         storage,
-        cache,
+        data: cache,
         ports,
         onEvent: () => {},
         aiFindsAvailable: false,
@@ -281,7 +271,7 @@ function demotionCtx(opts: Partial<FixtureWorld> = {}) {
   });
 }
 
-async function seedPending(cache: DurableCache) {
+async function seedPending(cache: UserData) {
   await cache.save(
     TRUSTED_ARTISTS,
     trusted({ 'Demoted Artist': { priority: 4, score: 10 } }),
@@ -291,13 +281,12 @@ async function seedPending(cache: DurableCache) {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-test('nothing pending: progress is written, sync never runs', async (t) => {
+test('nothing pending: sync never runs', async (t) => {
   const w = world(t, fixtureCtx({ userId: 'user-1' }));
   const result = await runFill(w.options());
 
   assert.deepEqual(result.priorityChanges, []);
   assert.equal(result.syncedPlaylists, null);
-  assert.equal(w.storage.progress?.total, 0);
 });
 
 test('reading the playlists that set the date range logs its progress', async (t) => {
@@ -411,9 +400,8 @@ test('a fill aborted after a mid-fill recalculation leaves the sync for the next
     ctx,
     ports: fillPorts(ctx, {
       userId: 'user-1',
-      dataDir: tmpDataDir(t),
+      data: first.cache,
       storage: first.storage,
-      cache: first.cache,
     }),
   });
 
@@ -508,7 +496,7 @@ function memoryPorts(catalog: Catalog, weeklies: SimplePlaylist[]) {
 }
 
 /** A roster the mid-fill recalculation will keep: both sources unchanged. */
-async function seedRoster(cache: DurableCache, roster: TrustedArtistsFile) {
+async function seedRoster(cache: UserData, roster: TrustedArtistsFile) {
   await cache.save(TRUSTED_ARTISTS, roster);
   await cache.save(RECALCULATION_STATE, {
     allWeeklySnapshot: 'aw-1',
@@ -518,7 +506,7 @@ async function seedRoster(cache: DurableCache, roster: TrustedArtistsFile) {
 
 function memoryWorld(t: { after: (fn: () => void) => void }, ports: FillPorts) {
   const dataDir = tmpDataDir(t);
-  const cache = createDurableCache({ userId: 'user-1', dataDir, redis: null });
+  const cache = localUserData(dataDir);
   const storage = memoryStorage();
   return {
     cache,
@@ -529,7 +517,7 @@ function memoryWorld(t: { after: (fn: () => void) => void }, ports: FillPorts) {
         userId: 'user-1',
         userConfig: USER_CONFIG,
         storage,
-        cache,
+        data: cache,
         ports,
         onEvent: () => {},
         aiFindsAvailable: false,
@@ -978,12 +966,10 @@ test('the AI ports are built once per fill, for its week count', async (t) => {
 });
 
 test('the production fill ports build the Deezer source and the Claude judge', (t) => {
-  const dataDir = tmpDataDir(t);
   const ports = fillPorts(fixtureCtx({ userId: 'user-1' }), {
     userId: 'user-1',
-    dataDir,
+    data: localUserData(tmpDataDir(t)),
     storage: memoryStorage(),
-    cache: createDurableCache({ userId: 'user-1', dataDir, redis: null }),
   });
 
   const ai = ports.ai?.({ weeks: 1 });

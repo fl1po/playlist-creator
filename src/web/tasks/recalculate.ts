@@ -30,10 +30,10 @@ export const recalculateTask: TaskDefinition<RecalculateEvents> = {
 
     const userConfig = await tc.userConfig();
     const deps = {
-      cache: tc.cache,
+      data: tc.data,
       ports: spotifyRecalculationPorts(tc.ctx, {
         userId: tc.userId,
-        dataDir: tc.dataDir,
+        data: tc.data,
       }),
     };
 

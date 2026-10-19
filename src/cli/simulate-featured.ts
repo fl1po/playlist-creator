@@ -6,7 +6,8 @@ import {
 } from '../lib/pagination.js';
 import { createCliGateway } from '../lib/spotify/gateway.js';
 import type { TrustedArtistsFile } from '../lib/types.js';
-import { secondarySourceName, UserConfigStore } from '../lib/user-config.js';
+import { secondarySourceName } from '../lib/user-config.js';
+import { localUserData } from '../lib/user-data/index.js';
 import {
   type ReportContext,
   renderReport,
@@ -23,7 +24,7 @@ if (!Number.isFinite(multiplier) || multiplier < 0 || multiplier > 1) {
 }
 
 const ctx = createCliGateway({ configStore: new FileConfigStore() });
-const userConfig = new UserConfigStore().load();
+const userConfig = await localUserData('.').config.load();
 const secondaryName = secondarySourceName(userConfig);
 
 console.log('=== Featured-artist gain simulation (read-only) ===');

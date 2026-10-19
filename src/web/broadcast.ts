@@ -83,7 +83,7 @@ function resumeSeq(lastEventId: string | null | undefined): number {
 /** High-frequency or transient types that should not be stored. */
 const SKIP_HISTORY = new Set(['status', 'reload', 'auth']);
 
-/** Replayed, but not worth persisting: the browser's storage mirror. */
+/** Replayed, but not worth persisting: rotated tokens pushed to the browser. */
 const SKIP_PERSIST = new Set(['data:save']);
 
 /**
@@ -103,9 +103,8 @@ export function createBroadcaster(opts: BroadcasterOptions = {}): Broadcaster {
   const clients = new Map<Response, string | null>(); // res -> userId
   const logHistory = new Map<string, StoredEntry[]>(); // userId -> messages
   const pending = new Map<string, StoredEntry[]>(); // userId -> not yet stored
-  // userId -> storage key -> its latest mirror save in logHistory. Only the
-  // newest value per key matters to a replaying browser, and a fill re-saves
-  // the same large datasets many times over.
+  // userId -> storage key -> its latest token push in logHistory. Only the
+  // newest value per key matters to a replaying browser.
   const latestSave = new Map<string, Map<string, StoredEntry>>();
   const clearedAt = new Map<string, number>(); // userId -> seq of last clear
   const snapshots: Array<(userId: string | null) => SnapshotMessage[]> = [];

@@ -1,4 +1,4 @@
-import { Redis } from '@upstash/redis';
+import type { Redis } from '@upstash/redis';
 
 /**
  * Durable home of the live log, so it survives deploys. The broadcaster
@@ -95,14 +95,6 @@ export function upstashLogStore(
       await redis.del(...keys);
     },
   };
-}
-
-/** The production store, or null when Redis isn't configured. */
-export function productionLogStore(): LogStore | null {
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!(url && token)) return null;
-  return upstashLogStore(new Redis({ url, token }));
 }
 
 // ── Memory ───────────────────────────────────────────────────────────────────

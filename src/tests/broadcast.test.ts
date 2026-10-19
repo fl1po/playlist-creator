@@ -245,7 +245,7 @@ test('lines older than a week are not restored', async () => {
   assert.deepEqual(messagesOf(client), ['recent', 'server:restarted']);
 });
 
-test('browser storage mirrors are not persisted', async () => {
+test('token pushes are not persisted', async () => {
   const store = memoryLogStore();
   const before = createBroadcaster({ store });
   before.broadcastTo('u1', 'data:save', { key: 'tokens', value: 'secret' });

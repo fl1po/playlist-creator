@@ -1,12 +1,19 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Redis } from '@upstash/redis';
+import {
+  copyUserData,
+  durableUserData,
+  localUserData,
+  UpstashRedisPort,
+  upstashFromEnv,
+} from '../lib/user-data/index.js';
 
 /**
- * Pull a user's deployment state out of Upstash Redis into the local web-mode
- * data dir (data/users/<userId>/), so the running app can be exercised against
- * real data locally.
+ * Copy a user's production user data out of Upstash Redis into the local
+ * web-mode data dir (data/users/<userId>/), so the running app can be
+ * exercised against real data locally.
  *
  * Usage:  UPSTASH_REDIS_REST_URL=... UPSTASH_REDIS_REST_TOKEN=... \
  *           npm run import-from-redis <spotifyUserId>
@@ -25,66 +32,30 @@ if (!userId) {
   process.exit(1);
 }
 
-const url = process.env.UPSTASH_REDIS_REST_URL;
-const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-if (!(url && token)) {
+const upstash = upstashFromEnv();
+if (!upstash) {
   console.error(
     'Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in the environment.',
   );
   process.exit(1);
 }
 
-const redis = new Redis({ url, token });
-
+// An empty data dir, so every load falls through to Redis.
+const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'import-from-redis-'));
+const production = durableUserData({
+  userId,
+  dataDir: emptyDir,
+  redis: new UpstashRedisPort(upstash),
+});
 const dataDir = path.join(PROJECT_ROOT, 'data', 'users', userId);
-fs.mkdirSync(dataDir, { recursive: true });
-
-// Redis key → local filename. Web mode reads these from data/users/<userId>/.
-const MAP: Array<{ key: string; file: string }> = [
-  { key: `config:${userId}`, file: 'user-config.json' },
-  { key: `trustedArtists:${userId}`, file: 'trusted-artists.json' },
-  { key: `batchCache:${userId}`, file: 'batch-cache.json' },
-  {
-    key: `recalculationState:${userId}`,
-    file: 'recalculation-state.json',
-  },
-  {
-    key: `pendingPriorityChanges:${userId}`,
-    file: 'pending-priority-changes.json',
-  },
-  { key: `fillHistory:${userId}`, file: 'fill-history.json' },
-];
-
-/** Values are stored either as objects (config) or JSON strings (the rest). */
-function normalize(raw: unknown): unknown {
-  if (typeof raw === 'string') {
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return raw;
-    }
-  }
-  return raw;
-}
 
 console.log(`Importing Redis data for "${userId}" → ${dataDir}\n`);
-
-for (const { key, file } of MAP) {
-  const raw = await redis.get(key);
-  if (raw == null) {
-    console.log(`  - ${key}: (empty) — skipped`);
-    continue;
-  }
-  const value = normalize(raw);
-  fs.writeFileSync(path.join(dataDir, file), JSON.stringify(value, null, 2));
-  const summary = Array.isArray(value)
-    ? `${value.length} items`
-    : `${(JSON.stringify(value).length / 1024).toFixed(1)} KB`;
-  console.log(`  ✓ ${key} → data/users/${userId}/${file} (${summary})`);
-}
+const copied = await copyUserData(production, localUserData(dataDir));
+fs.rmSync(emptyDir, { recursive: true, force: true });
+for (const name of copied) console.log(`  ✓ ${name}`);
 
 console.log(
-  '\nDone. Now run `npm run web` WITHOUT the UPSTASH_* env vars so the app uses' +
-    '\nthese local files (and does not write back to production Redis), then' +
-    '\ntrigger a recalculation to test the demotion sync.',
+  `\nCopied ${copied.length} dataset(s). Now run \`npm run web\` WITHOUT the` +
+    '\nUPSTASH_* env vars so the app uses these local files (and does not write' +
+    '\nback to production Redis).',
 );

@@ -3,15 +3,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { RELATED_ARTIST_GRAPH } from '../lib/cache-files.js';
 import type {
   DeezerAlbumDetail,
   DeezerArtist,
   DeezerArtistAlbum,
   DeezerTopTrack,
 } from '../lib/deezer-client.js';
-import { createDurableCache, type DurableCache } from '../lib/durable-cache.js';
 import { TaskAborted } from '../lib/spotify/errors.js';
+import {
+  durableUserData,
+  localUserData,
+  RELATED_ARTIST_GRAPH,
+  type UserData,
+} from '../lib/user-data/index.js';
 import {
   type DeezerReads,
   deezerCandidateSource,
@@ -204,9 +208,10 @@ function request(over: Partial<CandidateRequest> = {}): CandidateRequest {
   };
 }
 
-function tempCache(): DurableCache {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'candidates-test-'));
-  return createDurableCache({ userId: 'user-1', dataDir, redis: null });
+function tempData(): UserData {
+  return localUserData(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'candidates-test-')),
+  );
 }
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -215,7 +220,7 @@ const DAY = 24 * 60 * 60 * 1000;
 
 test('returns in-window roster releases in Deezer shape', async () => {
   const deezer = fixtureDeezer([nova, quill]);
-  const source = deezerCandidateSource({ deezer, cache: tempCache() });
+  const source = deezerCandidateSource({ deezer, data: tempData() });
 
   const candidates = await source.candidates(request());
 
@@ -243,7 +248,7 @@ test('returns in-window roster releases in Deezer shape', async () => {
 
 test('never returns out-of-window releases', async () => {
   const deezer = fixtureDeezer([nova]);
-  const source = deezerCandidateSource({ deezer, cache: tempCache() });
+  const source = deezerCandidateSource({ deezer, data: tempData() });
 
   const candidates = await source.candidates(request());
 
@@ -256,7 +261,7 @@ test('never returns out-of-window releases', async () => {
 
 test('a roster artist Deezer lacks yields nothing', async () => {
   const deezer = fixtureDeezer([nova]);
-  const source = deezerCandidateSource({ deezer, cache: tempCache() });
+  const source = deezerCandidateSource({ deezer, data: tempData() });
 
   const candidates = await source.candidates(
     request({
@@ -274,7 +279,7 @@ test('relative popularity is best rank over the median top-10 rank', async () =>
   const deezer = fixtureDeezer([nova]);
   const [c] = await deezerCandidateSource({
     deezer,
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(request());
   assert.equal(c?.relativePopularity, 0.75);
 });
@@ -285,7 +290,7 @@ test("the release's own tracks don't count as the artist's usual", async () => {
   ]);
   const [c] = await deezerCandidateSource({
     deezer,
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(request());
   assert.equal(c?.relativePopularity, 0.5);
 });
@@ -294,7 +299,7 @@ test("Deezer's 100k placeholder rank leaves relative popularity missing", async 
   const deezer = fixtureDeezer([quill]);
   const [c] = await deezerCandidateSource({
     deezer,
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(request());
   assert.equal(c?.title, 'Paper');
   assert.equal(c?.relativePopularity, null);
@@ -303,13 +308,13 @@ test("Deezer's 100k placeholder rank leaves relative popularity missing", async 
 test("popularity is the release's best rank on the gate's 0–100 scale", async () => {
   const [nightBus] = await deezerCandidateSource({
     deezer: fixtureDeezer([nova]),
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(request());
   assert.equal(nightBus?.popularity, 30);
 
   const [paper] = await deezerCandidateSource({
     deezer: fixtureDeezer([quill]),
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(request());
   assert.equal(paper?.popularity, null);
 });
@@ -320,7 +325,7 @@ test("placeholder ranks don't count as the artist's usual", async () => {
   ]);
   const [c] = await deezerCandidateSource({
     deezer,
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(request());
   assert.equal(c?.relativePopularity, 0.5);
 });
@@ -329,7 +334,7 @@ test('no top tracks leaves relative popularity missing', async () => {
   const deezer = fixtureDeezer([{ ...nova, top: [] }]);
   const [c] = await deezerCandidateSource({
     deezer,
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(request());
   assert.equal(c?.relativePopularity, null);
 });
@@ -337,14 +342,14 @@ test('no top tracks leaves relative popularity missing', async () => {
 // ── Caching ─────────────────────────────────────────────────────────────────
 
 test('top-tracks lookups are cached across fills', async () => {
-  const cache = tempCache();
+  const data = tempData();
   await deezerCandidateSource({
     deezer: fixtureDeezer([nova]),
-    cache,
+    data,
   }).candidates(request());
 
   const deezer = fixtureDeezer([nova]);
-  const [c] = await deezerCandidateSource({ deezer, cache }).candidates(
+  const [c] = await deezerCandidateSource({ deezer, data }).candidates(
     request(),
   );
 
@@ -355,24 +360,24 @@ test('top-tracks lookups are cached across fills', async () => {
 
 test('top tracks are reused across weeks of one fill', async () => {
   const deezer = fixtureDeezer([nova]);
-  const source = deezerCandidateSource({ deezer, cache: tempCache() });
+  const source = deezerCandidateSource({ deezer, data: tempData() });
   await source.candidates(request());
   await source.candidates(request());
   assert.equal(deezer.calls.filter((call) => call === 'topTracks 1').length, 1);
 });
 
 test('stale top tracks are fetched again', async () => {
-  const cache = tempCache();
+  const data = tempData();
   let now = Date.parse('2026-06-06');
   await deezerCandidateSource({
     deezer: fixtureDeezer([nova]),
-    cache,
+    data,
     now: () => now,
   }).candidates(request());
 
   now += 60 * DAY;
   const deezer = fixtureDeezer([nova]);
-  await deezerCandidateSource({ deezer, cache, now: () => now }).candidates(
+  await deezerCandidateSource({ deezer, data, now: () => now }).candidates(
     request(),
   );
 
@@ -380,17 +385,17 @@ test('stale top tracks are fetched again', async () => {
 });
 
 test('a failed top-tracks lookup is not cached', async () => {
-  const cache = tempCache();
+  const data = tempData();
   const failing = fixtureDeezer([nova]);
   failing.fail('topTracks', 'Nova');
   const [first] = await deezerCandidateSource({
     deezer: failing,
-    cache,
+    data,
   }).candidates(request());
   assert.equal(first?.relativePopularity, null);
 
   const deezer = fixtureDeezer([nova]);
-  const [second] = await deezerCandidateSource({ deezer, cache }).candidates(
+  const [second] = await deezerCandidateSource({ deezer, data }).candidates(
     request(),
   );
   assert.equal(second?.relativePopularity, 0.75);
@@ -414,7 +419,7 @@ const reject = (over: Partial<CandidateReject> = {}): CandidateReject => ({
 
 test('rejects come back enriched with Deezer data and their gate provenance', async () => {
   const deezer = fixtureDeezer([nova]);
-  const source = deezerCandidateSource({ deezer, cache: tempCache() });
+  const source = deezerCandidateSource({ deezer, data: tempData() });
 
   const candidates = await source.candidates(
     request({ rosterArtists: [], rejects: [reject()] }),
@@ -450,7 +455,7 @@ test('a reject Deezer lacks still comes back, unenriched', async () => {
 
   const candidates = await deezerCandidateSource({
     deezer,
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(request({ rosterArtists: [], rejects: [lowPop] }));
 
   assert.deepEqual(candidates, [
@@ -493,7 +498,7 @@ const scouted = (
 
 test('a scouting release is looked up on Deezer and keeps its Spotify album id', async () => {
   const deezer = fixtureDeezer([nova]);
-  const source = deezerCandidateSource({ deezer, cache: tempCache() });
+  const source = deezerCandidateSource({ deezer, data: tempData() });
 
   const candidates = await source.candidates(
     request({
@@ -532,7 +537,7 @@ test('a scouting release Deezer lacks stays Spotify-only', async () => {
   const deezer = fixtureDeezer([nova]);
   const candidates = await deezerCandidateSource({
     deezer,
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(
     request({
       rosterArtists: [],
@@ -573,7 +578,7 @@ test('a failed scouting lookup still returns the Spotify-only release', async ()
   deezer.fail('getAlbum', 'Nova');
   const candidates = await deezerCandidateSource({
     deezer,
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(request({ rosterArtists: [], scouting: [scouted('Lorem')] }));
   assert.equal(candidates[0]?.id, 'scout-sp-10');
   assert.equal(candidates[0]?.upc, null);
@@ -588,7 +593,7 @@ for (const what of ['searchArtist', 'artistAlbums', 'getAlbum'] as const) {
     deezer.fail(what, 'Nova');
     const candidates = await deezerCandidateSource({
       deezer,
-      cache: tempCache(),
+      data: tempData(),
     }).candidates(request());
     assert.deepEqual(
       candidates.map((c) => c.title),
@@ -598,14 +603,14 @@ for (const what of ['searchArtist', 'artistAlbums', 'getAlbum'] as const) {
 }
 
 test('a failed artist lookup is not cached as not-found', async () => {
-  const cache = tempCache();
+  const data = tempData();
   const failing = fixtureDeezer([nova]);
   failing.fail('searchArtist', 'Nova');
-  await deezerCandidateSource({ deezer: failing, cache }).candidates(request());
+  await deezerCandidateSource({ deezer: failing, data }).candidates(request());
 
   const candidates = await deezerCandidateSource({
     deezer: fixtureDeezer([nova]),
-    cache,
+    data,
   }).candidates(request());
   assert.deepEqual(
     candidates.map((c) => c.title),
@@ -618,18 +623,18 @@ test('a failed reject lookup still returns the reject', async () => {
   deezer.fail('getAlbum', 'Nova');
   const candidates = await deezerCandidateSource({
     deezer,
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(request({ rosterArtists: [], rejects: [reject()] }));
   assert.equal(candidates[0]?.id, 'reject-sp-10');
   assert.equal(candidates[0]?.upc, null);
 });
 
 test('stopping the fill aborts the call and keeps the cache so far', async () => {
-  const cache = tempCache();
+  const data = tempData();
   let checks = 0;
   const source = deezerCandidateSource({
     deezer: fixtureDeezer([nova, quill]),
-    cache,
+    data,
     checkAbort: () => {
       if (++checks > 1) throw new TaskAborted();
     },
@@ -638,7 +643,7 @@ test('stopping the fill aborts the call and keeps the cache so far', async () =>
   await assert.rejects(source.candidates(request()), TaskAborted);
 
   const deezer = fixtureDeezer([nova, quill]);
-  await deezerCandidateSource({ deezer, cache }).candidates(request());
+  await deezerCandidateSource({ deezer, data }).candidates(request());
   assert.ok(!deezer.calls.includes('searchArtist Nova'));
   assert.ok(deezer.calls.includes('searchArtist Quill'));
 });
@@ -649,7 +654,7 @@ test('an abort raised inside a Deezer call escapes', async () => {
     throw new TaskAborted();
   };
   await assert.rejects(
-    deezerCandidateSource({ deezer, cache: tempCache() }).candidates(request()),
+    deezerCandidateSource({ deezer, data: tempData() }).candidates(request()),
     TaskAborted,
   );
 });
@@ -705,7 +710,7 @@ test("co-cited related artists' in-window releases join the pool with the seeds 
   const deezer = fixtureDeezer(graphArtists());
   const candidates = await deezerCandidateSource({
     deezer,
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(relatedTo('Ada', 'Bex', 'Cy'));
 
   const night = candidates.find((c) => c.title === 'Night Bus');
@@ -740,7 +745,7 @@ test('a related artist on the roster or among the seeds comes only through the r
   ]);
   const candidates = await deezerCandidateSource({
     deezer,
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(
     request({
       seeds: seeds('Ada', 'Dee', 'Eve'),
@@ -759,7 +764,7 @@ test('the top-up counts seeds done against seeds to fetch', async () => {
   const progress = recordingProgress();
   await deezerCandidateSource({
     deezer: fixtureDeezer(graphArtists()),
-    cache: tempCache(),
+    data: tempData(),
   }).candidates(relatedTo('Ada', 'Bex', 'Cy'), progress.onProgress);
 
   assert.deepEqual(progress.events, [
@@ -771,15 +776,15 @@ test('the top-up counts seeds done against seeds to fetch', async () => {
 });
 
 test('fresh graph entries are not fetched again by a later fill', async () => {
-  const cache = tempCache();
+  const data = tempData();
   await deezerCandidateSource({
     deezer: fixtureDeezer(graphArtists()),
-    cache,
+    data,
   }).candidates(relatedTo('Ada', 'Bex'));
 
   const deezer = fixtureDeezer(graphArtists());
   const progress = recordingProgress();
-  const candidates = await deezerCandidateSource({ deezer, cache }).candidates(
+  const candidates = await deezerCandidateSource({ deezer, data }).candidates(
     relatedTo('Ada', 'Bex'),
     progress.onProgress,
   );
@@ -793,11 +798,11 @@ test('fresh graph entries are not fetched again by a later fill', async () => {
 });
 
 test('graph entries older than 90 days are refreshed', async () => {
-  const cache = tempCache();
+  const data = tempData();
   let now = Date.parse('2026-06-06');
   await deezerCandidateSource({
     deezer: fixtureDeezer(graphArtists()),
-    cache,
+    data,
     now: () => now,
   }).candidates(relatedTo('Ada', 'Bex'));
 
@@ -805,7 +810,7 @@ test('graph entries older than 90 days are refreshed', async () => {
   const early = fixtureDeezer(graphArtists());
   await deezerCandidateSource({
     deezer: early,
-    cache,
+    data,
     now: () => now,
   }).candidates(relatedTo('Ada', 'Bex'));
   assert.deepEqual(relatedCalls(early.calls), []);
@@ -814,7 +819,7 @@ test('graph entries older than 90 days are refreshed', async () => {
   const late = fixtureDeezer(graphArtists());
   await deezerCandidateSource({
     deezer: late,
-    cache,
+    data,
     now: () => now,
   }).candidates(relatedTo('Ada', 'Bex'));
   assert.deepEqual(relatedCalls(late.calls), [
@@ -824,15 +829,15 @@ test('graph entries older than 90 days are refreshed', async () => {
 });
 
 test('a seed Deezer lacks is cached as not on Deezer', async () => {
-  const cache = tempCache();
+  const data = tempData();
   const progress = recordingProgress();
   await deezerCandidateSource({
     deezer: fixtureDeezer(graphArtists()),
-    cache,
+    data,
     now: () => Date.parse('2026-06-06'),
   }).candidates(relatedTo('Ada', 'Ghost'), progress.onProgress);
 
-  const graph = await cache.load(RELATED_ARTIST_GRAPH);
+  const graph = await data.load(RELATED_ARTIST_GRAPH);
   assert.deepEqual(graph?.['sp-Ghost'], {
     deezerId: null,
     related: [],
@@ -844,13 +849,13 @@ test('a seed Deezer lacks is cached as not on Deezer', async () => {
 
 for (const what of ['searchArtist', 'relatedArtists'] as const) {
   test(`a failed ${what} for a seed is never cached and is reported`, async () => {
-    const cache = tempCache();
+    const data = tempData();
     const failing = fixtureDeezer(graphArtists());
     failing.fail(what, 'Bex');
     const progress = recordingProgress();
     const first = await deezerCandidateSource({
       deezer: failing,
-      cache,
+      data,
     }).candidates(relatedTo('Ada', 'Bex', 'Cy'), progress.onProgress);
 
     // Nova is still named by Ada and Cy; Quill lost Bex.
@@ -863,12 +868,12 @@ for (const what of ['searchArtist', 'relatedArtists'] as const) {
       seeds: 1,
     });
     assert.equal(
-      (await cache.load(RELATED_ARTIST_GRAPH))?.['sp-Bex'],
+      (await data.load(RELATED_ARTIST_GRAPH))?.['sp-Bex'],
       undefined,
     );
 
     const deezer = fixtureDeezer(graphArtists());
-    const second = await deezerCandidateSource({ deezer, cache }).candidates(
+    const second = await deezerCandidateSource({ deezer, data }).candidates(
       relatedTo('Ada', 'Bex', 'Cy'),
     );
     assert.deepEqual(relatedCalls(deezer.calls), ['relatedArtists 101']);
@@ -877,11 +882,11 @@ for (const what of ['searchArtist', 'relatedArtists'] as const) {
 }
 
 test('a stale entry survives a failed refresh', async () => {
-  const cache = tempCache();
+  const data = tempData();
   let now = Date.parse('2026-06-06');
   await deezerCandidateSource({
     deezer: fixtureDeezer(graphArtists()),
-    cache,
+    data,
     now: () => now,
   }).candidates(relatedTo('Ada', 'Bex'));
 
@@ -891,7 +896,7 @@ test('a stale entry survives a failed refresh', async () => {
   const progress = recordingProgress();
   const candidates = await deezerCandidateSource({
     deezer: failing,
-    cache,
+    data,
     now: () => now,
   }).candidates(relatedTo('Ada', 'Bex'), progress.onProgress);
 
@@ -904,32 +909,32 @@ test('a stale entry survives a failed refresh', async () => {
     seeds: 1,
   });
   assert.equal(
-    (await cache.load(RELATED_ARTIST_GRAPH))?.['sp-Bex']?.fetchedAt,
+    (await data.load(RELATED_ARTIST_GRAPH))?.['sp-Bex']?.fetchedAt,
     Date.parse('2026-06-06'),
   );
 });
 
 test("co-citation follows the current seeds; a demoted seed's entry is ignored, not deleted", async () => {
-  const cache = tempCache();
+  const data = tempData();
   await deezerCandidateSource({
     deezer: fixtureDeezer(graphArtists()),
-    cache,
+    data,
   }).candidates(relatedTo('Ada', 'Bex', 'Cy'));
 
   // Bex demoted: Quill is named by Ada alone now.
   const withoutBex = await deezerCandidateSource({
     deezer: fixtureDeezer(graphArtists()),
-    cache,
+    data,
   }).candidates(relatedTo('Ada', 'Cy'));
   assert.deepEqual(
     withoutBex.map((c) => [c.title, c.provenance]),
     [['Night Bus', [{ kind: 'related', to: ['Ada', 'Cy'] }]]],
   );
-  assert.ok((await cache.load(RELATED_ARTIST_GRAPH))?.['sp-Bex']);
+  assert.ok((await data.load(RELATED_ARTIST_GRAPH))?.['sp-Bex']);
 
   // Bex back: no fetch needed.
   const deezer = fixtureDeezer(graphArtists());
-  await deezerCandidateSource({ deezer, cache }).candidates(
+  await deezerCandidateSource({ deezer, data }).candidates(
     relatedTo('Ada', 'Bex', 'Cy'),
   );
   assert.deepEqual(relatedCalls(deezer.calls), []);
@@ -937,7 +942,7 @@ test("co-citation follows the current seeds; a demoted seed's entry is ignored, 
 
 test('later weeks of one fill reuse the graph and fetch only newly promoted seeds', async () => {
   const deezer = fixtureDeezer(graphArtists());
-  const source = deezerCandidateSource({ deezer, cache: tempCache() });
+  const source = deezerCandidateSource({ deezer, data: tempData() });
 
   await source.candidates(relatedTo('Ada', 'Bex'));
   await source.candidates(relatedTo('Ada', 'Bex'));
@@ -953,7 +958,7 @@ test('later weeks of one fill reuse the graph and fetch only newly promoted seed
 test('a seed that failed is not retried in later weeks of the same fill', async () => {
   const deezer = fixtureDeezer(graphArtists());
   deezer.fail('relatedArtists', 'Bex');
-  const source = deezerCandidateSource({ deezer, cache: tempCache() });
+  const source = deezerCandidateSource({ deezer, data: tempData() });
 
   await source.candidates(relatedTo('Ada', 'Bex'));
   deezer.heal('Bex');
@@ -968,12 +973,12 @@ test('a seed that failed is not retried in later weeks of the same fill', async 
 });
 
 test('stopping during the top-up saves the graph so far and the next fill resumes', async () => {
-  const cache = tempCache();
+  const data = tempData();
   let checks = 0;
   await assert.rejects(
     deezerCandidateSource({
       deezer: fixtureDeezer(graphArtists()),
-      cache,
+      data,
       checkAbort: () => {
         if (++checks > 2) throw new TaskAborted();
       },
@@ -983,7 +988,7 @@ test('stopping during the top-up saves the graph so far and the next fill resume
 
   const deezer = fixtureDeezer(graphArtists());
   const progress = recordingProgress();
-  await deezerCandidateSource({ deezer, cache }).candidates(
+  await deezerCandidateSource({ deezer, data }).candidates(
     relatedTo('Ada', 'Bex', 'Cy'),
     progress.onProgress,
   );
@@ -999,9 +1004,9 @@ test('the graph is saved every 50 seeds during a top-up', async () => {
   const many = Array.from({ length: 120 }, (_, i) =>
     seedArtist(1000 + i, `S${i}`, []),
   );
-  const inner = tempCache();
+  const inner = tempData();
   const saved: number[] = [];
-  const cache: DurableCache = {
+  const data: UserData = {
     ...inner,
     async save(descriptor, value) {
       if (descriptor === RELATED_ARTIST_GRAPH) {
@@ -1013,16 +1018,15 @@ test('the graph is saved every 50 seeds during a top-up', async () => {
 
   await deezerCandidateSource({
     deezer: fixtureDeezer(many),
-    cache,
+    data,
   }).candidates(relatedTo(...many.map((a) => a.name)));
 
   assert.deepEqual(saved, [50, 100, 120]);
 });
 
-test('the graph is not mirrored to the browser, and a Redis failure leaves the file authoritative', async () => {
+test('a Redis failure leaves the graph file authoritative', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'candidates-test-'));
-  const mirrored: string[] = [];
-  const cache = createDurableCache({
+  const data = durableUserData({
     userId: 'user-1',
     dataDir,
     redis: {
@@ -1032,17 +1036,15 @@ test('the graph is not mirrored to the browser, and a Redis failure leaves the f
       },
       del: async () => {},
     },
-    onSave: (descriptor) => mirrored.push(descriptor.redisName),
   });
 
   await deezerCandidateSource({
     deezer: fixtureDeezer(graphArtists()),
-    cache,
+    data,
   }).candidates(relatedTo('Ada', 'Bex'));
 
-  assert.ok(!mirrored.includes('relatedArtistGraph'));
   assert.deepEqual(
-    Object.keys((await cache.load(RELATED_ARTIST_GRAPH)) ?? {}).sort(),
+    Object.keys((await data.load(RELATED_ARTIST_GRAPH)) ?? {}).sort(),
     ['sp-Ada', 'sp-Bex'],
   );
 });

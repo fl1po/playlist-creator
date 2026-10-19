@@ -1,8 +1,8 @@
 import { parseDate } from '../domain/tracks.js';
-import { AI_PICKS } from '../lib/cache-files.js';
-import type { DurableCache } from '../lib/durable-cache.js';
 import { getPlaylistTracksWithArtists } from '../lib/pagination.js';
 import type { SpotifyGateway } from '../lib/spotify/gateway.js';
+import type { UserData } from '../lib/user-data/index.js';
+import { AI_PICKS } from '../lib/user-data/index.js';
 import type { AiPicksRecord } from './week-collection/index.js';
 import { spotifyWeeklyPlaylistStore } from './weekly-playlists/adapters.js';
 import { findWeeklyPlaylist } from './weekly-playlists/index.js';
@@ -17,30 +17,30 @@ export type AiPick = Extract<
  * earlier record for that date is replaced; records never expire.
  */
 export async function saveAiPicks(
-  cache: DurableCache,
+  data: UserData,
   date: string,
   record: AiPicksRecord,
 ): Promise<void> {
-  const records = (await cache.load(AI_PICKS)) ?? {};
-  await cache.save(AI_PICKS, { ...records, [date]: record });
+  const records = (await data.load(AI_PICKS)) ?? {};
+  await data.save(AI_PICKS, { ...records, [date]: record });
 }
 
 /** Drop a week's AI-picks record, if it has one. */
 export async function forgetAiPicks(
-  cache: DurableCache,
+  data: UserData,
   date: string,
 ): Promise<void> {
-  const records = await cache.load(AI_PICKS);
+  const records = await data.load(AI_PICKS);
   if (!(records && date in records)) return;
   const { [date]: _, ...rest } = records;
-  await cache.save(AI_PICKS, rest);
+  await data.save(AI_PICKS, rest);
 }
 
 /** Every week with an AI-picks record, newest first. Reads no Spotify. */
 export async function listAiPicks(
-  cache: DurableCache,
+  data: UserData,
 ): Promise<Array<{ date: string; record: AiPicksRecord }>> {
-  const records = (await cache.load(AI_PICKS)) ?? {};
+  const records = (await data.load(AI_PICKS)) ?? {};
   return Object.entries(records)
     .map(([date, record]) => ({ date, record }))
     .sort((a, b) => parseDate(b.date).getTime() - parseDate(a.date).getTime());
@@ -48,10 +48,10 @@ export async function listAiPicks(
 
 /** The date's picks; null when its record is a skip or there is none. */
 export async function loadWeekAiPicks(
-  cache: DurableCache,
+  data: UserData,
   date: string,
 ): Promise<AiPick[] | null> {
-  const record = (await cache.load(AI_PICKS))?.[date];
+  const record = (await data.load(AI_PICKS))?.[date];
   return record && 'picks' in record ? record.picks : null;
 }
 

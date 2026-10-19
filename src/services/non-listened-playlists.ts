@@ -1,13 +1,16 @@
 import crypto from 'node:crypto';
 import { parseDate } from '../domain/tracks.js';
-import { LISTENING_TIME, NON_LISTENED } from '../lib/cache-files.js';
-import { createDurableCache } from '../lib/durable-cache.js';
 import {
   getAllPlaylistTracks,
   getAllUserPlaylists,
 } from '../lib/pagination.js';
 import type { SpotifyGateway } from '../lib/spotify/gateway.js';
 import type { SimplePlaylist } from '../lib/types.js';
+import {
+  LISTENING_TIME,
+  NON_LISTENED,
+  type UserData,
+} from '../lib/user-data/index.js';
 import { isWeeklyPlaylistName } from './weekly-playlists/index.js';
 
 interface NonListenedCache {
@@ -28,16 +31,11 @@ function fingerprint(awTrackIds: Set<string>): string {
     .digest('hex');
 }
 
-/**
- * Invalidate the non-listened playlists and listening time caches — both the
- * local files and the durable Redis copies.
- */
+/** Drop the non-listened playlists listing and the listening time built on it. */
 export async function invalidateNonListenedCache(
-  dataDir: string,
-  userId: string,
+  data: UserData,
 ): Promise<void> {
-  const cache = createDurableCache({ userId, dataDir });
-  await Promise.all([cache.delete(NON_LISTENED), cache.delete(LISTENING_TIME)]);
+  await Promise.all([data.delete(NON_LISTENED), data.delete(LISTENING_TIME)]);
 }
 
 /**
@@ -45,25 +43,24 @@ export async function invalidateNonListenedCache(
  *
  * Returns the cached listing while All Weekly is unchanged since it was taken.
  * Otherwise walks weekly playlists from newest to oldest, stopping at the
- * first with AW overlap — anything older is assumed listened. The listing goes
- * to the durable cache (disk + Redis) until All Weekly changes or
+ * first with AW overlap — anything older is assumed listened. The listing is
+ * kept in the user's data until All Weekly changes or
  * `invalidateNonListenedCache`; `awTrackIds` is always read fresh.
  */
 export async function getNonListenedPlaylists(
   ctx: SpotifyGateway,
+  data: UserData,
   userId: string,
   allWeeklyId: string,
-  dataDir: string,
   log?: (message: string, level?: 'info' | 'debug') => void,
 ): Promise<{ playlists: SimplePlaylist[]; awTrackIds: Set<string> }> {
   const emit = log ?? (() => {});
-  const cache = createDurableCache({ userId, dataDir });
 
   const awTrackIds = new Set(await getAllPlaylistTracks(ctx, allWeeklyId));
   emit(`Loaded ${awTrackIds.size} tracks from All Weekly`);
   const awFingerprint = fingerprint(awTrackIds);
 
-  const cached = (await cache.load(NON_LISTENED)) as NonListenedCache | null;
+  const cached = (await data.load(NON_LISTENED)) as NonListenedCache | null;
   if (cached?.playlists != null && cached.awFingerprint === awFingerprint) {
     emit(`Using cached non-listened playlists (${cached.playlists.length})`);
     return { playlists: cached.playlists, awTrackIds };
@@ -100,7 +97,7 @@ export async function getNonListenedPlaylists(
   nonListened.reverse();
   emit(`Result: ${nonListened.length} non-listened playlists`);
 
-  await cache.save(NON_LISTENED, { playlists: nonListened, awFingerprint });
+  await data.save(NON_LISTENED, { playlists: nonListened, awFingerprint });
 
   return { playlists: nonListened, awTrackIds };
 }

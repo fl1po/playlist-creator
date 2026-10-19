@@ -3,7 +3,7 @@ import {
   type WeekBreakdownEntry,
 } from '../../domain/aw-breakdown.js';
 import { formatHm } from '../../domain/tracks.js';
-import { AW_BREAKDOWN } from '../../lib/cache-files.js';
+import { AW_BREAKDOWN } from '../../lib/user-data/index.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -31,7 +31,7 @@ export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
     const userConfig = await tc.userConfig();
     const awId = userConfig.sourcePlaylists.allWeeklyId;
 
-    const cached = (await tc.cache.load(
+    const cached = (await tc.data.load(
       AW_BREAKDOWN,
     )) as AwBreakdownCache | null;
 
@@ -82,7 +82,7 @@ export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
       weeks,
     };
 
-    await tc.cache.save(AW_BREAKDOWN, result);
+    await tc.data.save(AW_BREAKDOWN, result);
     tc.emit('awBreakdown:complete', result);
 
     const avgTracks =

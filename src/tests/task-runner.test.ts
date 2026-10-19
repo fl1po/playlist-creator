@@ -13,7 +13,7 @@ import {
   type SessionGateway,
 } from '../lib/spotify/gateway.js';
 import type { SpotifyConfig } from '../lib/types.js';
-import type { IUserConfigStore } from '../lib/user-config.js';
+import { localUserData } from '../lib/user-data/index.js';
 import { createBroadcaster, REPLAY_DONE } from '../web/broadcast.js';
 import type { UserSession } from '../web/route-context.js';
 import {
@@ -113,8 +113,9 @@ function session(userId: string, gateway = fakeGateway(userId)): UserSession {
   return {
     userId,
     gateway,
-    userConfigStore: {} as IUserConfigStore,
-    dataDir: fs.mkdtempSync(path.join(os.tmpdir(), `task-runner-${userId}-`)),
+    data: localUserData(
+      fs.mkdtempSync(path.join(os.tmpdir(), `task-runner-${userId}-`)),
+    ),
   };
 }
 
@@ -570,7 +571,6 @@ test('everything a task sends is tagged with its name and reaches only its owner
     async run(tc) {
       tc.log('info', 'hello');
       tc.emit('log', { level: 'info', message: 'typed' });
-      await tc.cache.save({ redisName: 'probe', file: 'probe.json' }, { a: 1 });
     },
   };
   const run = started(runner.start(task, session('u1'), {}));
@@ -582,7 +582,6 @@ test('everything a task sends is tagged with its name and reaches only its owner
     [
       ['log', 'dedup-scan'],
       ['log', 'dedup-scan'],
-      ['data:save', 'dedup-scan'],
     ],
   );
   assert.deepEqual(

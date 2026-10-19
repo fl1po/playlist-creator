@@ -1,11 +1,8 @@
-import fs from 'node:fs';
 import { FileConfigStore } from '../lib/config.js';
 import { createCliGateway } from '../lib/spotify/gateway.js';
-import type { TrustedArtistsFile } from '../lib/types.js';
-import { secondaryLabel, UserConfigStore } from '../lib/user-config.js';
+import { secondaryLabel } from '../lib/user-config.js';
+import { localUserData, TRUSTED_ARTISTS } from '../lib/user-data/index.js';
 import { ArtistLookupService } from '../services/artist-lookup.js';
-
-const TRUSTED_ARTISTS_PATH = './trusted-artists.json';
 
 const query = process.argv.slice(2).join(' ').trim();
 if (!query) {
@@ -13,12 +10,15 @@ if (!query) {
   process.exit(1);
 }
 
-const trustedArtists: TrustedArtistsFile = JSON.parse(
-  fs.readFileSync(TRUSTED_ARTISTS_PATH, 'utf8'),
-);
+const data = localUserData('.');
+const trustedArtists = await data.load(TRUSTED_ARTISTS);
+if (!trustedArtists) {
+  console.error('trusted-artists.json not found — run recalculate first');
+  process.exit(1);
+}
 
 const ctx = createCliGateway({ configStore: new FileConfigStore() });
-const sl = secondaryLabel(new UserConfigStore().load());
+const sl = secondaryLabel(await data.config.load());
 
 const service = new ArtistLookupService(ctx, {
   onResult: (r) => {

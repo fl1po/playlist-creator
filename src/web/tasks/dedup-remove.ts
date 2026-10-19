@@ -54,6 +54,6 @@ export const dedupRemoveTask: TaskDefinition<DedupRemoveEvents> = {
   },
 
   async cleanup(tc) {
-    await invalidateNonListenedCache(tc.dataDir, tc.userId);
+    await invalidateNonListenedCache(tc.data);
   },
 };

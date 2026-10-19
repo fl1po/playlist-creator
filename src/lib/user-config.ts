@@ -1,9 +1,4 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { DEFAULT_FEATURED_MULTIPLIER } from '../domain/artists.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export interface UserConfig {
   sourcePlaylists: {
@@ -137,12 +132,6 @@ export function secondarySourceName(cfg: {
     : 'Best of All Weekly';
 }
 
-export interface IUserConfigStore {
-  exists(): boolean | Promise<boolean>;
-  load(): UserConfig | Promise<UserConfig>;
-  save(config: UserConfig): void | Promise<void>;
-}
-
 /** Merge partial config with defaults so new fields are always present. */
 export function mergeConfigWithDefaults(
   partial: Partial<UserConfig>,
@@ -198,30 +187,4 @@ export function mergeConfigWithDefaults(
 function clampThreshold(value: unknown, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return Math.min(100, Math.max(0, Math.round(value)));
-}
-
-export class UserConfigStore implements IUserConfigStore {
-  private path: string;
-
-  constructor(configPath?: string) {
-    this.path = configPath ?? path.join(__dirname, '../../user-config.json');
-  }
-
-  exists(): boolean {
-    return fs.existsSync(this.path);
-  }
-
-  load(): UserConfig {
-    if (!this.exists()) {
-      return structuredClone(DEFAULT_USER_CONFIG);
-    }
-    const raw: Partial<UserConfig> = JSON.parse(
-      fs.readFileSync(this.path, 'utf8'),
-    );
-    return mergeConfigWithDefaults(raw);
-  }
-
-  save(config: UserConfig): void {
-    fs.writeFileSync(this.path, JSON.stringify(config, null, 2), 'utf8');
-  }
 }

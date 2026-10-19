@@ -1,28 +1,28 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type express from 'express';
-import { TRUSTED_ARTISTS } from '../lib/cache-files.js';
 import type { IAppConfigStore } from '../lib/config.js';
 import {
   BridgedConfigStore,
   InMemoryTokenStore,
+  type ITokenStore,
   UserTokenStore,
 } from '../lib/config.js';
-import { createDurableCache } from '../lib/durable-cache.js';
 import type { CallStats } from '../lib/spotify/call-stats.js';
 import {
   createSpotifyGateway,
   type RequestPacer,
   type SessionGateway,
 } from '../lib/spotify/gateway.js';
-import type { AppConfig, TrustedArtistsFile } from '../lib/types.js';
-import { type IUserConfigStore, UserConfigStore } from '../lib/user-config.js';
+import type { AppConfig } from '../lib/types.js';
+import {
+  durableUserData,
+  localUserData,
+  type RedisPort,
+  type UserData,
+} from '../lib/user-data/index.js';
 import type { AuthManager } from './auth.js';
 import type { Broadcaster } from './broadcast.js';
-import {
-  isRedisConfigured,
-  RedisUserConfigStore,
-} from './redis-config-store.js';
 import {
   getBearerToken,
   getRefreshToken,
@@ -34,8 +34,8 @@ export interface UserSession {
   displayName?: string;
   /** The user's Spotify gateway; routes call it on the interactive lane. */
   gateway: SessionGateway;
-  userConfigStore: IUserConfigStore;
-  dataDir: string;
+  /** The user's user data: durable when the server has Redis, else local. */
+  data: UserData;
 }
 
 export interface RouteContext {
@@ -56,9 +56,6 @@ export interface RouteContext {
     req: express.Request,
     res: express.Response,
   ): UserSession | null;
-  loadTrustedArtistsOrRedis(
-    session: UserSession,
-  ): Promise<TrustedArtistsFile | null>;
 }
 
 export interface RouteContextDeps {
@@ -71,6 +68,8 @@ export interface RouteContextDeps {
   usersDir: string;
   projectRoot: string;
   port: number;
+  /** The server's one Redis; null keeps every user's data local. */
+  redis: RedisPort | null;
 }
 
 export function createRouteContext(deps: RouteContextDeps): RouteContext {
@@ -83,6 +82,7 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
     usersDir,
     projectRoot,
     port,
+    redis,
   } = deps;
   const broadcast = broadcaster.broadcast;
   const sessions = new Map<string, UserSession>();
@@ -141,6 +141,27 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
     return path.join(usersDir, userId);
   }
 
+  /** One user's session: their gateway over `tokenStore`, and their data. */
+  function buildSession(
+    userId: string,
+    appConfig: AppConfig,
+    tokenStore: ITokenStore,
+  ): UserSession {
+    const dataDir = getUserDataDir(userId);
+    const session: UserSession = {
+      userId,
+      gateway: buildGateway(
+        new BridgedConfigStore(appConfig, tokenStore),
+        userId,
+      ),
+      data: redis
+        ? durableUserData({ userId, dataDir, redis })
+        : localUserData(dataDir),
+    };
+    sessions.set(userId, session);
+    return session;
+  }
+
   function getOrCreateUserSession(
     userId: string,
     appConfig: AppConfig,
@@ -150,18 +171,7 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
 
     const dataDir = getUserDataDir(userId);
     fs.mkdirSync(dataDir, { recursive: true });
-
-    const tokenStore = new UserTokenStore(userId, dataDir);
-    const configStore = new BridgedConfigStore(appConfig, tokenStore);
-    const userConfigStore: IUserConfigStore = isRedisConfigured()
-      ? new RedisUserConfigStore(userId)
-      : new UserConfigStore(path.join(dataDir, 'user-config.json'));
-
-    const gateway = buildGateway(configStore, userId);
-
-    const session: UserSession = { userId, gateway, userConfigStore, dataDir };
-    sessions.set(userId, session);
-    return session;
+    return buildSession(userId, appConfig, new UserTokenStore(userId, dataDir));
   }
 
   function requireSession(
@@ -235,38 +245,13 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
       return existing;
     }
 
-    const tokenStore = new InMemoryTokenStore(
-      { accessToken, refreshToken },
-      pushTokens(userId),
-    );
-    const configStore = new BridgedConfigStore(appConfig, tokenStore);
-    const userConfigStore: IUserConfigStore = isRedisConfigured()
-      ? new RedisUserConfigStore(userId)
-      : new UserConfigStore(path.join(usersDir, userId, 'user-config.json'));
-
-    const gateway = buildGateway(configStore, userId);
     bearerTokenCache.set(userId, accessToken);
     bearerRefreshCache.set(userId, refreshToken);
-
-    const session: UserSession = {
+    return buildSession(
       userId,
-      gateway,
-      userConfigStore,
-      dataDir: path.join(usersDir, userId),
-    };
-    sessions.set(userId, session);
-    return session;
-  }
-
-  // Load trusted artists from the local file, falling back to the durable
-  // Redis copy (e.g. ephemeral filesystem). Backend is the source of truth.
-  async function loadTrustedArtistsOrRedis(
-    session: UserSession,
-  ): Promise<TrustedArtistsFile | null> {
-    return createDurableCache({
-      userId: session.userId,
-      dataDir: session.dataDir,
-    }).load(TRUSTED_ARTISTS);
+      appConfig,
+      new InMemoryTokenStore({ accessToken, refreshToken }, pushTokens(userId)),
+    );
   }
 
   return {
@@ -283,6 +268,5 @@ export function createRouteContext(deps: RouteContextDeps): RouteContext {
     getUserDataDir,
     getOrCreateUserSession,
     requireSession,
-    loadTrustedArtistsOrRedis,
   };
 }

@@ -1,10 +1,10 @@
 import { formatHm } from '../../domain/tracks.js';
+import { getPlaylistTotalDuration } from '../../lib/pagination.js';
 import {
   DURATION_SNAPSHOTS,
   type DurationSnapshots,
   LISTENING_TIME,
-} from '../../lib/cache-files.js';
-import { getPlaylistTotalDuration } from '../../lib/pagination.js';
+} from '../../lib/user-data/index.js';
 import { getNonListenedPlaylists } from '../../services/non-listened-playlists.js';
 import type {
   BaseEvents,
@@ -39,9 +39,9 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
 
     const { playlists: candidates } = await getNonListenedPlaylists(
       tc.ctx,
+      tc.data,
       me.id,
       userConfig.sourcePlaylists.allWeeklyId,
-      tc.dataDir,
       (msg, level) => tc.log(level ?? 'info', msg),
     );
 
@@ -49,7 +49,7 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
 
     const snapshots: DurationSnapshots = force
       ? {}
-      : ((await tc.cache.load(DURATION_SNAPSHOTS)) ?? {});
+      : ((await tc.data.load(DURATION_SNAPSHOTS)) ?? {});
 
     let totalMs = 0;
     let totalTracks = 0;
@@ -114,7 +114,7 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
     for (const id of Object.keys(snapshots)) {
       if (!candidateIds.has(id)) delete snapshots[id];
     }
-    await tc.cache.save(DURATION_SNAPSHOTS, snapshots);
+    await tc.data.save(DURATION_SNAPSHOTS, snapshots);
 
     const result: ListeningTimeResult = {
       totalMs,
@@ -123,7 +123,7 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
       perPlaylist,
     };
 
-    await tc.cache.save(LISTENING_TIME, result);
+    await tc.data.save(LISTENING_TIME, result);
 
     tc.emit('listeningTime:complete', result);
 

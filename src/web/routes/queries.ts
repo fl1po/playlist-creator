@@ -1,12 +1,12 @@
 import { Router } from 'express';
+import { getAllUserPlaylists } from '../../lib/pagination.js';
 import {
   AW_BREAKDOWN,
+  type Dataset,
   FILL_HISTORY,
   LISTENING_TIME,
-} from '../../lib/cache-files.js';
-import type { CacheDescriptor } from '../../lib/durable-cache.js';
-import { createDurableCache } from '../../lib/durable-cache.js';
-import { getAllUserPlaylists } from '../../lib/pagination.js';
+  TRUSTED_ARTISTS,
+} from '../../lib/user-data/index.js';
 import {
   listAiPicks,
   loadWeekAiPicks,
@@ -29,7 +29,7 @@ export function queryRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const trusted = await ctx.loadTrustedArtistsOrRedis(session);
+    const trusted = await session.data.load(TRUSTED_ARTISTS);
     if (!trusted) {
       res.status(500).json({
         error: 'trusted-artists.json not found — run recalculate first',
@@ -73,7 +73,7 @@ export function queryRoutes(ctx: RouteContext): Router {
     const session = ctx.requireSession(req, res);
     if (!session) return;
 
-    const trusted = await ctx.loadTrustedArtistsOrRedis(session);
+    const trusted = await session.data.load(TRUSTED_ARTISTS);
     if (!trusted) {
       res.status(500).json({ error: 'trusted-artists.json not found' });
       return;
@@ -104,7 +104,7 @@ export function queryRoutes(ctx: RouteContext): Router {
     const session = ctx.requireSession(req, res);
     if (!session) return;
 
-    const trusted = await ctx.loadTrustedArtistsOrRedis(session);
+    const trusted = await session.data.load(TRUSTED_ARTISTS);
 
     let overview: unknown = null;
     let scoreDistribution: unknown[] | null = null;
@@ -140,11 +140,7 @@ export function queryRoutes(ctx: RouteContext): Router {
       }));
     }
 
-    const cache = createDurableCache({
-      userId: session.userId,
-      dataDir: session.dataDir,
-    });
-    const fillHistory = (await cache.load(FILL_HISTORY)) ?? [];
+    const fillHistory = (await session.data.load(FILL_HISTORY)) ?? [];
 
     res.json({
       ok: true,
@@ -275,13 +271,9 @@ export function queryRoutes(ctx: RouteContext): Router {
   router.get('/ai-picks', async (req, res) => {
     const session = ctx.requireSession(req, res);
     if (!session) return;
-    const cache = createDurableCache({
-      userId: session.userId,
-      dataDir: session.dataDir,
-    });
     const [config, weeks] = await Promise.all([
-      session.userConfigStore.load(),
-      listAiPicks(cache),
+      session.data.config.load(),
+      listAiPicks(session.data),
     ]);
     res.json({ ok: true, enabled: config.aiFinds.enabled, weeks });
   });
@@ -297,13 +289,7 @@ export function queryRoutes(ctx: RouteContext): Router {
         res.status(400).json({ error: 'date query parameter required' });
         return;
       }
-      const picks = await loadWeekAiPicks(
-        createDurableCache({
-          userId: session.userId,
-          dataDir: session.dataDir,
-        }),
-        date,
-      );
+      const picks = await loadWeekAiPicks(session.data, date);
       if (!picks) {
         res.status(404).json({ error: `No AI picks for ${date}` });
         return;
@@ -319,16 +305,12 @@ export function queryRoutes(ctx: RouteContext): Router {
     }),
   );
 
-  // Cached GET routes. Prefer the local file, then fall back to the durable
-  // Redis copy so display stays correct on a fresh/ephemeral filesystem.
-  function cachedGet(route: string, descriptor: CacheDescriptor<unknown>) {
+  // A task's last result, as the user's data holds it.
+  function cachedGet(route: string, dataset: Dataset<unknown>) {
     router.get(route, async (req, res) => {
       const session = ctx.requireSession(req, res);
       if (!session) return;
-      const cached = await createDurableCache({
-        userId: session.userId,
-        dataDir: session.dataDir,
-      }).load(descriptor);
+      const cached = await session.data.load(dataset);
       if (cached)
         res.json({ ok: true, ...(cached as Record<string, unknown>) });
       else res.json({ ok: false });

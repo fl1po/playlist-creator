@@ -3,6 +3,7 @@ import {
   getPlaylistTracksWithPositions,
 } from '../../lib/pagination.js';
 import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
+import type { UserData } from '../../lib/user-data/index.js';
 import {
   getNonListenedPlaylists,
   invalidateNonListenedCache,
@@ -67,11 +68,11 @@ export function spotifySourceReads(ctx: SpotifyGateway): SourceReads {
 
 /**
  * The production port set for one user. `userId` is the Spotify user id,
- * `dataDir` where that user's non-listened cache lives.
+ * `data` holds that user's non-listened listing.
  */
 export function spotifyRecalculationPorts(
   ctx: SpotifyGateway,
-  user: { userId: string; dataDir: string },
+  user: { userId: string; data: UserData },
 ): RecalculationPorts {
   return {
     sources: spotifySourceReads(ctx),
@@ -79,13 +80,13 @@ export function spotifyRecalculationPorts(
       find(allWeeklyId, log) {
         return getNonListenedPlaylists(
           ctx,
+          user.data,
           user.userId,
           allWeeklyId,
-          user.dataDir,
           log,
         );
       },
-      invalidate: () => invalidateNonListenedCache(user.dataDir, user.userId),
+      invalidate: () => invalidateNonListenedCache(user.data),
     },
     sync: {
       reads: promotionReads(ctx),

@@ -3,10 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { type TestContext, test } from 'node:test';
-import { AI_PICKS } from '../lib/cache-files.js';
-import { createDurableCache } from '../lib/durable-cache.js';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
 import type { SpotifyGateway } from '../lib/spotify/gateway.js';
+import { AI_PICKS, localUserData } from '../lib/user-data/index.js';
 import { PlaylistClearerService } from '../services/playlist-clearer.js';
 import type { TaskContext } from '../web/task-runner.js';
 import { clearTask } from '../web/tasks/clear.js';
@@ -129,10 +128,10 @@ test('a failed playlist listing throws instead of reporting "not found"', async 
 function clearTaskContext(t: TestContext, ctx: SpotifyGateway) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clear-task-test-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
-  const cache = createDurableCache({ userId: 'user-1', dataDir, redis: null });
+  const cache = localUserData(dataDir);
   const tc = {
     ctx,
-    cache,
+    data: cache,
     body: { name: 'Target' },
     broadcast() {},
     log() {},

@@ -123,13 +123,12 @@ All operations stream live logs and progress via WebSocket — you see every rel
 | `SPOTIFY_CLIENT_ID` | yes | OAuth client ID from the Spotify Developer dashboard |
 | `SPOTIFY_CLIENT_SECRET` | yes | OAuth client secret |
 | `SPOTIFY_REDIRECT_URI` | yes | OAuth redirect URI — must match the one registered in Spotify (e.g. `http://127.0.0.1:3005/callback` locally) |
-| `SPOTIFY_USER_ID` | optional | App owner's Spotify user ID; used to scope a default user data dir in single-user mode |
 | `PORT` | optional | Web server port (defaults to `3005`) |
-| `UPSTASH_REDIS_REST_URL` | optional | Upstash Redis REST endpoint. If set together with the token, state is mirrored to Redis |
+| `UPSTASH_REDIS_REST_URL` | optional | Upstash Redis REST endpoint. If set together with the token, the web server keeps a durable copy of each user's data in Redis. The CLI never uses it |
 | `UPSTASH_REDIS_REST_TOKEN` | optional | Upstash Redis REST token |
 | `ANTHROPIC_API_KEY` | optional | Server-wide Claude key for AI finds. Without it, the AI Finds settings are greyed out |
 
-Without Redis the app runs purely on the filesystem (per-user directories under `data/users/<spotifyUserId>/`). With Redis, the same data is keyed per user (`config:<userId>`, `trustedArtists:<userId>`, `fillHistory:<userId>`, `batchCache:<userId>`) so deployments can survive restarts without a mounted volume.
+Without Redis the app runs purely on the filesystem (per-user directories under `data/users/<spotifyUserId>/`). With Redis, the web server also keeps every dataset under `<dataset>:<userId>` (`config`, `trustedArtists`, `batchCache`, …), so deployments survive restarts without a mounted volume. `npm run import-from-redis <userId>` copies a user's production data down to `data/users/<userId>/` (ADR-0008).
 
 ### Dashboard settings
 
@@ -324,7 +323,8 @@ src/
 │   ├── request-pacer.ts          # Outbound request pacing
 │   ├── resilience/               # Retry + backoff primitives
 │   ├── config.ts                 # Spotify OAuth token store
-│   ├── user-config.ts            # Per-user settings store
+│   ├── user-config.ts            # Per-user settings and defaults
+│   ├── user-data/                # A user's datasets: file, plus Redis when durable
 │   └── types.ts                  # Shared types
 ├── services/                     # Orchestration
 │   ├── playlist-filler/          # Fill pipeline (see below)
@@ -339,7 +339,6 @@ src/
     ├── routes/                   # auth, config, queries
     ├── tasks/                    # fill, recalculate, aw-breakdown, listening-time, dedup-scan, dedup-remove
     ├── auth.ts, session.ts       # OAuth flow + session management
-    ├── redis-config-store.ts     # Upstash Redis client (optional)
     ├── broadcast.ts              # WebSocket fan-out
     ├── task-runner.ts            # Background task lifecycle
     └── public/                   # Dashboard frontend
@@ -354,4 +353,4 @@ The fill pipeline is split into focused modules:
 - **`date-pipeline.ts`** — processes a single Friday: fetch sources, dedup, filter, add tracks
 - **`events.ts`** — typed event map for progress + log streaming
 - **`presenter.ts`** — adapts events for CLI console output or WebSocket broadcast
-- **`storage.ts`** — the fill's own persistence (week progress, fill history) over a DurableCache
+- **`storage.ts`** — the fill's own persistence (week progress, fill history) over the user's data

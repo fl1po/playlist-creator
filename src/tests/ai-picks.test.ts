@@ -3,9 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { type TestContext, test } from 'node:test';
-import { AI_PICKS } from '../lib/cache-files.js';
-import { createDurableCache } from '../lib/durable-cache.js';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
+import { AI_PICKS, localUserData } from '../lib/user-data/index.js';
 import { listAiPicks, readWeekPicks } from '../services/ai-picks.js';
 
 // ── Fixture: a user's playlists on a fake Spotify, counting calls ──────────
@@ -62,7 +61,7 @@ function fakeSpotify(playlists: Array<{ name: string; albumIds: string[] }>) {
 function tempCache(t: TestContext) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-picks-test-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
-  return createDurableCache({ userId: USER, dataDir, redis: null });
+  return localUserData(dataDir);
 }
 
 const pick = (albumId: string, confidence: number) => ({

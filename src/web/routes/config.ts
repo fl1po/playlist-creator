@@ -11,8 +11,8 @@ export function configRoutes(ctx: RouteContext): Router {
     if (!session) return;
 
     const [config, configured] = await Promise.all([
-      session.userConfigStore.load(),
-      session.userConfigStore.exists(),
+      session.data.config.load(),
+      session.data.config.exists(),
     ]);
     res.json({
       ok: true,
@@ -83,7 +83,7 @@ export function configRoutes(ctx: RouteContext): Router {
     // No log broadcast here: this endpoint also backs implicit writes (the
     // listening-budget input, pinned blocks, config migration). Only an
     // explicit Save in the settings modal logs, and the client does that itself.
-    await session.userConfigStore.save(config);
+    await session.data.config.save(config);
     res.json({ ok: true });
   });
 

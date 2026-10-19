@@ -1116,6 +1116,11 @@ const Store = {
   getUserId() { return this.get('userId'); },
   setUserId(id) { this.set('userId', id); },
 };
+// The page used to keep copies of the user's data; the server holds it now
+// (ADR-0008). Drop what older versions left behind.
+for (const key of ['trustedArtists', 'batchCache', 'fillHistory', 'durationSnapshots', 'listeningTime', 'awBreakdown', 'config', 'aiPicks', 'recalculationState', 'pendingPriorityChanges', 'deezerArtists', 'nonListened']) {
+  Store.remove(key);
+}
 
 // ── State ────────────────────────────────────────────────────────
 let activeFilters = new Set([1, 2]);
@@ -1503,11 +1508,9 @@ function handleMessage({ type, data, ts, task }) {
       }
       break;
 
-    // Data persistence (server -> client localStorage)
+    // Rotated bearer tokens (server -> client localStorage)
     case 'data:save':
-      if (data.key && data.value !== undefined) {
-        Store.set(data.key, data.value);
-      }
+      if (data.key === 'tokens' && data.value) Store.setTokens(data.value);
       break;
 
     case 'reload':
@@ -1725,21 +1728,6 @@ async function checkAuth() {
     }
   }
   setAuthenticated(res.authenticated, res.displayName, res.reason);
-  if (res.authenticated) await syncDataFromServer();
-}
-
-// Backend is the source of truth: always refresh localStorage from the server
-// on load so stale browser caches never shadow the durable backend data.
-// (The server's /api/export-data falls back to Redis when its files are empty.)
-async function syncDataFromServer() {
-  const res = await api('GET', '/api/export-data');
-  if (!res.ok) return;
-  const keys = ['trustedArtists', 'batchCache', 'fillHistory', 'durationSnapshots', 'listeningTime', 'awBreakdown'];
-  for (const key of keys) {
-    // Only overwrite when the backend actually has the dataset; a null means
-    // "no durable copy" (e.g. a regenerable cache), so keep what's local.
-    if (res[key]) Store.set(key, res[key]);
-  }
 }
 
 async function logout() {
@@ -1920,11 +1908,8 @@ document.getElementById('ltBudgetHours').addEventListener('change', async functi
 });
 
 async function loadListeningTime() {
-  // Backend is the source of truth — fetch the server, fall back to localStorage.
   const res = await api('GET', '/api/listening-time');
-  if (res.ok) { showListeningTimeResult(res); return; }
-  const cached = Store.get('listeningTime');
-  if (cached) showListeningTimeResult(cached);
+  if (res.ok) showListeningTimeResult(res);
 }
 
 async function calcListeningTime() {
@@ -2059,11 +2044,8 @@ function toggleAwBreakdown() {
 }
 
 async function loadAwBreakdown() {
-  // Backend is the source of truth — fetch the server, fall back to localStorage.
   const res = await api('GET', '/api/aw-breakdown');
-  if (res.ok) { showAwBreakdownResult(res); return; }
-  const cached = Store.get('awBreakdown');
-  if (cached) showAwBreakdownResult(cached);
+  if (res.ok) showAwBreakdownResult(res);
 }
 
 async function calcAwBreakdown() {
@@ -2080,23 +2062,9 @@ async function loadArtists() {
   countEl.textContent = 'Loading...';
   const priorities = activeFilters;
 
-  // Backend is the source of truth — fetch the server, fall back to localStorage
-  // (stateless/offline mode) only if the request fails.
-  let artists;
   const res = await api('GET', `/api/artists?priorities=${[...priorities].join(',')}&sort=score`);
-  if (res.ok) {
-    artists = res.artists;
-  } else {
-    const trusted = Store.get('trustedArtists');
-    if (!trusted?.artistCounts) { countEl.textContent = ''; log('error', res.error || 'Failed to load artists'); return; }
-    artists = Object.entries(trusted.artistCounts)
-      .filter(([, d]) => d.priority !== null && priorities.has(d.priority))
-      .sort((a, b) => {
-        if (a[1].priority !== b[1].priority) return (a[1].priority ?? 99) - (b[1].priority ?? 99);
-        return b[1].score - a[1].score;
-      })
-      .map(([name, data]) => ({ name, ...data }));
-  }
+  if (!res.ok) { countEl.textContent = ''; log('error', res.error || 'Failed to load artists'); return; }
+  const artists = res.artists;
 
   const tbody = document.getElementById('artistTableBody');
   tbody.innerHTML = '';
@@ -2376,20 +2344,9 @@ async function loadConfig() {
       document.getElementById('ltBudgetHours').value = currentConfig.weeklyListeningBudget;
     }
     if (currentConfig.pinnedBlocks) applyPinnedBlocks(currentConfig.pinnedBlocks);
-    // If server has no config but we have it in localStorage (from migration), push it
     if (!res.configured) {
-      const localConfig = Store.get('config');
-      if (localConfig?.sourcePlaylists?.allWeeklyId) {
-        currentConfig = localConfig;
-        configLoaded = true;
-        populateSettings(currentConfig);
-        await api('PUT', '/api/config', currentConfig);
-        Store.remove('config');
-        log('success', 'Restored config from local migration');
-      } else {
-        document.getElementById('settingsOverlay').classList.remove('hidden');
-        document.getElementById('welcomeBanner').classList.remove('hidden');
-      }
+      document.getElementById('settingsOverlay').classList.remove('hidden');
+      document.getElementById('welcomeBanner').classList.remove('hidden');
     }
   }
 }
@@ -2440,8 +2397,7 @@ function populateSettings(cfg) {
   document.getElementById('aiFindsSection').classList.toggle('ai-unavailable', !aiFindsAvailable);
   document.getElementById('cfgAiFindsEnabled').disabled = !aiFindsAvailable;
   document.getElementById('cfgAiThreshold').disabled = !aiFindsAvailable;
-  // A config migrated from localStorage predates AI finds
-  const ai = cfg.aiFinds ?? { enabled: false, threshold: 50, scoutingPlaylists: [] };
+  const ai = cfg.aiFinds;
   document.getElementById('cfgAiFindsEnabled').checked = ai.enabled;
   document.getElementById('cfgAiThreshold').value = ai.threshold;
   renderPlaylistList('scoutingList', ai.scoutingPlaylists);
@@ -2917,23 +2873,12 @@ function buildArtistRankIndex(entries) {
 }
 
 async function ensureArtistRankIndex() {
-  if (artistRankIndex.size > 0) return;
-  // Backend is the source of truth — fetch the server first, fall back to
-  // localStorage only if it fails.
-  if (!artistRankIndexFetched) {
-    artistRankIndexFetched = true;
-    const res = await api('GET', '/api/artists?priorities=1,2,3,4&sort=score');
-    if (res?.ok && res.artists) {
-      buildArtistRankIndex(res.artists);
-      if (np.state) renderNowPlaying(); // refresh tooltips now that ranks exist
-      return;
-    }
-  }
-  const trusted = Store.get('trustedArtists');
-  if (trusted?.artistCounts) {
-    buildArtistRankIndex(
-      Object.entries(trusted.artistCounts).map(([name, d]) => ({ name, ...d })),
-    );
+  if (artistRankIndex.size > 0 || artistRankIndexFetched) return;
+  artistRankIndexFetched = true;
+  const res = await api('GET', '/api/artists?priorities=1,2,3,4&sort=score');
+  if (res?.ok && res.artists) {
+    buildArtistRankIndex(res.artists);
+    if (np.state) renderNowPlaying(); // refresh tooltips now that ranks exist
   }
 }
 

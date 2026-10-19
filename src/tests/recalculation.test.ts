@@ -3,12 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import {
-  BATCH_CACHE,
-  PENDING_PRIORITY_CHANGES,
-  TRUSTED_ARTISTS,
-} from '../lib/cache-files.js';
-import { createDurableCache, type DurableCache } from '../lib/durable-cache.js';
 import type { PlaylistTrackWithArtists } from '../lib/pagination.js';
 import {
   type PlaylistScanResult,
@@ -16,6 +10,13 @@ import {
   toCachedScanResult,
 } from '../lib/types.js';
 import { DEFAULT_USER_CONFIG, type UserConfig } from '../lib/user-config.js';
+import {
+  BATCH_CACHE,
+  localUserData,
+  PENDING_PRIORITY_CHANGES,
+  TRUSTED_ARTISTS,
+  type UserData,
+} from '../lib/user-data/index.js';
 import type { PlaylistWrites } from '../services/promotion-sync/index.js';
 import {
   describeRecalculationResult,
@@ -170,13 +171,13 @@ function fixtureWeeklies(input: Array<{ id: string; tracks: WeeklyTrack[] }>) {
 }
 
 function tmpCache(t: { after: (fn: () => void) => void }): {
-  cache: DurableCache;
+  cache: UserData;
   dir: string;
 } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recalculation-test-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return {
-    cache: createDurableCache({ userId: 'u', dataDir: dir, redis: null }),
+    cache: localUserData(dir),
     dir,
   };
 }
@@ -188,7 +189,7 @@ function setup(
 ) {
   const { cache, dir } = tmpCache(t);
   const deps: RecalculationDeps = {
-    cache,
+    data: cache,
     ports: {
       sources: sources.reads,
       unprocessed: weeklies.unprocessed,

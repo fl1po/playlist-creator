@@ -23,6 +23,6 @@ export const clearTask: TaskDefinition = {
     });
     await service.clear(name);
     // A cleared weekly playlist is an unfilled Friday again: its AI picks go.
-    await forgetAiPicks(tc.cache, name);
+    await forgetAiPicks(tc.data, name);
   },
 };

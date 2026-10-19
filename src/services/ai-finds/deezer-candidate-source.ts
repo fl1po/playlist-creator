@@ -1,19 +1,19 @@
 import {
-  DEEZER_ARTISTS,
-  type DeezerArtistCache,
-  RELATED_ARTIST_GRAPH,
-  type RelatedArtist,
-  type RelatedArtistEntry,
-} from '../../lib/cache-files.js';
-import {
   type DeezerAlbumDetail,
   type DeezerArtistAlbum,
   DeezerClient,
   foldName,
 } from '../../lib/deezer-client.js';
 import { rankToPopularity } from '../../lib/deezer-popularity.js';
-import type { CacheDescriptor, DurableCache } from '../../lib/durable-cache.js';
 import { isAbort } from '../../lib/spotify/errors.js';
+import type { Dataset, UserData } from '../../lib/user-data/index.js';
+import {
+  DEEZER_ARTISTS,
+  type DeezerArtistCache,
+  RELATED_ARTIST_GRAPH,
+  type RelatedArtist,
+  type RelatedArtistEntry,
+} from '../../lib/user-data/index.js';
 import type {
   Candidate,
   CandidateProgress,
@@ -46,7 +46,7 @@ export interface DeezerCandidateSourceOptions {
   /** Defaults to a fresh `DeezerClient`. */
   deezer?: DeezerReads;
   /** Holds artist lookups, top tracks and the related-artist graph between fills. */
-  cache: DurableCache;
+  data: UserData;
   /** Cooperative cancellation: throws to abort. Called once per seed and artist. */
   checkAbort?: () => void;
   now?: () => number;
@@ -78,11 +78,11 @@ export function deezerCandidateSource(
   const now = opts.now ?? Date.now;
   const checkAbort = opts.checkAbort ?? (() => {});
   // Held for the adapter's life, so later weeks of a fill reuse them.
-  const artistStore = batchedStore(opts.cache, DEEZER_ARTISTS, () => ({
+  const artistStore = batchedStore(opts.data, DEEZER_ARTISTS, () => ({
     artists: {},
     topTracks: {},
   }));
-  const graphStore = batchedStore(opts.cache, RELATED_ARTIST_GRAPH, () => ({}));
+  const graphStore = batchedStore(opts.data, RELATED_ARTIST_GRAPH, () => ({}));
   const albumLists = new Map<number, DeezerArtistAlbum[]>();
   const albumDetails = new Map<number, DeezerAlbumDetail>();
   // Seeds looked up by this adapter, failed ones too: a failure is retried
@@ -398,28 +398,24 @@ function coCited(
 }
 
 /**
- * A cache entry held for the adapter's life: loaded on first use, saved
+ * A dataset held for the adapter's life: loaded on first use, saved
  * every `SAVE_EVERY` changes and when asked.
  */
-function batchedStore<T>(
-  cache: DurableCache,
-  descriptor: CacheDescriptor<T>,
-  empty: () => T,
-) {
+function batchedStore<T>(data: UserData, dataset: Dataset<T>, empty: () => T) {
   let value: T | null = null;
   let unsaved = 0;
   async function save(): Promise<void> {
     if (!(value && unsaved)) return;
     unsaved = 0;
     try {
-      await cache.save(descriptor, value);
+      await data.save(dataset, value);
     } catch {
       /* the cache is a speed-up; losing it costs refetches, not the week */
     }
   }
   return {
     async load(): Promise<T> {
-      value ??= (await cache.load(descriptor)) ?? empty();
+      value ??= (await data.load(dataset)) ?? empty();
       return value;
     },
     async changed(): Promise<void> {

@@ -1,8 +1,8 @@
 import { FileConfigStore } from '../lib/config.js';
-import { createDurableCache } from '../lib/durable-cache.js';
 import { createCliGateway } from '../lib/spotify/gateway.js';
 import { printLines } from '../lib/task-log.js';
-import { secondaryLabel, UserConfigStore } from '../lib/user-config.js';
+import { secondaryLabel } from '../lib/user-config.js';
+import { localUserData } from '../lib/user-data/index.js';
 import { spotifyRecalculationPorts } from '../services/recalculation/adapters.js';
 import {
   describeRecalculationResult,
@@ -17,24 +17,17 @@ import { consoleRecalculationProgress } from '../services/recalculation/subscrib
 const force = process.argv.includes('--force');
 const noSync = process.argv.includes('--no-sync');
 
-const DATA_DIR = '.';
+// The CLI's user data is always local, whatever the env says (ADR-0008).
+const data = localUserData('.');
 const ctx = createCliGateway({ configStore: new FileConfigStore() });
-const userConfig = await new UserConfigStore().load();
+const userConfig = await data.config.load();
 const sl = secondaryLabel(userConfig);
 
 const me = await ctx.call((api) => api.currentUser.profile(), 'user profile');
 if (!me.success) throw me.error;
-const cache = createDurableCache({
-  userId: me.data.id,
-  dataDir: DATA_DIR,
-  redis: null,
-});
 const deps = {
-  cache,
-  ports: spotifyRecalculationPorts(ctx, {
-    userId: me.data.id,
-    dataDir: DATA_DIR,
-  }),
+  data,
+  ports: spotifyRecalculationPorts(ctx, { userId: me.data.id, data }),
 };
 
 console.log('=== Recalculating Artist Priorities ===\n');

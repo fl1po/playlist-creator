@@ -3,23 +3,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import compression from 'compression';
 import express from 'express';
-import {
-  AW_BREAKDOWN,
-  BATCH_CACHE,
-  DURATION_SNAPSHOTS,
-  FILL_HISTORY,
-  LISTENING_TIME,
-  TRUSTED_ARTISTS,
-} from '../lib/cache-files.js';
-import { createAppConfigStore, UserTokenStore } from '../lib/config.js';
-import { createDurableCache } from '../lib/durable-cache.js';
+import { createAppConfigStore } from '../lib/config.js';
 import { createCallStats } from '../lib/spotify/call-stats.js';
 import { RequestPacer, type SpotifyGateway } from '../lib/spotify/gateway.js';
-import type { AppConfig } from '../lib/types.js';
-import { createAuthManager, fetchSpotifyUserId } from './auth.js';
+import { UpstashRedisPort, upstashFromEnv } from '../lib/user-data/index.js';
+import { createAuthManager } from './auth.js';
 import { bearerIdentity } from './bearer-identity.js';
 import { createBroadcaster, type DeployInfo } from './broadcast.js';
-import { productionLogStore } from './log-store.js';
+import { upstashLogStore } from './log-store.js';
 import { createRouteContext } from './route-context.js';
 import { authRoutes } from './routes/auth.js';
 import { configRoutes } from './routes/config.js';
@@ -54,8 +45,13 @@ const PORT = Number(process.env.PORT ?? 3005);
 
 const pacer = new RequestPacer(1);
 const appConfigStore = createAppConfigStore();
+// The one Redis client, read from the env here and nowhere else (ADR-0008).
+// Without it, every user's data and the live log stay on this machine.
+const upstash = upstashFromEnv();
 // The live log persists in Redis for a week, so it survives deploys.
-const broadcaster = createBroadcaster({ store: productionLogStore() });
+const broadcaster = createBroadcaster({
+  store: upstash ? upstashLogStore(upstash) : null,
+});
 const broadcast = broadcaster.broadcast;
 
 const LOG_FLUSH_MS = 10_000;
@@ -103,6 +99,7 @@ const ctx = createRouteContext({
   usersDir: USERS_DIR,
   projectRoot: PROJECT_ROOT,
   port: PORT,
+  redis: upstash ? new UpstashRedisPort(upstash) : null,
 });
 
 // ── Express + SSE ───────────────────────────────────────────────────────────
@@ -206,102 +203,6 @@ for (const task of [
 mountTaskControls(app, taskRunner, ctx.requireSession);
 
 // ── Simple inline routes ────────────────────────────────────────────────────
-
-// Export all user data for localStorage migration
-app.get('/api/export-data', async (req, res) => {
-  const session = ctx.requireSession(req, res);
-  if (!session) return;
-
-  const read = (file: string) => {
-    try {
-      return JSON.parse(
-        fs.readFileSync(path.join(session.dataDir, file), 'utf8'),
-      );
-    } catch {
-      return null;
-    }
-  };
-
-  // Read config from file directly (store may return defaults if file missing)
-  const config =
-    read('user-config.json') ?? (await session.userConfigStore.load());
-
-  // Backend is the source of truth: prefer local files, but fall back to Redis
-  // so a fresh/ephemeral filesystem (e.g. after a Railway restart) still serves
-  // the durable copy instead of nulls.
-  const cache = createDurableCache({
-    userId: session.userId,
-    dataDir: session.dataDir,
-  });
-  const caches = await cache.loadMany({
-    trustedArtists: TRUSTED_ARTISTS,
-    batchCache: BATCH_CACHE,
-    fillHistory: FILL_HISTORY,
-    durationSnapshots: DURATION_SNAPSHOTS,
-    listeningTime: LISTENING_TIME,
-    awBreakdown: AW_BREAKDOWN,
-  });
-
-  res.json({ ok: true, config, ...caches });
-});
-
-// Import data (for migrating from local to production)
-app.post('/api/import-data', async (req, res) => {
-  const session = ctx.requireSession(req, res);
-  if (!session) return;
-
-  const {
-    config,
-    trustedArtists,
-    batchCache,
-    fillHistory,
-    durationSnapshots,
-    listeningTime,
-    awBreakdown,
-  } = req.body;
-
-  // Save config to the config store (Redis in production)
-  let configSaved = false;
-  if (config) {
-    try {
-      await session.userConfigStore.save(config);
-      configSaved = true;
-    } catch (err) {
-      console.error('Failed to save config:', err);
-    }
-  }
-
-  // Save trustedArtists + fillHistory for cross-device access
-  if (trustedArtists || fillHistory) {
-    try {
-      const cache = createDurableCache({
-        userId: session.userId,
-        dataDir: session.dataDir,
-      });
-      if (trustedArtists) await cache.save(TRUSTED_ARTISTS, trustedArtists);
-      if (fillHistory) await cache.save(FILL_HISTORY, fillHistory);
-    } catch (err) {
-      console.error('Failed to save imported data:', err);
-    }
-  }
-
-  // Return caches AND config — the client will save to localStorage
-  const caches: Record<string, unknown> = {};
-  if (trustedArtists) caches.trustedArtists = trustedArtists;
-  if (batchCache) caches.batchCache = batchCache;
-  if (fillHistory) caches.fillHistory = fillHistory;
-  if (durationSnapshots) caches.durationSnapshots = durationSnapshots;
-  if (listeningTime) caches.listeningTime = listeningTime;
-  if (awBreakdown) caches.awBreakdown = awBreakdown;
-
-  res.json({
-    ok: true,
-    configSaved,
-    configReceived: !!config,
-    caches,
-    config: config || null,
-  });
-});
 
 app.post('/api/clear-logs', async (req, res) => {
   const session = ctx.requireSession(req, res);
@@ -677,128 +578,6 @@ app.get(
   }),
 );
 
-// ── Migration ───────────────────────────────────────────────────────────────
-
-async function migrateFromLegacy() {
-  // Skip migration when running with env-based config (production)
-  if (process.env.SPOTIFY_CLIENT_ID) return;
-  if (appConfigStore.exists()) return;
-
-  const legacyPath = path.join(PROJECT_ROOT, 'spotify-config.json');
-  if (!fs.existsSync(legacyPath)) return;
-
-  console.log('Migrating from legacy single-user config...');
-
-  try {
-    const legacy = JSON.parse(fs.readFileSync(legacyPath, 'utf8'));
-
-    const appConfig: AppConfig = {
-      clientId: legacy.clientId,
-      clientSecret: legacy.clientSecret,
-      redirectUri: legacy.redirectUri,
-    };
-    (appConfigStore as import('../lib/config.js').AppConfigStore).save(
-      appConfig,
-    );
-    console.log('  Created data/app-config.json');
-
-    const envUserId = process.env.SPOTIFY_USER_ID;
-    if (legacy.accessToken && legacy.refreshToken) {
-      let userId: string | null = null;
-      let displayName: string | null = null;
-
-      try {
-        const user = await fetchSpotifyUserId(legacy.accessToken);
-        userId = user.id;
-        displayName = user.displayName;
-      } catch {
-        try {
-          const authHeader = `Basic ${Buffer.from(`${appConfig.clientId}:${appConfig.clientSecret}`).toString('base64')}`;
-          const params = new URLSearchParams({
-            grant_type: 'refresh_token',
-            refresh_token: legacy.refreshToken,
-          });
-          const tokenRes = await fetch(
-            'https://accounts.spotify.com/api/token',
-            {
-              method: 'POST',
-              headers: {
-                Authorization: authHeader,
-                'Content-Type': 'application/x-www-form-urlencoded',
-              },
-              body: params,
-            },
-          );
-          if (tokenRes.ok) {
-            const data = (await tokenRes.json()) as {
-              access_token: string;
-              refresh_token?: string;
-            };
-            legacy.accessToken = data.access_token;
-            if (data.refresh_token) legacy.refreshToken = data.refresh_token;
-            const user = await fetchSpotifyUserId(data.access_token);
-            userId = user.id;
-            displayName = user.displayName;
-            console.log('  Refreshed expired token for migration');
-          } else {
-            throw new Error('Refresh failed');
-          }
-        } catch {
-          if (envUserId) {
-            userId = envUserId;
-            console.log(
-              `  Token expired — using SPOTIFY_USER_ID="${envUserId}" for migration`,
-            );
-          } else {
-            console.log(
-              `  Warning: Could not fetch userId (token expired) and SPOTIFY_USER_ID not set.`,
-            );
-            console.log(
-              `  Re-run with: SPOTIFY_USER_ID=<your-spotify-id> npm run dashboard`,
-            );
-            console.log(
-              `  Find your ID: Spotify profile > ... > Share > Copy link (ID is in the URL)`,
-            );
-          }
-        }
-      }
-
-      if (userId) {
-        const userDir = ctx.getUserDataDir(userId);
-        fs.mkdirSync(userDir, { recursive: true });
-
-        const tokenStore = new UserTokenStore(userId, userDir);
-        tokenStore.save({
-          accessToken: legacy.accessToken,
-          refreshToken: legacy.refreshToken,
-        });
-        console.log(
-          `  Migrated tokens for user: ${displayName ?? userId} (${userId})`,
-        );
-
-        const filesToCopy = [
-          { from: 'user-config.json', to: 'user-config.json' },
-          { from: 'trusted-artists.json', to: 'trusted-artists.json' },
-          { from: 'batch-cache.json', to: 'batch-cache.json' },
-          { from: 'batch-p1p2-progress.json', to: 'batch-p1p2-progress.json' },
-        ];
-
-        for (const { from, to } of filesToCopy) {
-          const srcPath = path.join(PROJECT_ROOT, from);
-          if (fs.existsSync(srcPath)) {
-            fs.copyFileSync(srcPath, path.join(userDir, to));
-            console.log(`  Copied ${from} -> data/users/${userId}/${to}`);
-          }
-        }
-      }
-    }
-
-    console.log('Migration complete. Legacy files left in place as backup.');
-  } catch (err) {
-    console.error('Migration failed:', err);
-  }
-}
-
 // ── Dev: watch public dir for frontend hot reload ───────────────────────────
 
 const srcPublic = path.join(__dirname, '../../src/web/public');
@@ -830,12 +609,11 @@ if (deploy.commit) {
   );
 }
 
-migrateFromLegacy()
-  .then(() =>
-    broadcaster.restore(deploy).catch((err) => {
-      console.error('Restoring the log failed:', err);
-    }),
-  )
+broadcaster
+  .restore(deploy)
+  .catch((err) => {
+    console.error('Restoring the log failed:', err);
+  })
   .then(() => {
     app.listen(PORT, () => {
       console.log(`Dashboard running at http://localhost:${PORT}`);

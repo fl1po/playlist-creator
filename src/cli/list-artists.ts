@@ -1,14 +1,14 @@
-import fs from 'node:fs';
-import type { TrustedArtistsFile } from '../lib/types.js';
-import { secondaryLabel, UserConfigStore } from '../lib/user-config.js';
+import { secondaryLabel } from '../lib/user-config.js';
+import { localUserData, TRUSTED_ARTISTS } from '../lib/user-data/index.js';
 
-const TRUSTED_ARTISTS_PATH = './trusted-artists.json';
-
-const data: TrustedArtistsFile = JSON.parse(
-  fs.readFileSync(TRUSTED_ARTISTS_PATH, 'utf8'),
-);
+const userData = localUserData('.');
+const data = await userData.load(TRUSTED_ARTISTS);
+if (!data) {
+  console.error('trusted-artists.json not found — run recalculate first');
+  process.exit(1);
+}
 const artists = data.artistCounts;
-const userConfig = new UserConfigStore().load();
+const userConfig = await userData.config.load();
 const sl = secondaryLabel(userConfig);
 const t = userConfig.scoring.priorityThresholds;
 

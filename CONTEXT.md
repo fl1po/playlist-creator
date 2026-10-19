@@ -78,6 +78,16 @@ _Avoid_: job, process (except as the live log's label)
 The lines a task writes, worded once on the server from what the task did, and the same in the CLI, the live log panel and the export. A task's results — what the page reloads or draws from — travel beside it as data, never as text for the page to word.
 _Avoid_: event log, messages
 
+### Storage
+
+**User data**:
+Everything the app keeps for one user between runs: their config, the trusted artists, pending priority changes, fill history, AI picks, week progress, and the costly-to-rebuild scans and lookups. Held by the server; the page never keeps a copy. Can be copied whole from one place to another, e.g. production down to a local machine.
+_Avoid_: cache, cache files, user files
+
+**Dataset**:
+One named piece of user data, owned by the part of the app that writes it. A dataset that isn't there just means "none yet".
+_Avoid_: cache, cache file
+
 ### Releases
 
 **Release**:
