@@ -131,7 +131,7 @@ What the LLM judges the candidate pool against: the P1/P2 artists plus the highe
 _Avoid_: taste profile (that's year collection's genre vector), user profile
 
 **AI pick**:
-The collection decision recording an AI find — the release chosen and the LLM's one-line reason. Also covers the week's AI finds being skipped when the user has opted in but the AI phase couldn't run (no API key, over budget, failed). A user who hasn't opted in gets no AI pick at all. Unlike other collection decisions, a week's AI picks are kept with its weekly playlist, so the user can see after the fill why each AI find is there.
+The collection decision recording an AI find — the release chosen and the LLM's one-line reason. Also covers the week's AI finds being skipped when the user has opted in but the AI phase couldn't run (no API key, over budget, failed). A user who hasn't opted in gets no AI pick at all. Unlike other collection decisions, a week's AI picks are kept with its weekly playlist, so the user can see after the fill why each AI find is there. Clearing a weekly playlist forgets its AI picks: it is an unfilled Friday again.
 
 **External playlist source**:
 A pattern (user + name pattern + date format) for discovering another user's date-named playlists as editorial input for a given week.
