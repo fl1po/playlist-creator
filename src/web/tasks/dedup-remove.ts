@@ -36,7 +36,7 @@ export const dedupRemoveTask: TaskDefinition<DedupRemoveEvents> = {
         chunks.push(pl.uris.slice(i, i + batchSize));
       }
       await tc.iter(chunks, async (batch) => {
-        const result = await tc.ctx.call(
+        const result = await tc.session.gateway.call(
           (api) =>
             api.playlists.removeItemsFromPlaylist(pl.id, {
               tracks: batch.map((uri) => ({ uri })),

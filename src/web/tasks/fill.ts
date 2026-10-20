@@ -28,16 +28,16 @@ export const fillTask: TaskDefinition<FillEvents> = {
 
     const userConfig = await tc.userConfig();
 
-    const storage = new DurableFillStorage(tc.data);
+    const storage = new DurableFillStorage(tc.session.data);
     await runFill({
-      ctx: tc.ctx,
-      userId: tc.userId,
+      ctx: tc.session.gateway,
+      userId: tc.session.userId,
       userConfig,
       storage,
-      data: tc.data,
-      ports: fillPorts(tc.ctx, {
-        userId: tc.userId,
-        data: tc.data,
+      data: tc.session.data,
+      ports: fillPorts(tc.session.gateway, {
+        userId: tc.session.userId,
+        data: tc.session.data,
         storage,
       }),
       onEvent: webFillSink({

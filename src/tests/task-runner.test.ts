@@ -104,7 +104,10 @@ function fakeGateway(accessToken: string): SessionGateway {
 
 /** The access token the task's next call runs with. */
 const tokenOf = async (tc: TaskContext) => {
-  const r = await tc.ctx.call(async (api) => api as unknown as string, 'probe');
+  const r = await tc.session.gateway.call(
+    async (api) => api as unknown as string,
+    'probe',
+  );
   assert.ok(r.success);
   return r.data;
 };
@@ -465,7 +468,7 @@ test('a rate-limit wait shows in the owner’s progress until the task moves on'
   const tc = await task.started;
 
   let first = true;
-  const result = await tc.ctx.call(async () => {
+  const result = await tc.session.gateway.call(async () => {
     if (first) {
       first = false;
       throw new RateLimitError(2);

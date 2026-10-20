@@ -43,8 +43,8 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
 
     const { playlists: candidates } = await unprocessedWeeklyPlaylists(
       {
-        store: spotifyWeeklyPlaylistStore(tc.ctx),
-        data: tc.data,
+        store: spotifyWeeklyPlaylistStore(tc.session.gateway),
+        data: tc.session.data,
         userId: me.id,
       },
       userConfig.sourcePlaylists.allWeeklyId,
@@ -55,7 +55,7 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
 
     const snapshots: DurationSnapshots = force
       ? {}
-      : ((await tc.data.load(DURATION_SNAPSHOTS)) ?? {});
+      : ((await tc.session.data.load(DURATION_SNAPSHOTS)) ?? {});
 
     let totalMs = 0;
     let totalTracks = 0;
@@ -66,7 +66,7 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
       let plMs: number;
       let plTracks: number;
 
-      const plInfo = await tc.ctx.call(
+      const plInfo = await tc.session.gateway.call(
         (api) =>
           api.playlists.getPlaylist(
             pl.id,
@@ -86,7 +86,7 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
         plTracks = snap.trackCount;
         cached++;
       } else {
-        const dur = await getPlaylistTotalDuration(tc.ctx, pl.id);
+        const dur = await getPlaylistTotalDuration(tc.session.gateway, pl.id);
         plMs = dur.totalMs;
         plTracks = dur.trackCount;
         if (liveSnapshotId) {
@@ -120,7 +120,7 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
     for (const id of Object.keys(snapshots)) {
       if (!candidateIds.has(id)) delete snapshots[id];
     }
-    await tc.data.save(DURATION_SNAPSHOTS, snapshots);
+    await tc.session.data.save(DURATION_SNAPSHOTS, snapshots);
 
     const result: ListeningTimeResult = {
       computedAt: new Date().toISOString(),
@@ -130,7 +130,7 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
       perPlaylist,
     };
 
-    await tc.data.save(LISTENING_TIME, result);
+    await tc.session.data.save(LISTENING_TIME, result);
 
     tc.emit('listeningTime:complete', result);
 

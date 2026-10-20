@@ -130,8 +130,7 @@ function clearTaskContext(t: TestContext, ctx: SpotifyGateway) {
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const cache = localUserData(dataDir);
   const tc = {
-    ctx,
-    data: cache,
+    session: { gateway: ctx, userId: 'user-1', data: cache },
     body: { name: 'Target' },
     broadcast() {},
     log() {},
