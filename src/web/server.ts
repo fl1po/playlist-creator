@@ -5,7 +5,11 @@ import compression from 'compression';
 import express from 'express';
 import { createAppConfigStore } from '../lib/config.js';
 import { createCallStats } from '../lib/spotify/call-stats.js';
-import { RequestPacer, type SpotifyGateway } from '../lib/spotify/gateway.js';
+import {
+  RequestPacer,
+  type SessionGateway,
+  type SpotifyGateway,
+} from '../lib/spotify/gateway.js';
 import { UpstashRedisPort, upstashFromEnv } from '../lib/user-data/index.js';
 import { createAuthManager } from './auth.js';
 import { bearerIdentity } from './bearer-identity.js';
@@ -278,6 +282,37 @@ function cachePlaylist(id: string, entry: PlaylistCache) {
   playlistDurationCache.set(id, entry);
 }
 
+/** Playlists being loaded now, and when each load last started (ms). */
+const playlistLoads = new Set<string>();
+const lastLoadStart = new Map<string, number>();
+
+/**
+ * Load the playlist into the cache in the background: the poll answers with
+ * whatever is cached and a later poll picks the load up. A big playlist (All
+ * Weekly) is 100+ pages, minutes of the shared pacer. So at most one load per
+ * playlist runs, and a failed one is not retried before the snapshot interval:
+ * otherwise every poll during a load starts another. Nothing waits on the
+ * load, so it goes on the background lane and takes turns with a running
+ * task's calls instead of being served before every one of them.
+ */
+function refreshPlaylistCache(gateway: SessionGateway, playlistId: string) {
+  if (playlistLoads.has(playlistId)) return;
+  const last = lastLoadStart.get(playlistId) ?? 0;
+  if (Date.now() - last < SNAPSHOT_CHECK_INTERVAL_MS) return;
+  playlistLoads.add(playlistId);
+  lastLoadStart.set(playlistId, Date.now());
+  const background = gateway.forTask({
+    signal: new AbortController().signal,
+  });
+  loadPlaylistCache(background, playlistId)
+    .then((loaded) => {
+      if (loaded) cachePlaylist(playlistId, loaded);
+    })
+    // Auth loss surfaces on the next poll's own calls.
+    .catch(() => {})
+    .finally(() => playlistLoads.delete(playlistId));
+}
+
 /** Null when Spotify can't serve the playlist right now; auth loss still throws. */
 async function loadPlaylistCache(
   gateway: SpotifyGateway,
@@ -394,7 +429,7 @@ app.get(
       const [, ctxType, ctxId] = ctxUri.split(':');
       if (ctxType === 'playlist' && ctxId) {
         contextInfo = { type: 'playlist', id: ctxId };
-        let cached = playlistDurationCache.get(ctxId);
+        const cached = playlistDurationCache.get(ctxId);
         // Reload when the playlist has changed since we cached it. Spotify's
         // snapshot_id changes on any edit, so a cheap fetch of just that field
         // tells us whether the cached track list is stale. This poll runs every
@@ -404,7 +439,7 @@ app.get(
         const lastCheck = lastSnapshotCheck.get(ctxId) ?? 0;
         const dueForCheck =
           Date.now() - lastCheck >= SNAPSHOT_CHECK_INTERVAL_MS;
-        if (!cached || dueForCheck) {
+        if (cached && dueForCheck) {
           const head = await gateway.call(
             (api) => api.playlists.getPlaylist(ctxId, undefined, 'snapshot_id'),
             `playlist snapshot ${ctxId}`,
@@ -419,11 +454,8 @@ app.get(
           !cached ||
           (currentSnapshot && cached.snapshotId !== currentSnapshot)
         ) {
-          const loaded = await loadPlaylistCache(gateway, ctxId);
-          if (loaded) {
-            cached = loaded;
-            cachePlaylist(ctxId, loaded);
-          }
+          // Until it lands, a stale list is a better answer than none.
+          refreshPlaylistCache(gateway, ctxId);
         }
         if (cached) {
           contextInfo.name = cached.name;
