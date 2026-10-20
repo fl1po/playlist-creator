@@ -11,9 +11,9 @@ if (!targetName) {
   process.exit(1);
 }
 
-const { gateway } = await cliSession();
+const session = await cliSession();
 
-const service = new PlaylistClearerService(gateway, (e) => {
+const service = new PlaylistClearerService(session, (e) => {
   printLines(describeClear(e));
   if (e.kind === 'not-found') process.exit(1);
 });

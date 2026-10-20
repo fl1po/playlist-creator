@@ -6,9 +6,8 @@ import { type TestContext, test } from 'node:test';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
 import type { SpotifyGateway } from '../lib/spotify/gateway.js';
 import { AI_PICKS, localUserData } from '../lib/user-data/index.js';
+import type { UserSession } from '../lib/user-session.js';
 import { PlaylistClearerService } from '../services/playlist-clearer.js';
-import type { TaskContext } from '../web/task-runner.js';
-import { clearTask } from '../web/tasks/clear.js';
 
 // ── Fixture: one playlist on a fake Spotify, with injectable failures ───────
 
@@ -65,15 +64,24 @@ function fakeContext(opts: {
   return { ctx: fixtureGateway(api), removed };
 }
 
+/** A session over `ctx`, with user data in a temp dir. */
+function session(t: TestContext, ctx: SpotifyGateway): UserSession {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clear-test-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  return { gateway: ctx, userId: 'user-1', data: localUserData(dataDir) };
+}
+
 const uris = (n: number) =>
   Array.from({ length: n }, (_, i) => `spotify:track:t${i}`);
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-test('clears every track in batches of 100', async () => {
+test('clears every track in batches of 100', async (t) => {
   const { ctx, removed } = fakeContext({ trackUris: uris(130) });
 
-  const result = await new PlaylistClearerService(ctx).clear('Target');
+  const result = await new PlaylistClearerService(session(t, ctx)).clear(
+    'Target',
+  );
 
   assert.equal(result.cleared, 130);
   assert.deepEqual(
@@ -82,19 +90,19 @@ test('clears every track in batches of 100', async () => {
   );
 });
 
-test('removes local files and episodes by their own URI', async () => {
+test('removes local files and episodes by their own URI', async (t) => {
   const local = 'spotify:local:Artist:Album:Song:180';
   const { ctx, removed } = fakeContext({ trackUris: [local] });
 
-  await new PlaylistClearerService(ctx).clear('Target');
+  await new PlaylistClearerService(session(t, ctx)).clear('Target');
 
   assert.deepEqual(removed, [[local]]);
 });
 
-test('a failed removal throws and says how far it got', async () => {
+test('a failed removal throws and says how far it got', async (t) => {
   const { ctx } = fakeContext({ trackUris: uris(130), failRemoveBatch: 1 });
   let cleared = false;
-  const service = new PlaylistClearerService(ctx, (e) => {
+  const service = new PlaylistClearerService(session(t, ctx), (e) => {
     if (e.kind === 'cleared') cleared = true;
   });
 
@@ -102,20 +110,20 @@ test('a failed removal throws and says how far it got', async () => {
   assert.equal(cleared, false);
 });
 
-test('a failed track read throws instead of clearing a partial list', async () => {
+test('a failed track read throws instead of clearing a partial list', async (t) => {
   const { ctx, removed } = fakeContext({ trackUris: uris(5), failItems: true });
 
   await assert.rejects(
-    new PlaylistClearerService(ctx).clear('Target'),
+    new PlaylistClearerService(session(t, ctx)).clear('Target'),
     /read tracks/,
   );
   assert.deepEqual(removed, []);
 });
 
-test('a failed playlist listing throws instead of reporting "not found"', async () => {
+test('a failed playlist listing throws instead of reporting "not found"', async (t) => {
   const { ctx } = fakeContext({ trackUris: [], failListing: true });
   let notFound = false;
-  const service = new PlaylistClearerService(ctx, (e) => {
+  const service = new PlaylistClearerService(session(t, ctx), (e) => {
     if (e.kind === 'not-found') notFound = true;
   });
 
@@ -123,42 +131,29 @@ test('a failed playlist listing throws instead of reporting "not found"', async 
   assert.equal(notFound, false);
 });
 
-// ── The clear task ──────────────────────────────────────────────────────────
+// ── Forgetting AI picks ─────────────────────────────────────────────────────
 
-function clearTaskContext(t: TestContext, ctx: SpotifyGateway) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clear-task-test-'));
-  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
-  const cache = localUserData(dataDir);
-  const tc = {
-    session: { gateway: ctx, userId: 'user-1', data: cache },
-    body: { name: 'Target' },
-    broadcast() {},
-    log() {},
-  } as unknown as TaskContext;
-  return { tc, cache };
-}
-
-test("the clear task deletes the cleared playlist's AI-picks record", async (t) => {
+test("a clear forgets the cleared playlist's AI picks", async (t) => {
   const { ctx } = fakeContext({ trackUris: uris(2) });
-  const { tc, cache } = clearTaskContext(t, ctx);
-  await cache.save(AI_PICKS, {
+  const s = session(t, ctx);
+  await s.data.save(AI_PICKS, {
     Target: { skipped: 'over-budget' },
     Other: { picks: [] },
   });
 
-  await clearTask.run(tc);
+  await new PlaylistClearerService(s).clear('Target');
 
-  assert.deepEqual(await cache.load(AI_PICKS), { Other: { picks: [] } });
+  assert.deepEqual(await s.data.load(AI_PICKS), { Other: { picks: [] } });
 });
 
-test('a failed clear keeps the AI-picks record', async (t) => {
+test('a failed clear keeps the AI picks', async (t) => {
   const { ctx } = fakeContext({ trackUris: uris(2), failItems: true });
-  const { tc, cache } = clearTaskContext(t, ctx);
-  await cache.save(AI_PICKS, { Target: { skipped: 'over-budget' } });
+  const s = session(t, ctx);
+  await s.data.save(AI_PICKS, { Target: { skipped: 'over-budget' } });
 
-  await assert.rejects(clearTask.run(tc));
+  await assert.rejects(new PlaylistClearerService(s).clear('Target'));
 
-  assert.deepEqual(await cache.load(AI_PICKS), {
+  assert.deepEqual(await s.data.load(AI_PICKS), {
     Target: { skipped: 'over-budget' },
   });
 });

@@ -1,5 +1,7 @@
-import type { ApiResult, SpotifyGateway } from '../lib/spotify/gateway.js';
+import type { ApiResult } from '../lib/spotify/gateway.js';
 import { type LogLine, line } from '../lib/task-log.js';
+import type { UserSession } from '../lib/user-session.js';
+import { forgetAiPicks } from './ai-picks.js';
 
 export type ClearEvent =
   | { kind: 'found'; name: string; trackCount: number }
@@ -22,7 +24,7 @@ export function describeClear(e: ClearEvent): LogLine[] {
 
 export class PlaylistClearerService {
   constructor(
-    private ctx: SpotifyGateway,
+    private session: UserSession,
     private onEvent: (e: ClearEvent) => void = () => {},
   ) {}
 
@@ -30,6 +32,10 @@ export class PlaylistClearerService {
    * Removes every track from the user's playlist named `playlistName`.
    * Throws if any read or removal fails rather than reporting a partial clear;
    * the error says how many tracks were already removed.
+   *
+   * A cleared weekly playlist is an unfilled Friday again, so its AI picks
+   * are forgotten with it. Picks are kept by weekly playlist name, so any
+   * other playlist has none to forget.
    */
   async clear(playlistName: string): Promise<{ cleared: number }> {
     const playlists: Array<{ id: string; name: string; trackCount: number }> =
@@ -37,7 +43,7 @@ export class PlaylistClearerService {
     let offset = 0;
 
     while (true) {
-      const result = await this.ctx.call(
+      const result = await this.session.gateway.call(
         (api) => api.currentUser.playlists.playlists(50, offset),
         'user playlists',
       );
@@ -70,7 +76,7 @@ export class PlaylistClearerService {
     let itemOffset = 0;
 
     while (true) {
-      const result = await this.ctx.call(
+      const result = await this.session.gateway.call(
         (api) =>
           api.playlists.getPlaylistItems(
             target.id,
@@ -94,11 +100,11 @@ export class PlaylistClearerService {
       itemOffset += 50;
     }
 
-    // Spotify caps removals at 100 items per request; going through ctx.call
+    // Spotify caps removals at 100 items per request; going through the gateway's call
     // (not the raw SDK) keeps retry/abort handling.
     for (let i = 0; i < uris.length; i += 100) {
       const batch = uris.slice(i, i + 100);
-      const result = await this.ctx.call(
+      const result = await this.session.gateway.call(
         (api) =>
           api.playlists.removeItemsFromPlaylist(target.id, {
             tracks: batch,
@@ -112,6 +118,8 @@ export class PlaylistClearerService {
         );
       }
     }
+
+    await forgetAiPicks(this.session.data, target.name);
 
     this.onEvent({
       kind: 'cleared',
