@@ -1510,7 +1510,16 @@ function handleMessage({ type, data, ts, task }) {
 
     // Rotated bearer tokens (server -> client localStorage)
     case 'data:save':
-      if (data.key === 'tokens' && data.value) Store.setTokens(data.value);
+      if (data.key === 'tokens' && data.value) {
+        const current = Store.getTokens();
+        const changed = current?.accessToken !== data.value.accessToken
+          || current?.refreshToken !== data.value.refreshToken;
+        Store.setTokens(data.value);
+        // Another device refreshed while this one was showing the expired
+        // prompt: reload onto the new pair, as a local refresh would. Only on
+        // a change, so a replayed push of the same pair can't loop.
+        if (changed && tokenExpired) location.reload();
+      }
       break;
 
     case 'reload':

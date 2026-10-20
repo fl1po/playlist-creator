@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { AppConfig } from '../../lib/types.js';
+import { fetchSpotifyUserId } from '../auth.js';
 import type { RouteContext } from '../route-context.js';
 import {
   clearSessionCookie,
@@ -174,11 +175,21 @@ export function authRoutes(ctx: RouteContext): Router {
         access_token: string;
         refresh_token?: string;
       };
-      res.json({
-        ok: true,
+      const tokens = {
         accessToken: data.access_token,
         refreshToken: data.refresh_token ?? refreshToken,
-      });
+      };
+      // The caller is unverified here, so the fresh token names the owner.
+      // Their other devices take the new pair and drop their expired prompt.
+      fetchSpotifyUserId(tokens.accessToken)
+        .then((user) =>
+          ctx.broadcaster.broadcastTo(user.id, 'data:save', {
+            key: 'tokens',
+            value: tokens,
+          }),
+        )
+        .catch(() => {});
+      res.json({ ok: true, ...tokens });
     } catch (err) {
       console.error('Spotify token refresh threw:', err);
       res.json({ ok: false, error: 'Refresh failed' });
