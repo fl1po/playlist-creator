@@ -31,7 +31,6 @@ const IN_WINDOW = '2026-06-05';
 const P1 = { priority: 1, score: 100 };
 const AI = {
   enabled: true,
-  hasApiKey: true,
   threshold: 50,
   scoutingPlaylists: [],
   budgetUsd: 1,
@@ -616,9 +615,11 @@ test('with no server key, the week is no-api-key without a pool or judge call', 
     spendUsd: 0.05,
   });
 
+  const { candidates: _, judge: __, ...noAiPorts } = ports;
+
   const week = await collectWeek(
-    input({ roster: [['Alpha', P1]], ai: { ...AI, hasApiKey: false } }),
-    ports,
+    input({ roster: [['Alpha', P1]], ai: AI }),
+    noAiPorts,
   );
 
   assert.equal(judge.requests.length, 0);

@@ -318,7 +318,8 @@ export async function runAiPhase(
   run: Run,
   input: WeekCollectionInput,
   ai: AiFindsConfig,
-  ports: { candidates: CandidateSource; judge: TasteJudge },
+  /** Null when the server has no Anthropic key. */
+  ports: { candidates: CandidateSource; judge: TasteJudge } | null,
   week: {
     window: string[];
     foundReleases: Map<string, FoundRelease>;
@@ -336,7 +337,7 @@ export async function runAiPhase(
     exhausted: false,
   };
   // No key, or no budget left: no pool, no judge call.
-  if (!ai.hasApiKey) return skipPhase(run, phase, 'no-api-key');
+  if (!ports) return skipPhase(run, phase, 'no-api-key');
   const { budgetUsd } = ai;
   if (!(budgetUsd > 0)) return skipPhase(run, phase, 'over-budget');
 

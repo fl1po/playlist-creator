@@ -1,7 +1,6 @@
 import { anthropicKeyFromEnv } from '../../lib/anthropic-key.js';
-import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import type { BatchCache } from '../../lib/types.js';
-import type { UserData } from '../../lib/user-data/index.js';
+import type { UserSession } from '../../lib/user-session.js';
 import { claudeTasteJudge } from '../ai-finds/claude-taste-judge.js';
 import { deezerCandidateSource } from '../ai-finds/deezer-candidate-source.js';
 import { promotionReads } from '../promotion-sync/adapters.js';
@@ -11,7 +10,7 @@ import type { CheckpointStore } from '../week-collection/index.js';
 import { spotifyReleaseReads } from '../week-collection/spotify-reads.js';
 import { spotifyWeeklyPlaylistStore } from '../weekly-playlists/adapters.js';
 import type { FillPorts } from './fill-run.js';
-import type { FillStorage } from './storage.js';
+import { DurableFillStorage, type FillStorage } from './storage.js';
 
 /**
  * Production CheckpointStore: week progress lives in
@@ -52,35 +51,37 @@ export function batchCacheCheckpoints(storage: FillStorage): CheckpointStore {
 }
 
 /**
- * The production port set for one user's fill. `data` holds that user's
- * unprocessed-playlists listing and the Deezer artist lookups AI finds reuse;
- * `storage` is where week progress is persisted.
+ * The production port set for one user's fill. The user data holds that
+ * user's week progress, unprocessed-playlists listing and the Deezer artist
+ * lookups AI finds reuse. AI finds' ports exist only when `env` has an
+ * Anthropic key.
  */
 export function fillPorts(
-  ctx: SpotifyGateway,
-  user: {
-    userId: string;
-    data: UserData;
-    storage: FillStorage;
-  },
+  session: UserSession,
+  env: NodeJS.ProcessEnv = process.env,
 ): FillPorts {
-  const checkAbort = () => ctx.signal?.throwIfAborted();
+  const { gateway, data } = session;
+  const checkAbort = () => gateway.signal?.throwIfAborted();
+  const apiKey = anthropicKeyFromEnv(env);
   return {
     week: {
-      reads: spotifyReleaseReads(ctx),
+      reads: spotifyReleaseReads(gateway),
       popularity: deezerPopularitySource(checkAbort),
-      checkpoints: batchCacheCheckpoints(user.storage),
+      checkpoints: batchCacheCheckpoints(new DurableFillStorage(data)),
     },
-    weekly: spotifyWeeklyPlaylistStore(ctx),
-    history: promotionReads(ctx),
-    recalculation: spotifyRecalculationPorts(ctx, user),
-    ai: ({ weeks }) => ({
-      candidates: deezerCandidateSource({ data: user.data, checkAbort }),
-      judge: claudeTasteJudge({
-        apiKey: anthropicKeyFromEnv(),
-        fillWeeks: weeks,
-        signal: ctx.signal,
-      }),
-    }),
+    weekly: spotifyWeeklyPlaylistStore(gateway),
+    history: promotionReads(gateway),
+    recalculation: spotifyRecalculationPorts(gateway, session),
+    ai:
+      apiKey === undefined
+        ? undefined
+        : ({ weeks }) => ({
+            candidates: deezerCandidateSource({ data, checkAbort }),
+            judge: claudeTasteJudge({
+              apiKey,
+              fillWeeks: weeks,
+              signal: gateway.signal,
+            }),
+          }),
   };
 }

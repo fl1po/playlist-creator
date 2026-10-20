@@ -1,7 +1,4 @@
-import { aiFindsAvailable } from '../../lib/anthropic-key.js';
-import { fillPorts } from '../../services/playlist-filler/adapters.js';
 import { runFill } from '../../services/playlist-filler/fill-run.js';
-import { DurableFillStorage } from '../../services/playlist-filler/storage.js';
 import {
   type FillResultEvents,
   type WebFillSinkOptions,
@@ -26,20 +23,8 @@ export const fillTask: TaskDefinition<FillEvents> = {
     const freshMode = !!tc.body.fresh;
     tc.log('info', `Starting playlist fill (fresh=${freshMode})...`);
 
-    const userConfig = await tc.userConfig();
-
-    const storage = new DurableFillStorage(tc.session.data);
     await runFill({
-      ctx: tc.session.gateway,
-      userId: tc.session.userId,
-      userConfig,
-      storage,
-      data: tc.session.data,
-      ports: fillPorts(tc.session.gateway, {
-        userId: tc.session.userId,
-        data: tc.session.data,
-        storage,
-      }),
+      ...tc.session,
       onEvent: webFillSink({
         log: tc.log,
         // FillEvents extends FillResultEvents, so this narrows soundly.
@@ -48,7 +33,6 @@ export const fillTask: TaskDefinition<FillEvents> = {
         checkAbort: tc.checkAbort,
       }),
       fresh: freshMode,
-      aiFindsAvailable: aiFindsAvailable(),
     });
   },
 
