@@ -11,7 +11,6 @@ import type {
   PromotionReads,
 } from '../promotion-sync/index.js';
 import {
-  type RecalculationDeps,
   type RecalculationPorts,
   recalculate,
   syncPending,
@@ -201,7 +200,6 @@ async function emitResumedIfAny(
  */
 async function finishFill(
   opts: Fill,
-  recalculation: RecalculationDeps,
   results: DateResult[],
   priorityChanges: PriorityChange[],
   durationMinutes: number,
@@ -213,8 +211,10 @@ async function finishFill(
   // stay pending, and the next recalculation or fill applies them.
   let syncedPlaylists: number | null = null;
   try {
-    const synced = await syncPending(opts.userConfig, recalculation, (event) =>
-      onEvent({ kind: 'sync', event }),
+    const synced = await syncPending(
+      opts,
+      (event) => onEvent({ kind: 'sync', event }),
+      opts.ports.recalculation,
     );
     if (synced) syncedPlaylists = synced.playlistsSynced;
   } catch (syncErr) {
@@ -249,10 +249,6 @@ export async function runFill(
   const { gateway, userId, userConfig, data } = opts;
   const emit = opts.onEvent;
   const log = (message: string) => emit({ kind: 'log', message });
-  const recalculation: RecalculationDeps = {
-    data,
-    ports: ports.recalculation,
-  };
   const weekly = weeklyPlaylists({
     store: ports.weekly,
     userId,
@@ -265,7 +261,7 @@ export async function runFill(
   const datesToProcess = await weekly.unfilledFridays(new Date());
   if (datesToProcess.length === 0) {
     log('All weekly playlists are already filled.');
-    return finishFill(opts, recalculation, [], [], 0);
+    return finishFill(opts, [], [], 0);
   }
   log(
     `Unfilled Fridays: ${datesToProcess.length} (${datesToProcess[0]} … ${datesToProcess[datesToProcess.length - 1]})`,
@@ -332,11 +328,15 @@ export async function runFill(
       const progress = await ports.week.checkpoints.load(targetDate);
       const checkpointed = progress !== null && progress.artistsSearched > 0;
       if (!checkpointed) {
-        const recalc = await recalculate(userConfig, recalculation, {
-          onProgress: (e) => {
-            if (e.phase === 'recalculating') emit({ kind: 'recalculating' });
+        const recalc = await recalculate(
+          opts,
+          {
+            onProgress: (e) => {
+              if (e.phase === 'recalculating') emit({ kind: 'recalculating' });
+            },
           },
-        });
+          ports.recalculation,
+        );
         if (recalc.outcome === 'recalculated') {
           trustedArtists = recalc.roster;
           p1p2Artists = filterByPriority(trustedArtists.artistCounts, [1, 2]);
@@ -422,11 +422,5 @@ export async function runFill(
   const durationMinutes = Math.round((Date.now() - startTime) / 1000 / 60);
   emit({ kind: 'complete', results, durationMinutes });
 
-  return finishFill(
-    opts,
-    recalculation,
-    results,
-    priorityChanges,
-    durationMinutes,
-  );
+  return finishFill(opts, results, priorityChanges, durationMinutes);
 }

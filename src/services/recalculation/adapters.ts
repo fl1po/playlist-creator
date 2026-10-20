@@ -3,7 +3,7 @@ import {
   getPlaylistTracksWithPositions,
 } from '../../lib/pagination.js';
 import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
-import type { UserData } from '../../lib/user-data/index.js';
+import type { UserSession } from '../../lib/user-session.js';
 import {
   deezerPopularitySource,
   promotionReads,
@@ -65,13 +65,13 @@ export function spotifySourceReads(ctx: SpotifyGateway): SourceReads {
 }
 
 /**
- * The production port set for one user. `userId` is the Spotify user id,
- * `data` holds what the unprocessed listing reuses between runs.
+ * The production port set for the session's user. Their user data holds
+ * what the unprocessed listing reuses between runs.
  */
 export function spotifyRecalculationPorts(
-  ctx: SpotifyGateway,
-  user: { userId: string; data: UserData },
+  session: UserSession,
 ): RecalculationPorts {
+  const { gateway: ctx, userId, data } = session;
   return {
     sources: spotifySourceReads(ctx),
     unprocessed: {
@@ -79,8 +79,8 @@ export function spotifyRecalculationPorts(
         return unprocessedWeeklyPlaylists(
           {
             store: spotifyWeeklyPlaylistStore(ctx),
-            data: user.data,
-            userId: user.userId,
+            data,
+            userId,
           },
           allWeeklyId,
           log,

@@ -1,6 +1,5 @@
 import { printLines } from '../lib/task-log.js';
 import { secondaryLabel } from '../lib/user-config.js';
-import { spotifyRecalculationPorts } from '../services/recalculation/adapters.js';
 import {
   describeRecalculationResult,
   describeSync,
@@ -15,18 +14,12 @@ import { cliSession } from './session.js';
 const force = process.argv.includes('--force');
 const noSync = process.argv.includes('--no-sync');
 
-const { gateway, userId, data } = await cliSession();
-const userConfig = await data.config.load();
-const sl = secondaryLabel(userConfig);
-
-const deps = {
-  data,
-  ports: spotifyRecalculationPorts(gateway, { userId, data }),
-};
+const session = await cliSession();
+const sl = secondaryLabel(await session.data.config.load());
 
 console.log('=== Recalculating Artist Priorities ===\n');
 
-const result = await recalculate(userConfig, deps, {
+const result = await recalculate(session, {
   force,
   onProgress: consoleRecalculationProgress(),
 });
@@ -53,7 +46,7 @@ if (result.pending.length === 0) {
     `\n${result.pending.length} priority change(s) left pending (--no-sync); the next fill syncs them.`,
   );
 } else {
-  await syncPending(userConfig, deps, (e) => printLines(describeSync(e)));
+  await syncPending(session, (e) => printLines(describeSync(e)));
 }
 
 console.log('\n=== Done! ===\n');

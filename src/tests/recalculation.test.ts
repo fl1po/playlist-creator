@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import type { PlaylistTrackWithArtists } from '../lib/pagination.js';
+import { fixtureGateway } from '../lib/spotify/fixture.js';
 import {
   type PlaylistScanResult,
   type SimplePlaylist,
@@ -17,16 +18,19 @@ import {
   TRUSTED_ARTISTS,
   type UserData,
 } from '../lib/user-data/index.js';
+import type { UserSession } from '../lib/user-session.js';
 import type { PlaylistWrites } from '../services/promotion-sync/index.js';
 import {
   describeRecalculationResult,
   describeSync,
 } from '../services/recalculation/describe.js';
 import {
-  type RecalculationDeps,
+  type RecalculateOptions,
+  type RecalculationPorts,
   recalculate,
   type Source,
   type SourceReads,
+  type SyncProgress,
   syncPending,
 } from '../services/recalculation/index.js';
 import { fixedPopularitySource } from '../services/week-collection/adapters.js';
@@ -187,8 +191,9 @@ function setup(
   weeklies = fixtureWeeklies([]),
 ) {
   const { cache, dir } = tmpCache(t);
-  const deps: RecalculationDeps = {
-    data: cache,
+  const deps: Deps = {
+    // The fixture ports make every Spotify read, so the gateway is never called.
+    session: { gateway: unusedGateway, userId: 'user-1', data: cache },
     ports: {
       sources: sources.reads,
       unprocessed: weeklies.unprocessed,
@@ -196,6 +201,33 @@ function setup(
     },
   };
   return { deps, cache, dir };
+}
+
+interface Deps {
+  session: UserSession;
+  ports: RecalculationPorts;
+}
+
+const unusedGateway = fixtureGateway({});
+
+/** `recalculate` for the fixture session, with `config` saved first. */
+async function recalc(
+  config: UserConfig,
+  deps: Deps,
+  opts?: RecalculateOptions,
+) {
+  await deps.session.data.config.save(config);
+  return recalculate(deps.session, opts, deps.ports);
+}
+
+/** `syncPending` for the fixture session, with `config` saved first. */
+async function syncNow(
+  config: UserConfig,
+  deps: Deps,
+  onProgress?: (e: SyncProgress) => void,
+) {
+  await deps.session.data.config.save(config);
+  return syncPending(deps.session, onProgress, deps.ports);
 }
 
 function config(overrides: Partial<UserConfig['scoring']> = {}): UserConfig {
@@ -222,7 +254,7 @@ test('a cold cache recalculates from scratch and records no pending changes', as
   const sources = fixtureSources({ aw: { Steady: 3 } });
   const { deps } = setup(t, sources);
 
-  const result = await recalculate(config(), deps);
+  const result = await recalc(config(), deps);
 
   assert.equal(result.outcome, 'recalculated');
   assert.deepEqual(sources.world.scans, { aw: 1, boaw: 1 });
@@ -234,9 +266,9 @@ test('a cold cache recalculates from scratch and records no pending changes', as
 test('unchanged snapshots skip the scan and leave nothing pending', async (t) => {
   const sources = fixtureSources({ aw: { Steady: 3 } });
   const { deps } = setup(t, sources);
-  await recalculate(config(), deps);
+  await recalc(config(), deps);
 
-  const result = await recalculate(config(), deps);
+  const result = await recalc(config(), deps);
 
   assert.equal(result.outcome, 'unchanged');
   assert.deepEqual(sources.world.scans, { aw: 1, boaw: 1 });
@@ -248,10 +280,10 @@ test('unchanged snapshots skip the scan and leave nothing pending', async (t) =>
 test('only the source whose snapshot moved is re-scanned', async (t) => {
   const sources = fixtureSources({ aw: { Steady: 3 }, boaw: { Loved: 5 } });
   const { deps } = setup(t, sources);
-  await recalculate(config(), deps);
+  await recalc(config(), deps);
 
   sources.setAw({ Steady: 3, Newcomer: 1 });
-  const result = await recalculate(config(), deps);
+  const result = await recalc(config(), deps);
 
   assert.equal(result.outcome, 'recalculated');
   assert.deepEqual(sources.world.scans, { aw: 2, boaw: 1 });
@@ -262,7 +294,7 @@ test('the user’s thresholds decide the tiers, not the defaults', async (t) => 
   const sources = fixtureSources({ aw: { Steady: 3 } }); // score 26
   const { deps } = setup(t, sources);
 
-  const result = await recalculate(
+  const result = await recalc(
     config({ priorityThresholds: { p1: 90, p2: 50, p3: 20, p4: 1 } }),
     deps,
   );
@@ -292,10 +324,10 @@ test('a P2 → P3 crossing is pending until promotion sync removes its album', a
     },
   ]);
   const { deps } = setup(t, sources, weeklies);
-  await recalculate(config(), deps);
+  await recalc(config(), deps);
 
   sources.setAw({ Fading: 1, Anchor: 20 });
-  const result = await recalculate(config(), deps);
+  const result = await recalc(config(), deps);
 
   assert.deepEqual(result.changes, [{ artist: 'Fading', from: 2, to: 3 }]);
   assert.deepEqual(result.pending, [{ artist: 'Fading', from: 2, to: 3 }]);
@@ -311,7 +343,7 @@ test('a P2 → P3 crossing is pending until promotion sync removes its album', a
   );
 
   const lines: string[] = [];
-  const sync = await syncPending(config(), deps, (e) => {
+  const sync = await syncNow(config(), deps, (e) => {
     for (const l of describeSync(e)) lines.push(l.message);
   });
 
@@ -323,7 +355,7 @@ test('a P2 → P3 crossing is pending until promotion sync removes its album', a
     String(lines),
   );
   assert.equal(lines.filter((l) => /sync complete/i.test(l)).length, 1);
-  assert.equal(await syncPending(config(), deps), null); // cleared
+  assert.equal(await syncNow(config(), deps), null); // cleared
 });
 
 test('a failed sync stays pending and the next sync applies it', async (t) => {
@@ -342,18 +374,18 @@ test('a failed sync stays pending and the next sync applies it', async (t) => {
     },
   ]);
   const { deps, cache } = setup(t, sources, weeklies);
-  await recalculate(config(), deps);
+  await recalc(config(), deps);
   sources.setAw({ Fading: 1 });
-  await recalculate(config(), deps);
+  await recalc(config(), deps);
 
   weeklies.failWrites(true);
-  await assert.rejects(syncPending(config(), deps), /spotify 500/);
+  await assert.rejects(syncNow(config(), deps), /spotify 500/);
   assert.deepEqual(await cache.load(PENDING_PRIORITY_CHANGES), [
     { artist: 'Fading', from: 2, to: 3 },
   ]);
 
   weeklies.failWrites(false);
-  const sync = await syncPending(config(), deps);
+  const sync = await syncNow(config(), deps);
 
   assert.equal(sync?.removed, 1);
   assert.equal(await cache.load(PENDING_PRIORITY_CHANGES), null);
@@ -362,14 +394,14 @@ test('a failed sync stays pending and the next sync applies it', async (t) => {
 test('a promotion undone before any sync nets out to nothing pending', async (t) => {
   const sources = fixtureSources({ aw: { Flicker: 1 } }); // P3
   const { deps } = setup(t, sources);
-  await recalculate(config(), deps);
+  await recalc(config(), deps);
 
   sources.setAw({ Flicker: 3 }); // P2
-  const promoted = await recalculate(config(), deps);
+  const promoted = await recalc(config(), deps);
   assert.deepEqual(promoted.pending, [{ artist: 'Flicker', from: 3, to: 2 }]);
 
   sources.setAw({ Flicker: 1 }); // P3 again
-  const undone = await recalculate(config(), deps);
+  const undone = await recalc(config(), deps);
 
   assert.deepEqual(undone.changes, [{ artist: 'Flicker', from: 2, to: 3 }]);
   assert.deepEqual(undone.pending, []);
@@ -377,7 +409,7 @@ test('a promotion undone before any sync nets out to nothing pending', async (t)
 
 test('state left in batch-cache.json by older versions is picked up once', async (t) => {
   const sources = fixtureSources({ aw: { Steady: 3 } });
-  const first = await recalculate(config(), setup(t, sources).deps);
+  const first = await recalc(config(), setup(t, sources).deps);
   // A second store in the pre-split layout: the roster, plus snapshots and
   // scans kept in the batch cache instead of recalculation's own state.
   const legacy = setup(t, sources);
@@ -389,7 +421,7 @@ test('state left in batch-cache.json by older versions is picked up once', async
     boawScanCache: toCachedScanResult(scanOf({})),
   });
 
-  const result = await recalculate(config(), legacy.deps);
+  const result = await recalc(config(), legacy.deps);
 
   assert.equal(result.outcome, 'unchanged');
   assert.deepEqual(sources.world.scans, { aw: 1, boaw: 1 }); // no new scans

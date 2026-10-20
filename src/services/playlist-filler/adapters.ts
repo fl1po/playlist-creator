@@ -71,7 +71,7 @@ export function fillPorts(
     },
     weekly: spotifyWeeklyPlaylistStore(gateway),
     history: promotionReads(gateway),
-    recalculation: spotifyRecalculationPorts(gateway, session),
+    recalculation: spotifyRecalculationPorts(session),
     ai:
       apiKey === undefined
         ? undefined
