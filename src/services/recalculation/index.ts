@@ -16,6 +16,7 @@ import {
   RECALCULATION_STATE,
   TRUSTED_ARTISTS,
 } from '../../lib/user-data/index.js';
+import type { UserSession } from '../../lib/user-session.js';
 import {
   type PriorityChange,
   type PromotionProgressEvent,
@@ -23,6 +24,7 @@ import {
   type PromotionSyncResult,
   syncPriorityChanges,
 } from '../promotion-sync/index.js';
+import { spotifyRecalculationPorts } from './adapters.js';
 import { scoreRoster } from './score.js';
 
 /*
@@ -73,12 +75,6 @@ export interface RecalculationPorts {
   sources: SourceReads;
   unprocessed: UnprocessedPlaylists;
   sync: PromotionSyncPorts;
-}
-
-export interface RecalculationDeps {
-  /** Holds the roster, recalculation state and pending priority changes. */
-  data: UserData;
-  ports: RecalculationPorts;
 }
 
 // ── Progress + results ───────────────────────────────────────────────────────
@@ -248,16 +244,19 @@ async function scanSource(
 // ── Interface ────────────────────────────────────────────────────────────────
 
 /**
- * Re-score the roster if either source playlist changed (or `force`), and
- * record the resulting P1/P2 crossings as pending priority changes. Never
- * touches weekly playlists — see `syncPending`.
+ * Re-score the session user's roster if either source playlist changed (or
+ * `force`), and record the resulting P1/P2 crossings as pending priority
+ * changes. Their user data holds the config, the roster, recalculation state
+ * and the pending changes. Never touches weekly playlists — see
+ * `syncPending`. Tests, and a fill holding its own, pass `ports`.
  */
 export async function recalculate(
-  userConfig: UserConfig,
-  deps: RecalculationDeps,
+  session: UserSession,
   opts: RecalculateOptions = {},
+  ports: RecalculationPorts = spotifyRecalculationPorts(session),
 ): Promise<RecalculationResult> {
-  const { data, ports } = deps;
+  const { data } = session;
+  const userConfig = await data.config.load();
   const onProgress = opts.onProgress ?? (() => {});
 
   const [{ state, migrated }, prior, pending, live] = await Promise.all([
@@ -327,11 +326,12 @@ export async function recalculate(
  * promotion sync skips tracks already present or already removed.
  */
 export async function syncPending(
-  userConfig: UserConfig,
-  deps: RecalculationDeps,
+  session: UserSession,
   onProgress: (e: SyncProgress) => void = () => {},
+  ports: RecalculationPorts = spotifyRecalculationPorts(session),
 ): Promise<PromotionSyncResult | null> {
-  const { data, ports } = deps;
+  const { data } = session;
+  const userConfig = await data.config.load();
   const pending = await data.load(PENDING_PRIORITY_CHANGES);
   const roster = await data.load(TRUSTED_ARTISTS);
   if (!(pending && roster)) return null;

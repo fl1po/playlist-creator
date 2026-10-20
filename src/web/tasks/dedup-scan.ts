@@ -31,8 +31,8 @@ export const dedupScanTask: TaskDefinition<DedupScanEvents> = {
 
     const { playlists: candidates } = await unprocessedWeeklyPlaylists(
       {
-        store: spotifyWeeklyPlaylistStore(tc.ctx),
-        data: tc.data,
+        store: spotifyWeeklyPlaylistStore(tc.session.gateway),
+        data: tc.session.data,
         userId: me.id,
       },
       userConfig.sourcePlaylists.allWeeklyId,
@@ -48,7 +48,7 @@ export const dedupScanTask: TaskDefinition<DedupScanEvents> = {
     let totalDuplicates = 0;
 
     await tc.iter(candidates, async (pl) => {
-      const tracks = await getPlaylistTracksDetailed(tc.ctx, pl.id);
+      const tracks = await getPlaylistTracksDetailed(tc.session.gateway, pl.id);
 
       const groups = new Map<
         string,

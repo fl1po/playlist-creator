@@ -1,14 +1,14 @@
 import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import type express from 'express';
 import { describeSpotifyEvent } from '../lib/spotify/events.js';
-import { type SpotifyGateway, TaskAborted } from '../lib/spotify/gateway.js';
+import { TaskAborted } from '../lib/spotify/gateway.js';
 import type {
   ProgressUpdate,
   ProgressView,
   TaskProgress,
 } from '../lib/task-progress.js';
 import type { UserConfig } from '../lib/user-config.js';
-import type { UserData } from '../lib/user-data/index.js';
+import type { UserSession as TaskSession } from '../lib/user-session.js';
 import type { Broadcaster } from './broadcast.js';
 import type { UserSession } from './route-context.js';
 
@@ -34,18 +34,16 @@ type UserProfile = Awaited<ReturnType<SpotifyApi['currentUser']['profile']>>;
 
 export interface TaskContext<E extends BaseEvents = BaseEvents> {
   /**
-   * The owner's Spotify gateway on the background lane. Stopping the task
-   * aborts its calls and waits; rate-limit waits are logged to the owner.
+   * The owner's session. Its gateway is on the background lane: stopping the
+   * task aborts its calls and waits, and rate-limit waits are logged to the
+   * owner.
    */
-  ctx: SpotifyGateway;
+  session: TaskSession;
   body: Record<string, unknown>;
-  userId: string;
   /** Throws `TaskAborted` if the user requested abort. */
   checkAbort: () => void;
   /** Where the task is, shown to its owner only (ADR-0006). */
   progress: TaskProgress;
-  /** The owner's user data. */
-  data: UserData;
   /** Typed broadcast — only declared event names + payloads compile. */
   emit: TypedEmit<E>;
   /** Sugar for `emit('log', { level, message })`. */
@@ -321,7 +319,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     const userBroadcast = (type: string, data: unknown) =>
       broadcaster.broadcastTo(session.userId, type, data, def.name);
     const { progress, waitUntil } = progressOf(run);
-    const ctx = session.gateway.forTask({
+    const gateway = session.gateway.forTask({
       signal,
       onEvent: (event) => {
         userBroadcast('log', describeSpotifyEvent(event));
@@ -336,12 +334,10 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     let mePromise: Promise<UserProfile> | undefined;
 
     return {
-      ctx,
+      session: { gateway, userId: session.userId, data: session.data },
       body,
-      userId: session.userId,
       checkAbort,
       progress,
-      data: session.data,
       emit: userBroadcast as TypedEmit<E>,
       log: (level, message) => userBroadcast('log', { level, message }),
       iter: async (items, fn) => {
@@ -356,7 +352,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
         return userConfigPromise;
       },
       me: () => {
-        mePromise ??= ctx
+        mePromise ??= gateway
           .call((api) => api.currentUser.profile(), 'user profile')
           .then((r) => {
             if (!r.success) throw r.error;

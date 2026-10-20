@@ -31,11 +31,11 @@ export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
     const userConfig = await tc.userConfig();
     const awId = userConfig.sourcePlaylists.allWeeklyId;
 
-    const cached = (await tc.data.load(
+    const cached = (await tc.session.data.load(
       AW_BREAKDOWN,
     )) as AwBreakdownCache | null;
 
-    const awInfo = await tc.ctx.call(
+    const awInfo = await tc.session.gateway.call(
       (api) => api.playlists.getPlaylist(awId, undefined, 'snapshot_id'),
       'AW playlist info',
     );
@@ -59,17 +59,21 @@ export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
 
     tc.log('info', 'Fetching AW tracks...');
 
-    const weeks = await getPlaylistTracksGroupedByWeek(tc.ctx, awId, {
-      onProgress: (fetched, total) => {
-        tc.checkAbort();
-        tc.progress.bar(
-          'aw',
-          fetched,
-          total,
-          `Fetching tracks: ${fetched}/${total}`,
-        );
+    const weeks = await getPlaylistTracksGroupedByWeek(
+      tc.session.gateway,
+      awId,
+      {
+        onProgress: (fetched, total) => {
+          tc.checkAbort();
+          tc.progress.bar(
+            'aw',
+            fetched,
+            total,
+            `Fetching tracks: ${fetched}/${total}`,
+          );
+        },
       },
-    });
+    );
 
     const totalTracks = weeks.reduce((s, w) => s + w.trackCount, 0);
     const totalDurationMs = weeks.reduce((s, w) => s + w.durationMs, 0);
@@ -82,7 +86,7 @@ export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
       weeks,
     };
 
-    await tc.data.save(AW_BREAKDOWN, result);
+    await tc.session.data.save(AW_BREAKDOWN, result);
     tc.emit('awBreakdown:complete', result);
 
     const avgTracks =

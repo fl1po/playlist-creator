@@ -1,4 +1,3 @@
-import { forgetAiPicks } from '../../services/ai-picks.js';
 import {
   describeClear,
   PlaylistClearerService,
@@ -18,11 +17,9 @@ export const clearTask: TaskDefinition = {
   async run(tc) {
     const name = (tc.body.name as string).trim();
     tc.log('info', `Clearing playlist "${name}"...`);
-    const service = new PlaylistClearerService(tc.ctx, (e) => {
+    const service = new PlaylistClearerService(tc.session, (e) => {
       for (const l of describeClear(e)) tc.log(l.level, l.message);
     });
     await service.clear(name);
-    // A cleared weekly playlist is an unfilled Friday again: its AI picks go.
-    await forgetAiPicks(tc.data, name);
   },
 };

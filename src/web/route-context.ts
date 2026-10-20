@@ -19,8 +19,8 @@ import {
   durableUserData,
   localUserData,
   type RedisPort,
-  type UserData,
 } from '../lib/user-data/index.js';
+import type { UserSession as BaseUserSession } from '../lib/user-session.js';
 import type { AuthManager } from './auth.js';
 import type { Broadcaster } from './broadcast.js';
 import {
@@ -29,13 +29,14 @@ import {
   getSessionUserId,
 } from './session.js';
 
-export interface UserSession {
-  userId: string;
+/**
+ * A signed-in user's session. Its user data is durable when the server has
+ * Redis, else local; its gateway is the one routes call on the interactive
+ * lane, and tasks get its background view.
+ */
+export interface UserSession extends BaseUserSession {
   displayName?: string;
-  /** The user's Spotify gateway; routes call it on the interactive lane. */
   gateway: SessionGateway;
-  /** The user's user data: durable when the server has Redis, else local. */
-  data: UserData;
 }
 
 export interface RouteContext {

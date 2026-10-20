@@ -6,14 +6,11 @@ import { test } from 'node:test';
 import { formatDateISO, formatDdMmYy } from '../domain/tracks.js';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
 import { type SpotifyGateway, TaskAborted } from '../lib/spotify/gateway.js';
-import type {
-  BatchCache,
-  SimplePlaylist,
-  TrustedArtistsFile,
-} from '../lib/types.js';
+import type { SimplePlaylist, TrustedArtistsFile } from '../lib/types.js';
 import { DEFAULT_USER_CONFIG, type UserConfig } from '../lib/user-config.js';
 import {
   AI_PICKS,
+  FILL_HISTORY,
   localUserData,
   PENDING_PRIORITY_CHANGES,
   RECALCULATION_STATE,
@@ -25,13 +22,9 @@ import { describeFill } from '../services/playlist-filler/describe.js';
 import type { FillEvent } from '../services/playlist-filler/events.js';
 import {
   type FillPorts,
-  type FillRunOptions,
+  type FillRun,
   runFill,
 } from '../services/playlist-filler/fill-run.js';
-import type {
-  FillHistoryEntry,
-  FillStorage,
-} from '../services/playlist-filler/storage.js';
 import type {
   RecalculationPorts,
   SourceReads,
@@ -67,27 +60,6 @@ function mostRecentFriday(from: Date): Date {
   return d;
 }
 const FILLED_FRIDAY = formatDdMmYy(mostRecentFriday(new Date()));
-
-// ── Fixture: in-memory FillStorage (the fill's own data) ─────────────────────
-
-function memoryStorage(): FillStorage & { history: FillHistoryEntry[] } {
-  let cache: BatchCache = {};
-  const history: FillHistoryEntry[] = [];
-  return {
-    async loadBatchCache() {
-      return cache;
-    },
-    async saveBatchCache(c) {
-      cache = c;
-    },
-    async appendFillHistory(entry) {
-      history.push(entry);
-    },
-    get history() {
-      return history;
-    },
-  };
-}
 
 function trusted(
   artistCounts: Record<string, { priority: number | null; score: number }> = {},
@@ -224,29 +196,44 @@ function world(
   ctx: SpotifyGateway,
   sources?: SourceReads,
 ) {
-  const dataDir = tmpDataDir(t);
-  const cache = localUserData(dataDir);
-  const storage = memoryStorage();
-  const ports = fillPorts(ctx, { userId: 'user-1', data: cache, storage });
+  const cache = localUserData(tmpDataDir(t));
+  const session = { gateway: ctx, userId: 'user-1', data: cache };
+  // No Anthropic key: these fills never build AI ports.
+  const ports = fillPorts(session, {});
   if (sources) ports.recalculation = { ...ports.recalculation, sources };
-  return {
-    cache,
-    storage,
-    options(overrides: Partial<FillRunOptions> = {}): FillRunOptions {
-      return {
-        ctx,
-        userId: 'user-1',
-        userConfig: USER_CONFIG,
-        storage,
-        data: cache,
-        ports,
+  return { cache, fill: filler(session, ports, { fresh: true }) };
+}
+
+interface FillOverrides extends Partial<Pick<FillRun, 'onEvent' | 'fresh'>> {
+  /** Saved as the user's config before the fill loads it. */
+  userConfig?: UserConfig;
+  ports?: FillPorts;
+}
+
+/** Runs a fill for `session`, saving `userConfig` (default USER_CONFIG) first. */
+function filler(
+  session: Pick<FillRun, 'gateway' | 'userId' | 'data'>,
+  ports: FillPorts,
+  defaults: Partial<FillRun> = {},
+) {
+  return async (o: FillOverrides = {}) => {
+    await session.data.config.save(o.userConfig ?? USER_CONFIG);
+    return runFill(
+      {
+        ...session,
         onEvent: () => {},
-        aiFindsAvailable: false,
-        fresh: true,
-        ...overrides,
-      };
-    },
+        ...defaults,
+        ...(o.onEvent && { onEvent: o.onEvent }),
+        ...(o.fresh !== undefined && { fresh: o.fresh }),
+      },
+      o.ports ?? ports,
+    );
   };
+}
+
+/** The fill-history entries a fill appended. */
+async function fillHistory(cache: UserData): Promise<unknown[]> {
+  return (await cache.load(FILL_HISTORY)) ?? [];
 }
 
 // A demoted artist (P1 -> P4) whose track sits, unlistened, on the one weekly
@@ -283,7 +270,7 @@ async function seedPending(cache: UserData) {
 
 test('nothing pending: sync never runs', async (t) => {
   const w = world(t, fixtureCtx({ userId: 'user-1' }));
-  const result = await runFill(w.options());
+  const result = await w.fill();
 
   assert.deepEqual(result.priorityChanges, []);
   assert.equal(result.syncedPlaylists, null);
@@ -293,7 +280,7 @@ test('reading the playlists that set the date range logs its progress', async (t
   const w = world(t, fixtureCtx({ userId: 'user-1' }));
   const log = recordingLog();
 
-  await runFill(w.options({ onEvent: log.onEvent }));
+  await w.fill({ onEvent: log.onEvent });
 
   const reading = log.lines.indexOf(
     'Loading playlists to determine date range...',
@@ -303,9 +290,9 @@ test('reading the playlists that set the date range logs its progress', async (t
 
 test('a zero-track run never appends a fill-history entry', async (t) => {
   const w = world(t, fixtureCtx({ userId: 'user-1' }));
-  await runFill(w.options());
+  await w.fill();
 
-  assert.deepEqual(w.storage.history, []);
+  assert.deepEqual(await fillHistory(w.cache), []);
 });
 
 test('the trailing sync applies pending changes and clears them', async (t) => {
@@ -313,7 +300,7 @@ test('the trailing sync applies pending changes and clears them', async (t) => {
   const w = world(t, ctx);
   await seedPending(w.cache);
 
-  const result = await runFill(w.options());
+  const result = await w.fill();
 
   assert.equal(result.syncedPlaylists, 1);
   assert.deepEqual(ctx.removed['pl-filled'], ['spotify:track:demoted-track']);
@@ -328,7 +315,7 @@ test('a sync failure is logged as a warning, fails nothing, and stays pending', 
   await seedPending(w.cache);
   const log = recordingLog();
 
-  const result = await runFill(w.options({ onEvent: log.onEvent }));
+  const result = await w.fill({ onEvent: log.onEvent });
 
   assert.equal(result.syncedPlaylists, null);
   assert.ok(log.lines.some((l) => l.startsWith('warn: Post-fill sync failed')));
@@ -345,7 +332,7 @@ test('an abort during sync propagates instead of being swallowed', async (t) => 
   );
   await seedPending(w.cache);
 
-  await assert.rejects(runFill(w.options()), /Stopped by user/);
+  await assert.rejects(w.fill(), /Stopped by user/);
 });
 
 test('a fill aborted after a mid-fill recalculation leaves the sync for the next fill', async (t) => {
@@ -388,22 +375,15 @@ test('a fill aborted after a mid-fill recalculation leaves the sync for the next
     if (e.kind === 'recalculated') throw abortError;
   };
 
-  await assert.rejects(runFill(first.options({ onEvent })), /Stopped/);
+  await assert.rejects(first.fill({ onEvent }), /Stopped/);
   const pending = await first.cache.load(PENDING_PRIORITY_CHANGES);
   assert.equal(pending?.[0]?.artist, 'Demoted Artist');
   assert.equal(pending?.[0]?.from, 1);
 
   // The next fill finds every Friday filled, and its trailing sync applies it.
   const ctx = demotionCtx();
-  const next = await runFill({
-    ...first.options(),
-    ctx,
-    ports: fillPorts(ctx, {
-      userId: 'user-1',
-      data: first.cache,
-      storage: first.storage,
-    }),
-  });
+  const session = { gateway: ctx, userId: 'user-1', data: first.cache };
+  const next = await filler(session, fillPorts(session, {}))();
 
   assert.equal(next.syncedPlaylists, 1);
   assert.deepEqual(ctx.removed['pl-filled'], ['spotify:track:demoted-track']);
@@ -502,26 +482,13 @@ async function seedRoster(cache: UserData, roster: TrustedArtistsFile) {
 }
 
 function memoryWorld(t: { after: (fn: () => void) => void }, ports: FillPorts) {
-  const dataDir = tmpDataDir(t);
-  const cache = localUserData(dataDir);
-  const storage = memoryStorage();
-  return {
-    cache,
-    storage,
-    options(overrides: Partial<FillRunOptions> = {}): FillRunOptions {
-      return {
-        ctx: fixtureCtx({ userId: 'user-1' }),
-        userId: 'user-1',
-        userConfig: USER_CONFIG,
-        storage,
-        data: cache,
-        ports,
-        onEvent: () => {},
-        aiFindsAvailable: false,
-        ...overrides,
-      };
-    },
+  const cache = localUserData(tmpDataDir(t));
+  const session = {
+    gateway: fixtureCtx({ userId: 'user-1' }),
+    userId: 'user-1',
+    data: cache,
   };
+  return { cache, fill: filler(session, ports) };
 }
 
 // ── Per-date loop ────────────────────────────────────────────────────────────
@@ -534,7 +501,7 @@ test('a fill collects one unfilled Friday and writes it to a new weekly playlist
   await seedRoster(w.cache, ALPHA_P1);
   const rec = recordingEvents();
 
-  const result = await runFill(w.options({ onEvent: rec.onEvent }));
+  const result = await w.fill({ onEvent: rec.onEvent });
 
   assert.deepEqual(
     rec
@@ -551,7 +518,7 @@ test('a fill collects one unfilled Friday and writes it to a new weekly playlist
   assert.equal(result.results.length, 1);
   assert.equal(result.results[0].date, THIS_FRIDAY);
   assert.equal(result.results[0].tracksAdded, 1);
-  assert.equal(w.storage.history.length, 1);
+  assert.equal((await fillHistory(w.cache)).length, 1);
 });
 
 test('a fill logs a release as discovered live and as added once it lands', async (t) => {
@@ -562,7 +529,7 @@ test('a fill logs a release as discovered live and as added once it lands', asyn
   await seedRoster(w.cache, ALPHA_P1);
   const log = recordingLog();
 
-  await runFill(w.options({ onEvent: log.onEvent }));
+  await w.fill({ onEvent: log.onEvent });
 
   assert.deepEqual(
     log.lines.filter((l) => /Discovered|Added|Created playlist/.test(l)),
@@ -583,14 +550,14 @@ test("a failed track write is recorded as the date's error, not as success", asy
   await seedRoster(w.cache, ALPHA_P1);
   const rec = recordingEvents();
 
-  const result = await runFill(w.options({ onEvent: rec.onEvent }));
+  const result = await w.fill({ onEvent: rec.onEvent });
 
   assert.deepEqual(
     rec.of('date-error').map((e) => `${e.date}: ${e.error.message}`),
     [`${THIS_FRIDAY}: rate limited`],
   );
   assert.equal(result.results[0].error, 'rate limited');
-  assert.deepEqual(w.storage.history, []);
+  assert.deepEqual(await fillHistory(w.cache), []);
 });
 
 test('an empty weekly playlist for the Friday is reused, never recreated', async (t) => {
@@ -601,7 +568,7 @@ test('an empty weekly playlist for the Friday is reused, never recreated', async
   await seedRoster(w.cache, ALPHA_P1);
   const rec = recordingEvents();
 
-  const result = await runFill(w.options({ onEvent: rec.onEvent }));
+  const result = await w.fill({ onEvent: rec.onEvent });
 
   assert.deepEqual(
     rec
@@ -622,7 +589,7 @@ test('a filled Friday is not among the dates the fill processes', async (t) => {
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_P1);
 
-  const result = await runFill(w.options());
+  const result = await w.fill();
 
   assert.deepEqual(result.results, []);
   assert.deepEqual(weekly.created, []);
@@ -669,7 +636,7 @@ test('a fill resumes a checkpointed week: searched artists are skipped and repor
   await seedRoster(w.cache, ALPHA_BETA_P1);
   const rec = recordingEvents();
 
-  await runFill(w.options({ onEvent: rec.onEvent }));
+  await w.fill({ onEvent: rec.onEvent });
 
   assert.deepEqual(
     rec.of('resumed').map((e) => [e.date, e.artists]),
@@ -697,7 +664,7 @@ test('a checkpointed week keeps the roster it started with: no mid-search recalc
     bestOfAllWeeklySnapshot: 'boaw-0',
   });
 
-  await runFill(w.options());
+  await w.fill();
 
   assert.ok(!calls.includes('scan'), 'the sources were re-scanned mid-search');
   assert.deepEqual(weekly.added.get('pl-1'), ['t2']);
@@ -717,7 +684,7 @@ test('--fresh drops the checkpoint: every artist is searched again', async (t) =
   await seedRoster(w.cache, ALPHA_BETA_P1);
   const rec = recordingEvents();
 
-  await runFill(w.options({ fresh: true, onEvent: rec.onEvent }));
+  await w.fill({ fresh: true, onEvent: rec.onEvent });
 
   assert.deepEqual(rec.of('resumed'), []);
   assert.deepEqual(reads.searchCalls, ['Alpha', 'Beta']);
@@ -731,7 +698,7 @@ test('the checkpoint is cleared once the weekly playlist is written', async (t) 
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_P1);
 
-  await runFill(w.options());
+  await w.fill();
 
   assert.equal(checkpoints.current, null);
 });
@@ -744,7 +711,7 @@ test('a failed write leaves the completed search checkpoint in place', async (t)
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_P1);
 
-  await runFill(w.options());
+  await w.fill();
 
   assert.equal(checkpoints.current?.week, THIS_FRIDAY);
   assert.equal(checkpoints.current?.artistsSearched, 1);
@@ -792,7 +759,7 @@ test('a completed checkpoint resumes the week with no search and no recalculatio
     bestOfAllWeeklySnapshot: 'boaw-0',
   });
 
-  await runFill(w.options());
+  await w.fill();
 
   assert.deepEqual(reads.searchCalls, []);
   assert.ok(!calls.includes('scan'), 'the sources were re-scanned');
@@ -812,7 +779,7 @@ test('--fresh drops a completed checkpoint too', async (t) => {
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_BETA_P1);
 
-  await runFill(w.options({ fresh: true }));
+  await w.fill({ fresh: true });
 
   assert.deepEqual(reads.searchCalls, ['Alpha', 'Beta']);
 });
@@ -929,7 +896,7 @@ test('an opted-in week keeps its AI picks beside the weekly playlist', async (t)
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_P1);
 
-  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+  await w.fill({ userConfig: AI_ON });
 
   assert.deepEqual(weekly.added.get('pl-1'), ['t1', 'tg']);
   assert.deepEqual(await w.cache.load(AI_PICKS), {
@@ -944,23 +911,34 @@ test('the AI ports are built once per fill, for its week count', async (t) => {
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_P1);
 
-  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+  await w.fill({ userConfig: AI_ON });
 
   assert.deepEqual(builtFor, [2]);
   assert.equal(judge.requests.length, 2);
 });
 
 test('the production fill ports build the Deezer source and the Claude judge', (t) => {
-  const ports = fillPorts(fixtureCtx({ userId: 'user-1' }), {
+  const session = {
+    gateway: fixtureCtx({ userId: 'user-1' }),
     userId: 'user-1',
     data: localUserData(tmpDataDir(t)),
-    storage: memoryStorage(),
-  });
+  };
+  const ports = fillPorts(session, { ANTHROPIC_API_KEY: 'sk-ant-test' });
 
   const ai = ports.ai?.({ weeks: 1 });
 
   assert.equal(typeof ai?.candidates.candidates, 'function');
   assert.equal(typeof ai?.judge.judge, 'function');
+});
+
+test('without an Anthropic key the production fill ports have no AI ports', (t) => {
+  const session = {
+    gateway: fixtureCtx({ userId: 'user-1' }),
+    userId: 'user-1',
+    data: localUserData(tmpDataDir(t)),
+  };
+
+  assert.equal(fillPorts(session, {}).ai, undefined);
 });
 
 test('a user who has not opted in gets no AI input, record or log lines', async (t) => {
@@ -969,7 +947,7 @@ test('a user who has not opted in gets no AI input, record or log lines', async 
   await seedRoster(w.cache, ALPHA_P1);
   const log = recordingLog();
 
-  await runFill(w.options({ aiFindsAvailable: true, onEvent: log.onEvent }));
+  await w.fill({ onEvent: log.onEvent });
 
   assert.deepEqual(builtFor, []);
   assert.equal(candidates.requests.length, 0);
@@ -980,10 +958,11 @@ test('a user who has not opted in gets no AI input, record or log lines', async 
 
 test('opted in on a server with no API key: the week is recorded no-api-key', async (t) => {
   const { ports, judge, weekly } = aiPorts(PICK_G);
-  const w = memoryWorld(t, ports);
+  const { ai: _, ...noAiPorts } = ports;
+  const w = memoryWorld(t, noAiPorts);
   await seedRoster(w.cache, ALPHA_P1);
 
-  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: false }));
+  await w.fill({ userConfig: AI_ON });
 
   assert.equal(judge.requests.length, 0);
   assert.deepEqual(weekly.added.get('pl-1'), ['t1']);
@@ -998,7 +977,7 @@ test('a failed write leaves no AI-picks record', async (t) => {
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_P1);
 
-  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+  await w.fill({ userConfig: AI_ON });
 
   assert.equal(await w.cache.load(AI_PICKS), null);
 });
@@ -1011,7 +990,7 @@ test('the spend ceiling carries from week to week and is fresh on each fill', as
   const w = memoryWorld(t, first.ports);
   await seedRoster(w.cache, ALPHA_P1);
 
-  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+  await w.fill({ userConfig: AI_ON });
 
   assert.deepEqual(
     first.judge.requests.map((r) => r.budgetUsd),
@@ -1019,13 +998,7 @@ test('the spend ceiling carries from week to week and is fresh on each fill', as
   );
 
   const second = aiPorts(outcome);
-  await runFill(
-    w.options({
-      userConfig: AI_ON,
-      aiFindsAvailable: true,
-      ports: second.ports,
-    }),
-  );
+  await w.fill({ userConfig: AI_ON, ports: second.ports });
 
   assert.deepEqual(
     second.judge.requests.map((r) => r.budgetUsd),
@@ -1040,7 +1013,7 @@ test('weeks after the ceiling is spent are recorded over-budget without a judge 
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_P1);
 
-  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+  await w.fill({ userConfig: AI_ON });
 
   assert.equal(judge.requests.length, 1);
   assert.deepEqual(await w.cache.load(AI_PICKS), {
@@ -1057,7 +1030,7 @@ test('after the spend cap, later weeks are recorded over-budget', async (t) => {
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_P1);
 
-  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+  await w.fill({ userConfig: AI_ON });
 
   assert.equal(judge.requests.length, 1);
   assert.deepEqual(await w.cache.load(AI_PICKS), {
@@ -1075,14 +1048,12 @@ test('a stop in the AI phase leaves no record; the resume skips the search and a
   });
   const w = memoryWorld(t, ports);
   await seedRoster(w.cache, ALPHA_P1);
-  const options = w.options({ userConfig: AI_ON, aiFindsAvailable: true });
-
-  await assert.rejects(runFill(options), /Stopped/);
+  await assert.rejects(w.fill({ userConfig: AI_ON }), /Stopped/);
   assert.equal(await w.cache.load(AI_PICKS), null);
   assert.deepEqual(weekly.created, []);
 
   reads.searchCalls.length = 0;
-  await runFill(options);
+  await w.fill({ userConfig: AI_ON });
 
   assert.deepEqual(reads.searchCalls, []);
   assert.equal(judge.requests.length, 2);
@@ -1104,7 +1075,7 @@ test("a rebuilt empty Friday replaces that week's AI-picks record", async (t) =>
     [LAST_FRIDAY]: { skipped: 'over-budget' },
   });
 
-  await runFill(w.options({ userConfig: AI_ON, aiFindsAvailable: true }));
+  await w.fill({ userConfig: AI_ON });
 
   assert.deepEqual(await w.cache.load(AI_PICKS), {
     [THIS_FRIDAY]: PICK_RECORD_G,
@@ -1125,13 +1096,10 @@ test('the Live Log shows each pick, a warning per skip, and the summary with cos
   await seedRoster(w.cache, ALPHA_P1);
   const log = recordingLog();
 
-  await runFill(
-    w.options({
-      userConfig: AI_ON,
-      aiFindsAvailable: true,
-      onEvent: log.onEvent,
-    }),
-  );
+  await w.fill({
+    userConfig: AI_ON,
+    onEvent: log.onEvent,
+  });
 
   assert.deepEqual(aiLines(log.lines), [
     'warn: AI pick skipped (not on Spotify): Gamma — G0',
@@ -1156,13 +1124,10 @@ test('the Live Log counts the related-artist top-up and sums up failed seeds', a
   await seedRoster(w.cache, ALPHA_P1);
   const log = recordingLog();
 
-  await runFill(
-    w.options({
-      userConfig: AI_ON,
-      aiFindsAvailable: true,
-      onEvent: log.onEvent,
-    }),
-  );
+  await w.fill({
+    userConfig: AI_ON,
+    onEvent: log.onEvent,
+  });
 
   assert.deepEqual(
     log.lines.filter((l) => l.includes('Related artists')),
@@ -1186,13 +1151,10 @@ test('a skipped week logs its reason as a warning', async (t) => {
   await seedRoster(w.cache, ALPHA_P1);
   const log = recordingLog();
 
-  await runFill(
-    w.options({
-      userConfig: AI_ON,
-      aiFindsAvailable: true,
-      onEvent: log.onEvent,
-    }),
-  );
+  await w.fill({
+    userConfig: AI_ON,
+    onEvent: log.onEvent,
+  });
 
   assert.deepEqual(aiLines(log.lines), [
     'warn: AI finds skipped (failed): timed out',

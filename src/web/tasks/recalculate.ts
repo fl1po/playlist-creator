@@ -1,5 +1,4 @@
 import type { TrustedArtistsFile } from '../../lib/types.js';
-import { spotifyRecalculationPorts } from '../../services/recalculation/adapters.js';
 import {
   describeRecalculationResult,
   describeSync,
@@ -28,16 +27,7 @@ export const recalculateTask: TaskDefinition<RecalculateEvents> = {
   async run(tc: TaskContext<RecalculateEvents>) {
     tc.log('info', 'Starting priority recalculation...');
 
-    const userConfig = await tc.userConfig();
-    const deps = {
-      data: tc.data,
-      ports: spotifyRecalculationPorts(tc.ctx, {
-        userId: tc.userId,
-        data: tc.data,
-      }),
-    };
-
-    const result = await recalculate(userConfig, deps, {
+    const result = await recalculate(tc.session, {
       force: !!tc.body.force,
       onProgress: webRecalculationProgress(tc),
     });
@@ -51,7 +41,7 @@ export const recalculateTask: TaskDefinition<RecalculateEvents> = {
 
     // Runs even when unchanged: it also finishes any sync an earlier
     // recalculation or fill left pending.
-    await syncPending(userConfig, deps, (e) => {
+    await syncPending(tc.session, (e) => {
       for (const l of describeSync(e)) tc.log(l.level, l.message);
     });
   },

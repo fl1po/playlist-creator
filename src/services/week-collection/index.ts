@@ -241,7 +241,10 @@ export interface WeekCollectionPorts {
   reads: ReleaseReads;
   popularity: PopularitySource;
   checkpoints: CheckpointStore;
-  /** AI finds only. Without both, the AI phase doesn't run. */
+  /**
+   * AI finds only. Without both, an enabled AI phase records the week
+   * `no-api-key`: the server has no Anthropic key to build the judge with.
+   */
   candidates?: CandidateSource;
   judge?: TasteJudge;
 }
@@ -398,8 +401,6 @@ export interface WeekCollectionInput {
 
 export interface AiFindsConfig {
   enabled: boolean;
-  /** The server has an Anthropic key. Without one the week is `no-api-key`. */
-  hasApiKey: boolean;
   /** Lowest confidence (0–100) a pick needs to land. */
   threshold: number;
   scoutingPlaylists: Array<{ id: string; name: string }>;
@@ -586,21 +587,22 @@ export async function collectWeek(
   }
 
   // ── AI finds (picks skip the popularity gate) ─────────────────────────────
-  const aiPhase =
-    input.ai?.enabled && ports.candidates && ports.judge
-      ? await runAiPhase(
-          run,
-          input,
-          input.ai,
-          { candidates: ports.candidates, judge: ports.judge },
-          {
-            window: validDates,
-            foundReleases: kept,
-            rejects,
-            popularity: releasePopularity,
-          },
-        )
-      : null;
+  const aiPhase = input.ai?.enabled
+    ? await runAiPhase(
+        run,
+        input,
+        input.ai,
+        ports.candidates && ports.judge
+          ? { candidates: ports.candidates, judge: ports.judge }
+          : null,
+        {
+          window: validDates,
+          foundReleases: kept,
+          rejects,
+          popularity: releasePopularity,
+        },
+      )
+    : null;
   for (const { release } of aiPhase?.picks ?? []) {
     kept.set(release.id, release);
   }

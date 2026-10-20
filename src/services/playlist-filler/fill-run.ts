@@ -1,21 +1,16 @@
 import { filterByPriority } from '../../domain/artists.js';
 import { sleep } from '../../lib/spotify/clock.js';
-import {
-  isAbort,
-  SpotifyAuthLost,
-  type SpotifyGateway,
-} from '../../lib/spotify/gateway.js';
+import { isAbort, SpotifyAuthLost } from '../../lib/spotify/gateway.js';
 import type { DateResult, TrustedArtistsFile } from '../../lib/types.js';
 import type { UserConfig } from '../../lib/user-config.js';
-import type { UserData } from '../../lib/user-data/index.js';
 import { TRUSTED_ARTISTS } from '../../lib/user-data/index.js';
+import type { UserSession } from '../../lib/user-session.js';
 import { saveAiPicks } from '../ai-picks.js';
 import type {
   PriorityChange,
   PromotionReads,
 } from '../promotion-sync/index.js';
 import {
-  type RecalculationDeps,
   type RecalculationPorts,
   recalculate,
   syncPending,
@@ -30,8 +25,13 @@ import {
   type WeeklyWrite,
   weeklyPlaylists,
 } from '../weekly-playlists/index.js';
+import { fillPorts } from './adapters.js';
 import type { FillEvent } from './events.js';
-import type { FillHistoryEntry, FillStorage } from './storage.js';
+import {
+  DurableFillStorage,
+  type FillHistoryEntry,
+  type FillStorage,
+} from './storage.js';
 
 // ── Ports (the seam) ─────────────────────────────────────────────────────────
 
@@ -50,7 +50,9 @@ export interface FillPorts {
   recalculation: RecalculationPorts;
   /**
    * AI finds' candidate source and judge, built once per fill and only for
-   * an opted-in user, so nobody else makes candidate or judge calls.
+   * an opted-in user, so nobody else makes candidate or judge calls. Absent
+   * when the server has no Anthropic key: an opted-in user then gets
+   * `no-api-key` weeks.
    */
   ai?: (fill: { weeks: number }) => AiFindsPorts;
 }
@@ -59,25 +61,23 @@ export type AiFindsPorts = Required<
   Pick<WeekCollectionPorts, 'candidates' | 'judge'>
 >;
 
-export interface FillRunOptions {
-  /** Kept for the stop-aware pauses between dates. */
-  ctx: SpotifyGateway;
-  userId: string;
-  userConfig: UserConfig;
-  /** The fill's own persistence: week progress and fill history. */
-  storage: FillStorage;
-  /** Holds the roster, recalculation state and pending priority changes. */
-  data: UserData;
-  ports: FillPorts;
+/**
+ * One fill, for the session's user. Their user data holds the config, the
+ * roster, recalculation state, pending priority changes, week progress and
+ * fill history; the gateway paces the stop-aware pauses between dates.
+ */
+export interface FillRun extends UserSession {
   /** Everything the fill reports — `consoleFillSink` or `webFillSink`. */
   onEvent: (e: FillEvent) => void;
   /** Ignore saved week progress: every week's artist search starts over. */
   fresh?: boolean;
-  /**
-   * The server has an Anthropic key (`aiFindsAvailable()`). An opted-in user
-   * on a server without one gets `no-api-key` weeks.
-   */
-  aiFindsAvailable: boolean;
+}
+
+/** What the fill works from once it has loaded the config. */
+interface Fill extends FillRun {
+  userConfig: UserConfig;
+  storage: FillStorage;
+  ports: FillPorts;
 }
 
 /**
@@ -164,7 +164,7 @@ async function maybeAppendFillHistory(
  * subscribers can restore UI/log state. Never fails the fill.
  */
 async function emitResumedIfAny(
-  opts: FillRunOptions,
+  opts: Fill,
   dates: string[],
   emit: Emit,
 ): Promise<void> {
@@ -199,8 +199,7 @@ async function emitResumedIfAny(
  * has run.
  */
 async function finishFill(
-  opts: FillRunOptions,
-  recalculation: RecalculationDeps,
+  opts: Fill,
   results: DateResult[],
   priorityChanges: PriorityChange[],
   durationMinutes: number,
@@ -212,8 +211,10 @@ async function finishFill(
   // stay pending, and the next recalculation or fill applies them.
   let syncedPlaylists: number | null = null;
   try {
-    const synced = await syncPending(opts.userConfig, recalculation, (event) =>
-      onEvent({ kind: 'sync', event }),
+    const synced = await syncPending(
+      opts,
+      (event) => onEvent({ kind: 'sync', event }),
+      opts.ports.recalculation,
     );
     if (synced) syncedPlaylists = synced.playlistsSynced;
   } catch (syncErr) {
@@ -231,14 +232,23 @@ async function finishFill(
 
 // ── Interface ────────────────────────────────────────────────────────────────
 
-export async function runFill(opts: FillRunOptions): Promise<FillResult> {
-  const { ctx, userId, userConfig, data, ports } = opts;
+/**
+ * Fill every unfilled Friday, then promotion-sync whatever is pending. Tests
+ * pass fixture `ports`; everything else comes from the session.
+ */
+export async function runFill(
+  run: FillRun,
+  ports: FillPorts = fillPorts(run),
+): Promise<FillResult> {
+  const opts: Fill = {
+    ...run,
+    userConfig: await run.data.config.load(),
+    storage: new DurableFillStorage(run.data),
+    ports,
+  };
+  const { gateway, userId, userConfig, data } = opts;
   const emit = opts.onEvent;
   const log = (message: string) => emit({ kind: 'log', message });
-  const recalculation: RecalculationDeps = {
-    data,
-    ports: ports.recalculation,
-  };
   const weekly = weeklyPlaylists({
     store: ports.weekly,
     userId,
@@ -251,7 +261,7 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
   const datesToProcess = await weekly.unfilledFridays(new Date());
   if (datesToProcess.length === 0) {
     log('All weekly playlists are already filled.');
-    return finishFill(opts, recalculation, [], [], 0);
+    return finishFill(opts, [], [], 0);
   }
   log(
     `Unfilled Fridays: ${datesToProcess.length} (${datesToProcess[0]} … ${datesToProcess[datesToProcess.length - 1]})`,
@@ -318,11 +328,15 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
       const progress = await ports.week.checkpoints.load(targetDate);
       const checkpointed = progress !== null && progress.artistsSearched > 0;
       if (!checkpointed) {
-        const recalc = await recalculate(userConfig, recalculation, {
-          onProgress: (e) => {
-            if (e.phase === 'recalculating') emit({ kind: 'recalculating' });
+        const recalc = await recalculate(
+          opts,
+          {
+            onProgress: (e) => {
+              if (e.phase === 'recalculating') emit({ kind: 'recalculating' });
+            },
           },
-        });
+          ports.recalculation,
+        );
         if (recalc.outcome === 'recalculated') {
           trustedArtists = recalc.roster;
           p1p2Artists = filterByPriority(trustedArtists.artistCounts, [1, 2]);
@@ -347,7 +361,6 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
           ai: userConfig.aiFinds.enabled
             ? {
                 ...userConfig.aiFinds,
-                hasApiKey: opts.aiFindsAvailable,
                 budgetUsd: aiBudgetUsd,
               }
             : undefined,
@@ -389,7 +402,7 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
       emit({ kind: 'date-complete', result });
 
       if (i < datesToProcess.length - 1) {
-        await sleep(2000, ctx.signal);
+        await sleep(2000, gateway.signal);
       }
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -401,7 +414,7 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
       results.push({ date: targetDate, error: err.message } as DateResult);
       // Back off before the next date; there's nothing to wait for after the last.
       if (i < datesToProcess.length - 1) {
-        await sleep(60000, ctx.signal);
+        await sleep(60000, gateway.signal);
       }
     }
   }
@@ -409,11 +422,5 @@ export async function runFill(opts: FillRunOptions): Promise<FillResult> {
   const durationMinutes = Math.round((Date.now() - startTime) / 1000 / 60);
   emit({ kind: 'complete', results, durationMinutes });
 
-  return finishFill(
-    opts,
-    recalculation,
-    results,
-    priorityChanges,
-    durationMinutes,
-  );
+  return finishFill(opts, results, priorityChanges, durationMinutes);
 }

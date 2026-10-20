@@ -1,15 +1,12 @@
-import { FileConfigStore } from '../lib/config.js';
-import { createCliGateway } from '../lib/spotify/gateway.js';
 import { printLines } from '../lib/task-log.js';
 import { secondaryLabel } from '../lib/user-config.js';
-import { localUserData } from '../lib/user-data/index.js';
-import { spotifyRecalculationPorts } from '../services/recalculation/adapters.js';
 import {
   describeRecalculationResult,
   describeSync,
 } from '../services/recalculation/describe.js';
 import { recalculate, syncPending } from '../services/recalculation/index.js';
 import { consoleRecalculationProgress } from '../services/recalculation/subscribers.js';
+import { cliSession } from './session.js';
 
 // Usage: pnpm recalculate [--force] [--no-sync]
 //   --force    re-score even if neither source playlist changed
@@ -17,22 +14,12 @@ import { consoleRecalculationProgress } from '../services/recalculation/subscrib
 const force = process.argv.includes('--force');
 const noSync = process.argv.includes('--no-sync');
 
-// The CLI's user data is always local, whatever the env says (ADR-0008).
-const data = localUserData('.');
-const ctx = createCliGateway({ configStore: new FileConfigStore() });
-const userConfig = await data.config.load();
-const sl = secondaryLabel(userConfig);
-
-const me = await ctx.call((api) => api.currentUser.profile(), 'user profile');
-if (!me.success) throw me.error;
-const deps = {
-  data,
-  ports: spotifyRecalculationPorts(ctx, { userId: me.data.id, data }),
-};
+const session = await cliSession();
+const sl = secondaryLabel(await session.data.config.load());
 
 console.log('=== Recalculating Artist Priorities ===\n');
 
-const result = await recalculate(userConfig, deps, {
+const result = await recalculate(session, {
   force,
   onProgress: consoleRecalculationProgress(),
 });
@@ -59,7 +46,7 @@ if (result.pending.length === 0) {
     `\n${result.pending.length} priority change(s) left pending (--no-sync); the next fill syncs them.`,
   );
 } else {
-  await syncPending(userConfig, deps, (e) => printLines(describeSync(e)));
+  await syncPending(session, (e) => printLines(describeSync(e)));
 }
 
 console.log('\n=== Done! ===\n');
