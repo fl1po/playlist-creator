@@ -2200,6 +2200,32 @@ function scrollLogSoon() {
   });
 }
 
+// A reader at the end of the log stays there whatever reshapes it. Growing
+// content doesn't move scrollTop, so only the reader's own scrolling (or a
+// shrink that clamps to the end anyway) changes this.
+let logAtEnd = true;
+// Fractional line heights leave the end a pixel or so short of scrollHeight
+const LOG_END_SLACK_PX = 4;
+{
+  const panel = document.getElementById('logPanel');
+  panel.addEventListener('scroll', () => {
+    logAtEnd = panel.scrollHeight - panel.scrollTop - panel.clientHeight < LOG_END_SLACK_PX;
+  });
+  const keepAtEnd = () => {
+    if (logAtEnd && document.getElementById('logAutoScroll').checked) {
+      panel.scrollTop = panel.scrollHeight;
+    }
+  };
+  // The filter and the Debug box work by toggling classes, hence the class
+  // attributes. A MutationObserver runs right after the change, before the
+  // frame's scroll events; re-pinning any later (in requestAnimationFrame, say)
+  // lets a scroll event read the stranded offset and unstick the reader.
+  new MutationObserver(keepAtEnd).observe(panel, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ['class'],
+  });
+  new ResizeObserver(keepAtEnd).observe(panel);
+}
+
 function log(level, message, ts, task) {
   const panel = document.getElementById('logPanel');
   const entry = document.createElement('div');
