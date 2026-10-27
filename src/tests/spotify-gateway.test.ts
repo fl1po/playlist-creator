@@ -261,17 +261,37 @@ test('every attempt that reaches Spotify is reported with its outcome', async ()
   await gw.call(script(new RateLimitError(4)).fn, 'playback state');
   await gw.call(script(new HttpError(503, 'down')).fn, 'playlist items x');
 
-  assert.deepEqual(calls, [
-    {
-      lane: 'background',
-      description: 'playback state',
-      outcome: 'rate_limited',
-      retryAfterSeconds: 4,
-    },
-    { lane: 'background', description: 'playback state', outcome: 'ok' },
-    { lane: 'background', description: 'playlist items x', outcome: 'failed' },
-    { lane: 'background', description: 'playlist items x', outcome: 'ok' },
-  ]);
+  assert.deepEqual(
+    calls.map(({ queuedMs: _, ...c }) => c),
+    [
+      {
+        lane: 'background',
+        description: 'playback state',
+        outcome: 'rate_limited',
+        retryAfterSeconds: 4,
+      },
+      { lane: 'background', description: 'playback state', outcome: 'ok' },
+      {
+        lane: 'background',
+        description: 'playlist items x',
+        outcome: 'failed',
+      },
+      { lane: 'background', description: 'playlist items x', outcome: 'ok' },
+    ],
+  );
+});
+
+test('each reported attempt says how long it waited for the pacer', async () => {
+  const calls: SpotifyCall[] = [];
+  const { gw } = gateway({ lane: 'background', onCall: (c) => calls.push(c) });
+  await gw.call(script().fn, 'first');
+  await gw.call(script().fn, 'second');
+
+  // The second call waits out the first's 1s interval.
+  assert.deepEqual(
+    calls.map((c) => c.queuedMs),
+    [0, 1000],
+  );
 });
 
 // ── Auth ────────────────────────────────────────────────────────────────────

@@ -241,15 +241,18 @@ export function createSpotifyGateway(opts: GatewayOptions): SessionGateway {
 
         let usedToken = tokens.accessToken;
         let attempted = false;
+        let queuedMs = 0;
         try {
           if (tokens.expiresWithin(REFRESH_MARGIN_MS)) {
             await recoverAuth(new Error('Access token about to expire'));
           }
+          const queuedFrom = clock.now();
           await pacer.pace(lane, signal);
+          queuedMs = clock.now() - queuedFrom;
           usedToken = tokens.accessToken;
           attempted = true;
           const data = await fn(api());
-          opts.onCall?.({ lane, description, outcome: 'ok' });
+          opts.onCall?.({ lane, description, outcome: 'ok', queuedMs });
           pacer.onSuccess();
           longSleepCount = 0;
           return { success: true, data };
@@ -265,11 +268,12 @@ export function createSpotifyGateway(opts: GatewayOptions): SessionGateway {
                     lane,
                     description,
                     outcome: 'rate_limited',
+                    queuedMs,
                     ...(classified.retryAfterSeconds != null && {
                       retryAfterSeconds: classified.retryAfterSeconds,
                     }),
                   }
-                : { lane, description, outcome: 'failed' },
+                : { lane, description, outcome: 'failed', queuedMs },
             );
           }
           switch (classified.kind) {

@@ -377,10 +377,17 @@ export async function runAiPhase(
 
   phase.candidates = pool.length;
 
+  run.onProgress?.({ phase: 'judge-start', candidates: pool.length });
+  const judgeStartedAt = run.now();
   const outcome = await askJudge(ports.judge, {
     taste: tasteContext(input, foundReleases, week.popularity),
     candidates: pool,
     budgetUsd,
+  });
+  run.onProgress?.({
+    phase: 'judge-done',
+    ms: run.now() - judgeStartedAt,
+    ok: outcome.ok,
   });
   phase.spendUsd = outcome.spendUsd;
   if (!outcome.ok) {

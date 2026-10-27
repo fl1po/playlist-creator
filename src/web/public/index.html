@@ -2854,7 +2854,7 @@ function metric(label, value) {
 }
 
 // ── Now Playing ─────────────────────────────────────────────────
-const np = { state: null, lastFetch: 0, pollTimer: null, tickTimer: null };
+const np = { state: null, lastFetch: 0, pollTimer: null, tickTimer: null, enabled: false };
 
 function fmtClock(ms) {
   if (ms < 0) ms = 0;
@@ -3027,24 +3027,38 @@ function updateNpProgress() {
   setText('npTime', fmtClock(progress) + ' / ' + fmtClock(s.track.duration_ms));
 }
 
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    if (np.pollTimer) { clearInterval(np.pollTimer); np.pollTimer = null; }
-    if (np.tickTimer) { clearInterval(np.tickTimer); np.tickTimer = null; }
-  } else if (np.state !== null) {
+// Playback is polled only while the tab has focus: every poll is a Spotify
+// call, and it shares the server-wide rate limit with running tasks. Without
+// focus the bar keeps ticking from the last state.
+function syncNpPolling() {
+  const want = np.enabled && document.hasFocus();
+  if (want && !np.pollTimer) {
     fetchPlayback();
-    if (!np.pollTimer) np.pollTimer = setInterval(fetchPlayback, 5000);
+    np.pollTimer = setInterval(fetchPlayback, 5000);
+  } else if (!want && np.pollTimer) {
+    clearInterval(np.pollTimer);
+    np.pollTimer = null;
   }
+}
+
+window.addEventListener('focus', syncNpPolling);
+window.addEventListener('blur', syncNpPolling);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && np.tickTimer) { clearInterval(np.tickTimer); np.tickTimer = null; }
+  else if (!document.hidden && np.state?.isPlaying && !np.tickTimer) {
+    np.tickTimer = setInterval(updateNpProgress, 1000);
+  }
+  syncNpPolling();
 });
 
 function startNpPolling() {
-  if (np.pollTimer) return;
-  fetchPlayback();
-  np.pollTimer = setInterval(fetchPlayback, 5000);
+  np.enabled = true;
+  syncNpPolling();
 }
 
 function stopNpPolling() {
-  if (np.pollTimer) { clearInterval(np.pollTimer); np.pollTimer = null; }
+  np.enabled = false;
+  syncNpPolling();
   hideNowPlaying();
 }
 

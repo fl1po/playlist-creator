@@ -1,5 +1,11 @@
-import { type LogLine, line } from '../../lib/task-log.js';
-import type { CollectionDecision, WeekProgressEvent } from './index.js';
+import type { DeezerCallStats } from '../../lib/deezer-client.js';
+import { formatElapsed, type LogLine, line } from '../../lib/task-log.js';
+import type {
+  CandidateStep,
+  CollectionDecision,
+  WeekProgressEvent,
+  WeekStep,
+} from './index.js';
 
 /** Artists between "Searched done/total" lines. */
 const SEARCH_LOG_EVERY = 50;
@@ -111,8 +117,75 @@ export function describeWeekProgress(e: WeekProgressEvent): LogLine[] {
           `AI finds: ${e.picks} picks from ${e.candidates} candidates, $${e.spendUsd.toFixed(2)}`,
         ),
       ];
+    case 'candidates':
+      return e.done % CANDIDATES_LOG_EVERY[e.step] === 0
+        ? [line(`AI candidates — ${STEP_NAMES[e.step]}: ${e.done}/${e.total}`)]
+        : [];
+    case 'candidates-done': {
+      const found = e.step === 'graph' ? '' : `, ${e.found} found`;
+      const deezer = e.deezer ? `; ${describeDeezer(e.deezer)}` : '';
+      return [
+        line(
+          `AI candidates — ${STEP_NAMES[e.step]}: ${e.items} in ${formatElapsed(e.ms)}${found}${deezer}`,
+        ),
+      ];
+    }
+    case 'judge-start':
+      return [line(`Taste judge: weighing ${e.candidates} candidates...`)];
+    case 'judge-done':
+      return [
+        line(
+          `Taste judge ${e.ok ? 'answered' : 'failed'} after ${formatElapsed(e.ms)}`,
+        ),
+      ];
+    case 'step-done':
+      return [
+        line(`${WEEK_STEP_NAMES[e.step]} done in ${formatElapsed(e.ms)}`),
+      ];
+    case 'timings':
+      return [
+        line(
+          `Week took ${formatElapsed(e.ms)}: ${e.steps
+            .map((s) => `${WEEK_STEP_NAMES[s.step]} ${formatElapsed(s.ms)}`)
+            .join(' · ')}`,
+        ),
+      ];
     case 'editorial':
     case 'collecting':
       return [];
   }
+}
+
+const WEEK_STEP_NAMES: Record<WeekStep, string> = {
+  search: 'Artist search',
+  editorial: 'Editorial playlists',
+  popularity: 'Popularity check',
+  'ai-finds': 'AI finds',
+  collection: 'Track collection',
+};
+
+const STEP_NAMES: Record<CandidateStep, string> = {
+  graph: 'related-artist graph',
+  related: 'related artists',
+  roster: 'roster artists',
+  known: 'Spotify-known releases',
+};
+
+/** Items between progress lines, per step: the roster runs to thousands. */
+const CANDIDATES_LOG_EVERY: Record<CandidateStep, number> = {
+  graph: 25,
+  related: 50,
+  roster: 250,
+  known: 50,
+};
+
+/** A step's Deezer calls: count, average response, then any trouble. */
+function describeDeezer(d: DeezerCallStats): string {
+  if (!d.calls) return 'no Deezer calls';
+  let text = `Deezer ${d.calls} calls, avg ${formatElapsed(d.responseMs / d.calls)}`;
+  if (d.rateLimited) {
+    text += `, 429s: ${d.rateLimited} (backoff ${formatElapsed(d.backoffMs)})`;
+  }
+  if (d.failed) text += `, failed: ${d.failed}`;
+  return text;
 }

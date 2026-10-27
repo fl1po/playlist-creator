@@ -37,10 +37,16 @@ export interface Run {
   albumsByArtist: Map<string, RawAlbum[]>;
   /** Name-search fallbacks memoized for the lifetime of one run. */
   artistIdsByName: Map<string, string | null>;
+  /** Reads time for step timings; injected so tests can pin it. */
+  now: () => number;
 }
 
 export function createRun(
-  ports: { reads: ReleaseReads; popularity: PopularitySource },
+  ports: {
+    reads: ReleaseReads;
+    popularity: PopularitySource;
+    now?: () => number;
+  },
   onProgress?: (e: WeekProgressEvent) => void,
 ): Run {
   return {
@@ -50,6 +56,7 @@ export function createRun(
     onProgress,
     albumsByArtist: new Map(),
     artistIdsByName: new Map(),
+    now: ports.now ?? Date.now,
   };
 }
 

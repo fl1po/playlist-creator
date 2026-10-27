@@ -2,6 +2,7 @@ import {
   type DeezerAlbumDetail,
   type DeezerArtistAlbum,
   DeezerClient,
+  deezerStatsSince,
   foldName,
 } from '../../lib/deezer-client.js';
 import { rankToPopularity } from '../../lib/deezer-popularity.js';
@@ -21,6 +22,7 @@ import type {
   CandidateReject,
   CandidateRequest,
   CandidateSource,
+  CandidateStep,
 } from '../week-collection/index.js';
 
 // The production CandidateSource (ADR-0005), on Deezer. Roster artists below
@@ -40,7 +42,8 @@ export type DeezerReads = Pick<
   | 'getAlbum'
   | 'topTracks'
   | 'relatedArtists'
->;
+> &
+  Partial<Pick<DeezerClient, 'stats'>>;
 
 export interface DeezerCandidateSourceOptions {
   /** Defaults to a fresh `DeezerClient`. */
@@ -236,14 +239,15 @@ export function deezerCandidateSource(
 
   /**
    * Fetch the seeds with no entry or a stale one, unless this adapter
-   * already tried. A failed fetch keeps whatever entry was there.
+   * already tried. A failed fetch keeps whatever entry was there. Returns
+   * how many seeds it fetched.
    */
   async function topUpGraph(
     cache: DeezerArtistCache,
     graph: RelatedGraph,
     seeds: Seed[],
     onProgress: (e: CandidateProgress) => void,
-  ): Promise<void> {
+  ): Promise<number> {
     const due = seeds
       .map((seed) => ({ seed, key: seedKey(seed) }))
       .filter(({ key }) => {
@@ -253,7 +257,7 @@ export function deezerCandidateSource(
           (entry && fresh(entry.fetchedAt, GRAPH_TTL_MS))
         );
       });
-    if (due.length === 0) return;
+    if (due.length === 0) return 0;
     let failed = 0;
     onProgress({ phase: 'related-artists', done: 0, total: due.length });
     for (const [i, { seed, key }] of due.entries()) {
@@ -271,6 +275,7 @@ export function deezerCandidateSource(
       onProgress({ phase: 'related-artists', done: i + 1, total: due.length });
     }
     if (failed) onProgress({ phase: 'related-artists-failed', seeds: failed });
+    return due.length;
   }
 
   /**
@@ -322,44 +327,95 @@ export function deezerCandidateSource(
           else byId.set(c.id, c);
         }
       };
+      /**
+       * Run a step, then report how long it took, its items, what it found
+       * and the Deezer calls it made. A step with no items says nothing.
+       */
+      async function timed(
+        name: CandidateStep,
+        run: () => Promise<{ items: number; found: number }>,
+      ): Promise<void> {
+        const startedAt = now();
+        const before = deezer.stats?.();
+        const { items, found } = await run();
+        const after = deezer.stats?.();
+        if (!items) return;
+        onProgress({
+          phase: 'candidates-done',
+          step: name,
+          ms: now() - startedAt,
+          items,
+          found,
+          deezer: before && after ? deezerStatsSince(before, after) : null,
+        });
+      }
+
+      /** A step over `items`, counting them off as it goes. */
+      const step = <T>(
+        name: CandidateStep,
+        items: T[],
+        each: (item: T) => Promise<number>,
+      ) =>
+        timed(name, async () => {
+          let found = 0;
+          for (const [i, item] of items.entries()) {
+            checkAbort();
+            found += await each(item);
+            onProgress({
+              phase: 'candidates',
+              step: name,
+              done: i + 1,
+              total: items.length,
+            });
+          }
+          return { items: items.length, found };
+        });
+
       try {
-        await topUpGraph(cache, graph, request.seeds, onProgress);
+        await timed('graph', async () => ({
+          items: await topUpGraph(cache, graph, request.seeds, onProgress),
+          found: 0,
+        }));
         // Seeds and roster artists come through their own searches.
         const known = new Set(
           [...request.seeds, ...request.rosterArtists].map((a) =>
             foldName(a.name),
           ),
         );
-        for (const related of coCited(graph, request.seeds, known)) {
-          checkAbort();
-          add(
-            await artistReleases(
-              cache,
-              related,
-              { kind: 'related', to: related.to },
-              request.window,
-            ).catch(unlessAbort(() => [])),
-          );
-        }
-        for (const roster of request.rosterArtists) {
-          checkAbort();
-          add(
-            await rosterReleases(cache, roster, request.window).catch(
-              unlessAbort(() => []),
-            ),
-          );
-        }
+        const addAll = (found: Candidate[]) => {
+          add(found);
+          return found.length;
+        };
+        await step('related', coCited(graph, request.seeds, known), (related) =>
+          artistReleases(
+            cache,
+            related,
+            { kind: 'related', to: related.to },
+            request.window,
+          )
+            .catch(unlessAbort(() => []))
+            .then(addAll),
+        );
+        await step('roster', request.rosterArtists, (roster) =>
+          rosterReleases(cache, roster, request.window)
+            .catch(unlessAbort(() => []))
+            .then(addAll),
+        );
         // Releases the week knows from Spotify come back even unmatched.
         const spotifyKnown: Candidate[] = [];
-        for (const bare of [
-          ...request.rejects.map(bareReject),
-          ...bareScouting(request.scouting),
-        ]) {
-          checkAbort();
-          spotifyKnown.push(
-            await withDeezerData(cache, bare).catch(unlessAbort(() => bare)),
-          );
-        }
+        await step(
+          'known',
+          [
+            ...request.rejects.map(bareReject),
+            ...bareScouting(request.scouting),
+          ],
+          async (bare) => {
+            spotifyKnown.push(
+              await withDeezerData(cache, bare).catch(unlessAbort(() => bare)),
+            );
+            return 1;
+          },
+        );
         return [...byId.values(), ...spotifyKnown];
       } finally {
         await artistStore.save();

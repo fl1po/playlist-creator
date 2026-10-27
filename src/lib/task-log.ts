@@ -24,3 +24,13 @@ export function printLines(lines: LogLine[]): void {
     else console.log(message);
   }
 }
+
+/** A duration for a log line: `850ms`, `4.2s`, `39m 12s`, `1h 3m`. */
+export function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${m}m` : `${m}m ${s % 60}s`;
+}

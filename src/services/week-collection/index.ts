@@ -5,6 +5,7 @@ import {
 } from '../../domain/filters.js';
 import { releaseDateFallbackMatch } from '../../domain/releases.js';
 import { getValidDates, parseDate } from '../../domain/tracks.js';
+import type { DeezerCallStats } from '../../lib/deezer-client.js';
 import type {
   AlbumTrack,
   FoundRelease,
@@ -179,7 +180,28 @@ export type CandidateProgress =
   /** The related-artist graph top-up: seeds fetched of those to fetch. */
   | { phase: 'related-artists'; done: number; total: number }
   /** Seeds whose lookup failed this time; their related artists are missing. */
-  | { phase: 'related-artists-failed'; seeds: number };
+  | { phase: 'related-artists-failed'; seeds: number }
+  /** Progress through one gathering step. */
+  | { phase: 'candidates'; step: CandidateStep; done: number; total: number }
+  /**
+   * A gathering step finished: how long it took over how many items, the
+   * candidates it found and, when the source can tell, its Deezer calls.
+   */
+  | {
+      phase: 'candidates-done';
+      step: CandidateStep;
+      ms: number;
+      items: number;
+      found: number;
+      deezer: DeezerCallStats | null;
+    };
+
+/**
+ * The candidate source's steps: topping up the related-artist graph, then the
+ * releases of co-cited related artists, of roster artists below P1/P2, and of
+ * the rejects and scouting albums the week knows from Spotify.
+ */
+export type CandidateStep = 'graph' | 'related' | 'roster' | 'known';
 
 /** The week's candidates. Prod = Deezer; test = fixed list. */
 export interface CandidateSource {
@@ -247,6 +269,8 @@ export interface WeekCollectionPorts {
    */
   candidates?: CandidateSource;
   judge?: TasteJudge;
+  /** Reads time for step timings; defaults to `Date.now`. */
+  now?: () => number;
 }
 
 // ── Collection decisions (the audit trail, returned as data) ────────────────
@@ -364,7 +388,25 @@ export type WeekProgressEvent =
       picks: number;
       candidates: number;
       spendUsd: number;
-    };
+    }
+  | { phase: 'judge-start'; candidates: number }
+  | { phase: 'judge-done'; ms: number; ok: boolean }
+  | { phase: 'step-done'; step: WeekStep; ms: number }
+  /** The week is collected: each step's time, and the whole week's. */
+  | { phase: 'timings'; steps: StepTiming[]; ms: number };
+
+/** The week collection's steps, in the order they run. */
+export type WeekStep =
+  | 'search'
+  | 'editorial'
+  | 'popularity'
+  | 'ai-finds'
+  | 'collection';
+
+export interface StepTiming {
+  step: WeekStep;
+  ms: number;
+}
 
 // ── Input / result ───────────────────────────────────────────────────────────
 
@@ -488,6 +530,17 @@ export async function collectWeek(
   const { checkpoints } = ports;
   const validDates = getValidDates(parseDate(week));
   const run = createRun(ports, onProgress);
+  const weekStartedAt = run.now();
+  const timings: StepTiming[] = [];
+  let stepStartedAt = weekStartedAt;
+  /** Close the step that just ran and start timing the next. */
+  const stepDone = (step: WeekStep) => {
+    const at = run.now();
+    const timing = { step, ms: at - stepStartedAt };
+    stepStartedAt = at;
+    timings.push(timing);
+    onProgress?.({ phase: 'step-done', ...timing });
+  };
 
   // ── Search P1/P2 artists (resuming from checkpoint) ───────────────────────
   const foundReleases = new Map<string, FoundRelease>();
@@ -552,6 +605,7 @@ export async function collectWeek(
   // The completed search outlives this call: the caller clears it once the
   // week is written, so a later stop resumes past the search.
   await saveProgress();
+  stepDone('search');
 
   // ── Editorial merge ────────────────────────────────────────────────────────
   const { rejects, playlistsOf } = await mergeEditorial(
@@ -562,6 +616,7 @@ export async function collectWeek(
     trustedArtists,
     editorial,
   );
+  stepDone('editorial');
 
   // ── Popularity gate + ranking ─────────────────────────────────────────────
   const {
@@ -585,6 +640,7 @@ export async function collectWeek(
       },
     });
   }
+  stepDone('popularity');
 
   // ── AI finds (picks skip the popularity gate) ─────────────────────────────
   const aiPhase = input.ai?.enabled
@@ -606,6 +662,7 @@ export async function collectWeek(
   for (const { release } of aiPhase?.picks ?? []) {
     kept.set(release.id, release);
   }
+  if (aiPhase) stepDone('ai-finds');
 
   // ── Collection (variant strip, deluxe / title-track / history dedup) ─────
   const { collected, skippedCount, contained } = await collect(
@@ -640,6 +697,12 @@ export async function collectWeek(
       ),
   ];
   const tracks = ranked.flatMap((c) => c.trackIds);
+  stepDone('collection');
+  onProgress?.({
+    phase: 'timings',
+    steps: timings,
+    ms: run.now() - weekStartedAt,
+  });
 
   return {
     week,

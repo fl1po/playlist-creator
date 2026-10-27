@@ -1,3 +1,4 @@
+import { formatElapsed } from '../task-log.js';
 import type { Lane } from './pacer.js';
 
 /**
@@ -12,6 +13,12 @@ export interface SpotifyCall {
   description: string;
   outcome: 'ok' | 'rate_limited' | 'failed';
   retryAfterSeconds?: number;
+  /**
+   * Time from asking the pacer to being let through. It includes the base
+   * interval itself, not only queuing behind other calls: at 1 req/s a lone
+   * task still waits most of a second per call.
+   */
+  queuedMs?: number;
 }
 
 export interface CallTally {
@@ -62,6 +69,23 @@ function describeKind(
   return `${kind} ×${page + task} (${who})`;
 }
 
+/** A window's tally, with its longest Retry-After and its pacer waits. */
+interface WindowTally extends CallTally {
+  maxRetryAfterS: number;
+  queuedMs: { page: number; task: number };
+}
+
+/** Pacer waits under this, page and task together, go unmentioned. */
+const QUEUED_MENTION_MS = 1000;
+
+function describeQueued({ queuedMs }: WindowTally): string {
+  if (queuedMs.page + queuedMs.task < QUEUED_MENTION_MS) return '';
+  const sides = (['task', 'page'] as const).filter((who) => queuedMs[who]);
+  return `; waited for pacer: ${sides
+    .map((who) => `${who} ${formatElapsed(queuedMs[who])}`)
+    .join(', ')}`;
+}
+
 export function createCallStats(opts: {
   report: (userId: string, summary: CallSummary) => void;
   /** Window length named in summaries; the caller schedules `report`. */
@@ -69,7 +93,7 @@ export function createCallStats(opts: {
 }): CallStats {
   const windowMinutes = opts.windowMinutes ?? 5;
   const totals = new Map<string, CallTally>();
-  let window = new Map<string, CallTally & { maxRetryAfterS: number }>();
+  let window = new Map<string, WindowTally>();
 
   function add(tally: CallTally, call: SpotifyCall) {
     tally.calls++;
@@ -91,10 +115,16 @@ export function createCallStats(opts: {
 
       let current = window.get(userId);
       if (!current) {
-        current = { ...emptyTally(), maxRetryAfterS: 0 };
+        current = {
+          ...emptyTally(),
+          maxRetryAfterS: 0,
+          queuedMs: { page: 0, task: 0 },
+        };
         window.set(userId, current);
       }
       add(current, call);
+      current.queuedMs[call.lane === 'interactive' ? 'page' : 'task'] +=
+        call.queuedMs ?? 0;
       if (call.retryAfterSeconds != null) {
         current.maxRetryAfterS = Math.max(
           current.maxRetryAfterS,
@@ -117,6 +147,7 @@ export function createCallStats(opts: {
         if (kinds.length > SUMMARY_KINDS) {
           message += `, +${kinds.length - SUMMARY_KINDS} more kinds`;
         }
+        message += describeQueued(t);
         if (t.failed) message += `; failed: ${t.failed}`;
         if (t.rateLimited) {
           const wait = t.maxRetryAfterS

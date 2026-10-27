@@ -889,7 +889,13 @@ function aiPorts(
   return { ...m, candidates, judge, builtFor };
 }
 
-const aiLines = (lines: string[]) => lines.filter((l) => /\bAI\b/.test(l));
+/** AI lines, without the step timings that also name AI finds. */
+const aiLines = (lines: string[]) =>
+  lines.filter(
+    (l) =>
+      /\bAI\b/.test(l) &&
+      !/^(AI candidates —|AI finds done in|Week took)/.test(l),
+  );
 
 test('an opted-in week keeps its AI picks beside the weekly playlist', async (t) => {
   const { ports, weekly } = aiPorts(PICK_G);

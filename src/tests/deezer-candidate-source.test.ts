@@ -3,11 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import type {
-  DeezerAlbumDetail,
-  DeezerArtist,
-  DeezerArtistAlbum,
-  DeezerTopTrack,
+import {
+  type DeezerAlbumDetail,
+  type DeezerArtist,
+  type DeezerArtistAlbum,
+  type DeezerTopTrack,
+  emptyDeezerStats,
 } from '../lib/deezer-client.js';
 import { TaskAborted } from '../lib/spotify/errors.js';
 import {
@@ -701,9 +702,18 @@ const relatedTo = (...names: string[]) =>
 const relatedCalls = (calls: string[]) =>
   calls.filter((c) => c.startsWith('relatedArtists'));
 
+/** The graph top-up's events; `all` keeps the steps' progress too. */
 function recordingProgress() {
   const events: CandidateProgress[] = [];
-  return { events, onProgress: (e: CandidateProgress) => events.push(e) };
+  const all: CandidateProgress[] = [];
+  return {
+    events,
+    all,
+    onProgress: (e: CandidateProgress) => {
+      all.push(e);
+      if (e.phase.startsWith('related-artists')) events.push(e);
+    },
+  };
 }
 
 test("co-cited related artists' in-window releases join the pool with the seeds that named them", async () => {
@@ -758,6 +768,43 @@ test('a related artist on the roster or among the seeds comes only through the r
     [{ kind: 'roster', priority: 3 }],
   );
   assert.ok(!deezer.calls.includes('artistAlbums 100'));
+});
+
+test('each step reports its items, time, finds and Deezer calls when done', async () => {
+  const deezer = fixtureDeezer(graphArtists());
+  const withStats = {
+    ...deezer,
+    stats: () => ({ ...emptyDeezerStats(), calls: deezer.calls.length }),
+  };
+  let now = 0;
+  const progress = recordingProgress();
+  await deezerCandidateSource({
+    deezer: withStats,
+    data: tempData(),
+    // Every reading of the clock moves it a second on.
+    now: () => (now += 1000),
+  }).candidates(request({ seeds: seeds('Ada', 'Bex') }), progress.onProgress);
+
+  const done = progress.all.filter((e) => e.phase === 'candidates-done');
+  assert.deepEqual(
+    done.map((e) => [e.step, e.items, e.found]),
+    // Nova, the one co-cited artist, is on the roster, so the related step
+    // has nothing to do and stays silent.
+    [
+      ['graph', 2, 0],
+      ['roster', 2, 2],
+    ],
+  );
+  for (const e of done) {
+    assert.ok(e.ms > 0);
+    assert.ok((e.deezer?.calls ?? 0) > 0);
+  }
+  assert.deepEqual(
+    progress.all
+      .filter((e) => e.phase === 'candidates' && e.step === 'roster')
+      .map((e) => e.phase === 'candidates' && e.done),
+    [1, 2],
+  );
 });
 
 test('the top-up counts seeds done against seeds to fetch', async () => {

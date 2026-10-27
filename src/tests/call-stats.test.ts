@@ -87,3 +87,19 @@ test('totals keep counting across windows', () => {
     byKind: { 'playback state': { page: 1, task: 1 } },
   });
 });
+
+test('a summary names the time each side waited for the pacer', () => {
+  const { s, reports } = stats();
+  s.record('u1', { ...ok('releases for …', 'background'), queuedMs: 90_000 });
+  s.record('u1', { ...ok('playback state', 'interactive'), queuedMs: 1500 });
+  s.record('u2', { ...ok('playback state', 'interactive'), queuedMs: 300 });
+
+  s.report();
+
+  assert.match(
+    reports[0].message,
+    /; waited for pacer: task 1m 30s, page 1\.5s$/,
+  );
+  // Under a second all told isn't worth a mention.
+  assert.doesNotMatch(reports[1].message, /pacer/);
+});

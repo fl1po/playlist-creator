@@ -70,9 +70,50 @@ export function foldName(name: string): string {
     .trim();
 }
 
+/** What a client's requests have cost so far, retries included. */
+export interface DeezerCallStats {
+  calls: number;
+  /** Answered 429; each is retried after a backoff. */
+  rateLimited: number;
+  /** Not ok, an error body, or no response at all. */
+  failed: number;
+  /** Time waiting on Deezer to answer; pacing and backoff excluded. */
+  responseMs: number;
+  /** Time spent backing off after 429s. */
+  backoffMs: number;
+}
+
+export const emptyDeezerStats = (): DeezerCallStats => ({
+  calls: 0,
+  rateLimited: 0,
+  failed: 0,
+  responseMs: 0,
+  backoffMs: 0,
+});
+
+/** The calls made between two snapshots of one client's stats. */
+export function deezerStatsSince(
+  before: DeezerCallStats,
+  after: DeezerCallStats,
+): DeezerCallStats {
+  return {
+    calls: after.calls - before.calls,
+    rateLimited: after.rateLimited - before.rateLimited,
+    failed: after.failed - before.failed,
+    responseMs: after.responseMs - before.responseMs,
+    backoffMs: after.backoffMs - before.backoffMs,
+  };
+}
+
 export class DeezerClient {
   private lastRequestTime = 0;
   private mutex: Promise<void> = Promise.resolve();
+  private readonly counts = emptyDeezerStats();
+
+  /** A snapshot of this client's calls so far. */
+  stats(): DeezerCallStats {
+    return { ...this.counts };
+  }
 
   /** Pace requests, serializing concurrent callers. */
   private async pace(): Promise<void> {
@@ -97,18 +138,36 @@ export class DeezerClient {
   private async fetch<T>(path: string, retries = 3): Promise<T | null> {
     for (let attempt = 0; attempt <= retries; attempt++) {
       await this.pace();
-      const res = await fetch(`${BASE_URL}${path}`);
+      this.counts.calls++;
+      const sentAt = Date.now();
+      let res: Response;
+      try {
+        res = await fetch(`${BASE_URL}${path}`);
+      } catch (e) {
+        this.counts.failed++;
+        throw e;
+      } finally {
+        this.counts.responseMs += Date.now() - sentAt;
+      }
 
       if (res.status === 429) {
+        this.counts.rateLimited++;
         const wait = Math.min(2 ** attempt * 1000, 10_000);
+        this.counts.backoffMs += wait;
         await new Promise((r) => setTimeout(r, wait));
         continue;
       }
 
-      if (!res.ok) return null;
+      if (!res.ok) {
+        this.counts.failed++;
+        return null;
+      }
 
       const data = (await res.json()) as T & { error?: unknown };
-      if (data.error) return null;
+      if (data.error) {
+        this.counts.failed++;
+        return null;
+      }
       return data;
     }
     return null;
