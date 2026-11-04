@@ -59,6 +59,7 @@ export function fixtureReads(catalog: Catalog): PromotionReads & {
   upcCalls: string[];
   playlistCalls: string[];
   profileCalls: string[];
+  albumCalls: string[];
 } {
   const findAlbum = (albumId: string) => {
     for (const artist of catalog.artists) {
@@ -75,6 +76,7 @@ export function fixtureReads(catalog: Catalog): PromotionReads & {
     upcCalls: [],
     playlistCalls: [],
     profileCalls: [],
+    albumCalls: [],
     async searchArtist(name) {
       this.searchCalls.push(name);
       const artist = catalog.artists.find(
@@ -100,6 +102,7 @@ export function fixtureReads(catalog: Catalog): PromotionReads & {
       return null;
     },
     async artistAlbums(artistId) {
+      this.albumCalls.push(artistId);
       const artist = catalog.artists.find((a) => a.id === artistId);
       return (artist?.albums ?? []).map((a) => ({
         id: a.id,

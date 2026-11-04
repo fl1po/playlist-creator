@@ -13,7 +13,6 @@ import type { AlbumTrack, FoundRelease } from '../../lib/types.js';
 import type {
   CollectionDecision,
   PopularitySource,
-  RawAlbum,
   ReleaseReads,
   VariantStripReason,
   WeekProgressEvent,
@@ -27,16 +26,16 @@ import type {
  * them on popularity, then `collect` the qualifying tracks. Between the two,
  * week collection runs its AI phase. Decisions accumulate on the run in the
  * order they're made, across every step and caller phase.
+ *
+ * The run reads every time it's asked. Remembering reads across a run, a
+ * week or a whole fill is the job of the `ReleaseReads` it's given (see
+ * `rememberingReads`).
  */
 export interface Run {
   reads: ReleaseReads;
   popularity: PopularitySource;
   decisions: CollectionDecision[];
   onProgress?: (e: WeekProgressEvent) => void;
-  /** artistAlbums responses memoized for the lifetime of one run. */
-  albumsByArtist: Map<string, RawAlbum[]>;
-  /** Name-search fallbacks memoized for the lifetime of one run. */
-  artistIdsByName: Map<string, string | null>;
   /** Reads time for step timings; injected so tests can pin it. */
   now: () => number;
 }
@@ -54,8 +53,6 @@ export function createRun(
     popularity: ports.popularity,
     decisions: [],
     onProgress,
-    albumsByArtist: new Map(),
-    artistIdsByName: new Map(),
     now: ports.now ?? Date.now,
   };
 }
@@ -198,18 +195,7 @@ export async function discoverArtist(
 }
 
 async function searchArtistId(run: Run, name: string) {
-  if (run.artistIdsByName.has(name)) return run.artistIdsByName.get(name);
-  const id = (await run.reads.searchArtist(name))?.id ?? null;
-  run.artistIdsByName.set(name, id);
-  return id;
-}
-
-async function memoArtistAlbums(run: Run, artistId: string) {
-  const cached = run.albumsByArtist.get(artistId);
-  if (cached) return cached;
-  const albums = await run.reads.artistAlbums(artistId);
-  run.albumsByArtist.set(artistId, albums);
-  return albums;
+  return (await run.reads.searchArtist(name))?.id ?? null;
 }
 
 /** Window-filter an artist's releases, then keep one variant per group. */
@@ -232,7 +218,7 @@ export async function getArtistInWindow(
   artistId: string,
   validDates: string[],
 ): Promise<WindowRelease[]> {
-  const albums = await memoArtistAlbums(run, artistId);
+  const albums = await run.reads.artistAlbums(artistId);
   const inWindow: WindowRelease[] = [];
 
   for (const album of albums) {
@@ -487,7 +473,7 @@ async function getOriginalAlbumTrackKeys(
   baseAlbumName: string,
 ): Promise<Set<string>> {
   const trackKeys = new Set<string>();
-  const albums = await memoArtistAlbums(run, artistId);
+  const albums = await run.reads.artistAlbums(artistId);
   for (const album of albums) {
     const albumBase = getBaseAlbumName(album.name);
     if (
@@ -518,7 +504,7 @@ async function getArtistPreviousTrackKeys(
   if (cached) return cached;
 
   const trackKeys = new Set<string>();
-  const albums = await memoArtistAlbums(run, artistId);
+  const albums = await run.reads.artistAlbums(artistId);
   let albumsFetched = 0;
   for (const album of albums) {
     if (album.type !== 'album') continue;

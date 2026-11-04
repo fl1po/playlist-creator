@@ -63,6 +63,10 @@ export interface ArtistProfile {
  * instead of aborting; `userPlaylists` returns [] and `artistAlbums` returns
  * the pages fetched before the failure. `albumTracks` and `playlistAlbums`
  * may throw on persistent failures.
+ *
+ * None of these reads depends on the week. The production adapter remembers
+ * every complete answer for its lifetime (`rememberingReads`), and a fill
+ * builds one and shares it across all its weeks and promotion syncs.
  */
 export interface ReleaseReads {
   searchArtist(name: string): Promise<{ id: string; name: string } | null>;

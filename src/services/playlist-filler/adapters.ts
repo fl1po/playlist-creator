@@ -63,15 +63,18 @@ export function fillPorts(
   const { gateway, data } = session;
   const checkAbort = () => gateway.signal?.throwIfAborted();
   const apiKey = anthropicKeyFromEnv(env);
+  // One set of remembered release reads for the whole fill: every week's
+  // collection and both promotion syncs read each discography once.
+  const reads = spotifyReleaseReads(gateway);
   return {
     week: {
-      reads: spotifyReleaseReads(gateway),
+      reads,
       popularity: deezerPopularitySource(checkAbort),
       checkpoints: batchCacheCheckpoints(new DurableFillStorage(data)),
     },
     weekly: spotifyWeeklyPlaylistStore(gateway),
-    history: promotionReads(gateway),
-    recalculation: spotifyRecalculationPorts(session),
+    history: promotionReads(gateway, reads),
+    recalculation: spotifyRecalculationPorts(session, { reads }),
     ai:
       apiKey === undefined
         ? undefined

@@ -122,3 +122,85 @@ test('playlistAlbums keeps each album once, with its date, artists, type and siz
     ],
   );
 });
+
+// ── Remembering ─────────────────────────────────────────────────────────────
+
+test('an artist discography is read from Spotify once, then remembered', async () => {
+  const offsets: number[] = [];
+  const api = {
+    artists: {
+      async albums(
+        _id: string,
+        _groups: string,
+        _m: unknown,
+        _l: number,
+        offset: number,
+      ) {
+        offsets.push(offset);
+        return { items: [simplifiedAlbum('alb-1')] };
+      },
+    },
+  };
+  const reads = spotifyReleaseReads(fixtureGateway(api));
+
+  await reads.artistAlbums('art-1');
+  const again = await reads.artistAlbums('art-1');
+
+  assert.deepEqual(offsets, [0]);
+  assert.deepEqual(
+    again.map((a) => a.id),
+    ['alb-1'],
+  );
+});
+
+test('a discography cut short by a failed page answers with what it has and is read again', async () => {
+  const offsets: number[] = [];
+  let failSecondPage = true;
+  const page = (from: number, count: number) =>
+    Array.from({ length: count }, (_, i) => simplifiedAlbum(`alb-${from + i}`));
+  const api = {
+    artists: {
+      async albums(
+        _id: string,
+        _groups: string,
+        _m: unknown,
+        _l: number,
+        offset: number,
+      ) {
+        offsets.push(offset);
+        if (offset === 0) return { items: page(0, 50) };
+        if (failSecondPage) throw new Error('502');
+        return { items: page(50, 1) };
+      },
+    },
+  };
+  const reads = spotifyReleaseReads(fixtureGateway(api));
+
+  const partial = await reads.artistAlbums('art-1');
+  failSecondPage = false;
+  const full = await reads.artistAlbums('art-1');
+
+  assert.equal(partial.length, 50);
+  assert.equal(full.length, 51);
+  assert.equal(offsets.filter((o) => o === 0).length, 2);
+});
+
+test('a failed artist search answers null and is searched again; a miss is not', async () => {
+  const queries: string[] = [];
+  let fail = true;
+  const api = {
+    async search(q: string) {
+      queries.push(q);
+      if (fail) throw new Error('502');
+      return { artists: { items: [] } };
+    },
+  };
+  const reads = spotifyReleaseReads(fixtureGateway(api));
+
+  assert.equal(await reads.searchArtist('Kilo'), null);
+  fail = false;
+  assert.equal(await reads.searchArtist('Kilo'), null);
+  assert.equal(await reads.searchArtist('Kilo'), null);
+
+  assert.equal(queries.length, 2);
+});

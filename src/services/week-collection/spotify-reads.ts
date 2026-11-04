@@ -1,6 +1,7 @@
 import { getAlbumTracks, getPlaylistAlbums } from '../../lib/pagination.js';
 import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import type { AlbumDetails, RawAlbum, ReleaseReads } from './index.js';
+import { ReadFailed, rememberingReads } from './remembering-reads.js';
 
 const PAGE = 50;
 /** `artistAlbums` stops after the page at this offset: 3 pages, 150 releases. */
@@ -24,10 +25,22 @@ function toRawAlbum(album: {
 }
 
 /**
- * Production ReleaseReads adapter: wraps SpotifyGateway + the pagination
- * readers. Auth failures throw; other failures degrade (null / empty).
+ * Production ReleaseReads adapter: SpotifyGateway + the pagination readers,
+ * remembered for the adapter's lifetime. Build one per operation (a fill, a
+ * sync) and share it across its weeks. Auth failures and aborts throw; other
+ * failures degrade (null / empty / the pages read so far) and are read again
+ * on the next call.
  */
 export function spotifyReleaseReads(ctx: SpotifyGateway): ReleaseReads {
+  return rememberingReads(spotifyReads(ctx));
+}
+
+/**
+ * The reads themselves. A failure throws `ReadFailed` with its degraded value
+ * instead of returning it, so `rememberingReads` can tell it from a complete
+ * answer. Never used unwrapped.
+ */
+function spotifyReads(ctx: SpotifyGateway): ReleaseReads {
   return {
     async searchArtist(name) {
       const result = await ctx.call(
@@ -35,7 +48,7 @@ export function spotifyReleaseReads(ctx: SpotifyGateway): ReleaseReads {
         `search "${name}"`,
       );
       if (!result.success) {
-        return null;
+        throw new ReadFailed(null, `search "${name}" failed`);
       }
       if (result.data.artists?.items.length) {
         const exact = result.data.artists.items.find(
@@ -53,7 +66,7 @@ export function spotifyReleaseReads(ctx: SpotifyGateway): ReleaseReads {
         `search upc ${upc}`,
       );
       if (!result.success) {
-        return null;
+        throw new ReadFailed(null, `search upc ${upc} failed`);
       }
       const album = result.data.albums?.items[0];
       if (!album) {
@@ -81,7 +94,7 @@ export function spotifyReleaseReads(ctx: SpotifyGateway): ReleaseReads {
           `releases for ${artistId}`,
         );
         if (!result.success) {
-          break;
+          throw new ReadFailed(albums, `releases for ${artistId} failed`);
         }
         for (const album of result.data.items) {
           albums.push(toRawAlbum(album));
@@ -99,7 +112,7 @@ export function spotifyReleaseReads(ctx: SpotifyGateway): ReleaseReads {
         `album details ${albumId}`,
       );
       if (!result.success) {
-        return null;
+        throw new ReadFailed(null, `album details ${albumId} failed`);
       }
       const album = result.data;
       const details: AlbumDetails = {
@@ -132,7 +145,7 @@ export function spotifyReleaseReads(ctx: SpotifyGateway): ReleaseReads {
         `playlists of ${userId}`,
       );
       if (!result.success) {
-        return [];
+        throw new ReadFailed([], `playlists of ${userId} failed`);
       }
       return result.data.items.map((p: { id: string; name: string }) => ({
         id: p.id,
@@ -146,7 +159,7 @@ export function spotifyReleaseReads(ctx: SpotifyGateway): ReleaseReads {
         `artist ${artistId}`,
       );
       if (!result.success) {
-        return null;
+        throw new ReadFailed(null, `artist ${artistId} failed`);
       }
       return {
         popularity: result.data.popularity,

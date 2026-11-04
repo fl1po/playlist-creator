@@ -9,6 +9,7 @@ import {
   promotionReads,
   spotifyPlaylistWrites,
 } from '../promotion-sync/adapters.js';
+import type { ReleaseReads } from '../week-collection/index.js';
 import { spotifyWeeklyPlaylistStore } from '../weekly-playlists/adapters.js';
 import { unprocessedWeeklyPlaylists } from '../weekly-playlists/index.js';
 import type { RecalculationPorts, SourceReads } from './index.js';
@@ -66,10 +67,12 @@ export function spotifySourceReads(ctx: SpotifyGateway): SourceReads {
 
 /**
  * The production port set for the session's user. Their user data holds
- * what the unprocessed listing reuses between runs.
+ * what the unprocessed listing reuses between runs. A fill passes its own
+ * `reads` so promotion sync shares the release reads its weeks remembered.
  */
 export function spotifyRecalculationPorts(
   session: UserSession,
+  opts: { reads?: ReleaseReads } = {},
 ): RecalculationPorts {
   const { gateway: ctx, userId, data } = session;
   return {
@@ -88,7 +91,7 @@ export function spotifyRecalculationPorts(
       },
     },
     sync: {
-      reads: promotionReads(ctx),
+      reads: promotionReads(ctx, opts.reads),
       popularity: deezerPopularitySource(() => ctx.signal?.throwIfAborted()),
       writes: spotifyPlaylistWrites(ctx),
     },

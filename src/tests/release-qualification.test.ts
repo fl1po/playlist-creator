@@ -217,7 +217,7 @@ test('discovery anchors to the stored Spotify id, ignoring same-name artists', a
   assert.deepEqual(reads.searchCalls, []);
 });
 
-test('without a stored id, discovery searches by name once per run', async () => {
+test('without a stored id, discovery finds the artist by name; an unknown name finds nothing', async () => {
   const reads = fixtureReads({
     artists: [
       {
@@ -238,14 +238,10 @@ test('without a stored id, discovery searches by name once per run', async () =>
   const r = run(reads);
 
   const first = await discoverArtist(r, { name: 'Kilo', ...P1 }, WINDOW);
-  const again = await discoverArtist(r, { name: 'Kilo', ...P1 }, WINDOW);
   const missing = await discoverArtist(r, { name: 'Nobody', ...P1 }, WINDOW);
-  await discoverArtist(r, { name: 'Nobody', ...P1 }, WINDOW);
 
   assert.equal(first?.[0].artistSpotifyId, 'art-k');
-  assert.deepEqual(again, first);
   assert.equal(missing, null);
-  assert.deepEqual(reads.searchCalls, ['Kilo', 'Nobody']);
 });
 
 // ── Popularity gate ──────────────────────────────────────────────────────────

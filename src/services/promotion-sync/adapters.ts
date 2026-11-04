@@ -3,6 +3,7 @@ import {
   getPlaylistTracksWithArtists,
 } from '../../lib/pagination.js';
 import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
+import type { ReleaseReads } from '../week-collection/index.js';
 import { spotifyReleaseReads } from '../week-collection/spotify-reads.js';
 import type { PlaylistWrites, PromotionReads } from './index.js';
 
@@ -13,11 +14,15 @@ const WRITE_CHUNK = 100;
 
 /**
  * Production PromotionReads adapter: the week-collection ReleaseReads adapter
- * plus the two playlist-track readers.
+ * plus the two playlist-track readers. Pass `reads` to share one operation's
+ * remembered release reads (a fill's) instead of starting fresh.
  */
-export function promotionReads(ctx: SpotifyGateway): PromotionReads {
+export function promotionReads(
+  ctx: SpotifyGateway,
+  reads: ReleaseReads = spotifyReleaseReads(ctx),
+): PromotionReads {
   return {
-    ...spotifyReleaseReads(ctx),
+    ...reads,
     playlistTracksWithArtists(playlistId) {
       return getPlaylistTracksWithArtists(ctx, playlistId);
     },

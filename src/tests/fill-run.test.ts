@@ -41,6 +41,7 @@ import type {
   TasteJudgeOutcome,
   TasteJudgeRequest,
 } from '../services/week-collection/index.js';
+import { rememberingReads } from '../services/week-collection/remembering-reads.js';
 import { memoryWeeklyPlaylistStore } from '../services/weekly-playlists/adapters.js';
 import {
   type Catalog,
@@ -1166,4 +1167,44 @@ test('a skipped week logs its reason as a warning', async (t) => {
     'warn: AI finds skipped (failed): timed out',
     'AI finds: 0 picks from 2 candidates, $0.00',
   ]);
+});
+
+// ── Release reads across a fill ──────────────────────────────────────────────
+
+test('a fill over several Fridays reads each discography once', async (t) => {
+  const { ports, reads } = memoryPorts(alphaBetaCatalog(), [
+    { id: 'pl-old', name: TWO_FRIDAYS_AGO, trackCount: 3 },
+  ]);
+  ports.week.reads = rememberingReads(reads);
+  const w = memoryWorld(t, ports);
+  await seedRoster(w.cache, ALPHA_BETA_P1);
+
+  const result = await w.fill();
+
+  assert.equal(result.results.length, 2);
+  assert.deepEqual(reads.albumCalls.sort(), ['art-a', 'art-b']);
+});
+
+test('the production fill ports share one release reads memo between the weeks and both syncs', async (t) => {
+  let albumReads = 0;
+  const api = {
+    artists: {
+      async albums() {
+        albumReads++;
+        return { items: [] };
+      },
+    },
+  };
+  const session = {
+    gateway: fixtureGateway(api),
+    userId: 'user-1',
+    data: localUserData(tmpDataDir(t)),
+  };
+  const ports = fillPorts(session, {});
+
+  await ports.week.reads.artistAlbums('art-a');
+  await ports.recalculation.sync.reads.artistAlbums('art-a');
+  await fillPorts(session, {}).week.reads.artistAlbums('art-a');
+
+  assert.equal(albumReads, 2);
 });
