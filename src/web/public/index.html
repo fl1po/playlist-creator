@@ -1813,7 +1813,8 @@ async function dedupRemove() {
   if (!dedupScanResult || !dedupScanResult.playlists.length) return;
   if (!confirm(`Remove ${dedupScanResult.totalDuplicates} duplicate tracks from ${dedupScanResult.playlists.length} playlists?`)) return;
   shouldScrollToLog = true;
-  const payload = dedupScanResult.playlists.map(p => ({ id: p.id, uris: p.trackUris }));
+  // The server re-reads each playlist and removes by the scan's own rule.
+  const payload = dedupScanResult.playlists.map(p => ({ id: p.id }));
   const res = await api('POST', '/api/dedup-remove', { playlists: payload });
   if (!res.ok) log('error', res.error || 'Failed to start dedup removal', undefined, 'dedup-remove');
 }

@@ -1,5 +1,5 @@
 import { itemsOf, playlistReads } from '../../lib/playlist-reads/index.js';
-import { trackKey } from '../../lib/track-utils.js';
+import { findDuplicates } from '../../services/dedup.js';
 import { spotifyWeeklyPlaylistStore } from '../../services/weekly-playlists/adapters.js';
 import { unprocessedWeeklyPlaylists } from '../../services/weekly-playlists/index.js';
 import type {
@@ -50,47 +50,13 @@ export const dedupScanTask: TaskDefinition<DedupScanEvents> = {
     const playlists = playlistReads(tc.session);
     await tc.iter(candidates, async (pl) => {
       const read = await playlists.tracks(pl.id, { snapshot: pl.snapshotId });
-      const tracks = itemsOf(read).flatMap(({ track, uri }) => {
-        if (!(track && uri)) return [];
-        const artistNames = track.artists.map((a) => a.name);
-        return [
-          {
-            uri,
-            name: track.name,
-            key: trackKey(artistNames, track.name),
-            artists: artistNames.join(', '),
-          },
-        ];
-      });
-
-      const groups = new Map<
-        string,
-        Array<{ uri: string; name: string; artists: string }>
-      >();
-      for (const t of tracks) {
-        if (!groups.has(t.key)) groups.set(t.key, []);
-        groups.get(t.key)?.push(t);
-      }
-
-      const duplicates: Array<{
-        artist: string;
-        track: string;
-        count: number;
-      }> = [];
-      const urisToRemove: string[] = [];
-
-      for (const [, entries] of groups) {
-        if (entries.length > 1) {
-          duplicates.push({
-            artist: entries[0].artists,
-            track: entries[0].name,
-            count: entries.length,
-          });
-          for (let i = 1; i < entries.length; i++) {
-            urisToRemove.push(entries[i].uri);
-          }
-        }
-      }
+      const groups = findDuplicates(itemsOf(read));
+      const duplicates = groups.map((g) => ({
+        artist: g.artists,
+        track: g.name,
+        count: g.extra.length + 1,
+      }));
+      const urisToRemove = groups.flatMap((g) => g.extra.map((e) => e.uri));
 
       if (duplicates.length > 0) {
         const dupCount = urisToRemove.length;

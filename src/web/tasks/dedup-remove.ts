@@ -1,3 +1,9 @@
+import { itemsOf, playlistReads } from '../../lib/playlist-reads/index.js';
+import {
+  type DedupWrites,
+  findDuplicates,
+  removeDuplicates,
+} from '../../services/dedup.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -9,6 +15,11 @@ interface DedupRemoveEvents extends BaseEvents {
   'dedup:complete': { totalRemoved: number };
 }
 
+/**
+ * Removes the duplicates from the playlists a dedup scan reported. Each
+ * playlist is read again live, so what goes is decided by the playlist as it
+ * is now, by the same rule the scan used, not by a list the page kept.
+ */
 export const dedupRemoveTask: TaskDefinition<DedupRemoveEvents> = {
   name: 'dedup-remove',
   path: '/dedup-remove',
@@ -23,29 +34,38 @@ export const dedupRemoveTask: TaskDefinition<DedupRemoveEvents> = {
   },
 
   async run(tc: TaskContext<DedupRemoveEvents>) {
-    const playlists = tc.body.playlists as Array<{
-      id: string;
-      uris: string[];
-    }>;
+    const playlists = tc.body.playlists as Array<{ id: string }>;
+    const reads = playlistReads(tc.session);
+    const { gateway } = tc.session;
     let totalRemoved = 0;
 
     await tc.iter(playlists, async (pl) => {
-      const batchSize = 100;
-      const chunks: string[][] = [];
-      for (let i = 0; i < pl.uris.length; i += batchSize) {
-        chunks.push(pl.uris.slice(i, i + batchSize));
-      }
-      await tc.iter(chunks, async (batch) => {
-        const result = await tc.session.gateway.call(
-          (api) =>
-            api.playlists.removeItemsFromPlaylist(pl.id, {
-              tracks: batch.map((uri) => ({ uri })),
-            }),
-          `remove duplicates from ${pl.id}`,
-        );
-        if (!result.success) throw result.error;
-        totalRemoved += batch.length;
-      });
+      // A live check, not a listing's snapshot: this playlist is edited next.
+      const items = itemsOf(await reads.tracks(pl.id));
+      const writes: DedupWrites = {
+        async removeAll(uri) {
+          const r = await gateway.call(
+            (api) =>
+              api.playlists.removeItemsFromPlaylist(pl.id, {
+                tracks: [{ uri }],
+              }),
+            `remove duplicates from ${pl.id}`,
+          );
+          if (!r.success) throw r.error;
+        },
+        async insert(uri, position) {
+          const r = await gateway.call(
+            (api) => api.playlists.addItemsToPlaylist(pl.id, [uri], position),
+            `restore kept copy in ${pl.id}`,
+          );
+          if (!r.success) throw r.error;
+        },
+      };
+      totalRemoved += await removeDuplicates(
+        items,
+        findDuplicates(items),
+        writes,
+      );
     });
 
     tc.emit('dedup:complete', { totalRemoved });
