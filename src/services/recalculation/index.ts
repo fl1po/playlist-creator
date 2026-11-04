@@ -1,17 +1,10 @@
-import {
-  type CachedScanResult,
-  isRoleTaggedCache,
-  type PlaylistScanResult,
-  type RecalculationState,
-  type SimplePlaylist,
-  type TrustedArtistsFile,
-  toCachedScanResult,
-  toScanResult,
+import type {
+  PlaylistScanResult,
+  SimplePlaylist,
+  TrustedArtistsFile,
 } from '../../lib/types.js';
 import { secondarySourceName, type UserConfig } from '../../lib/user-config.js';
-import type { UserData } from '../../lib/user-data/index.js';
 import {
-  BATCH_CACHE,
   PENDING_PRIORITY_CHANGES,
   RECALCULATION_STATE,
   TRUSTED_ARTISTS,
@@ -50,14 +43,23 @@ export interface SourceSnapshots {
   boaw?: string;
 }
 
-/** The two source playlists (BoAW may be Liked Songs, per `useLikedSongs`). */
+/** A source's scan; `cached` when its tracks came without fetching a page. */
+export interface SourceScan extends PlaylistScanResult {
+  cached: boolean;
+}
+
+/**
+ * The two source playlists (BoAW may be Liked Songs, per `useLikedSongs`).
+ * `snapshots` decides whether to re-score at all; `scan` reads a source's
+ * tracks through playlist reads (ADR-0011), so an unchanged source is cheap.
+ */
 export interface SourceReads {
   snapshots(sources: SourcePlaylists): Promise<SourceSnapshots>;
   scan(
     source: Source,
     sources: SourcePlaylists,
     onProgress: (fetched: number, total: number) => void,
-  ): Promise<PlaylistScanResult>;
+  ): Promise<SourceScan>;
 }
 
 /**
@@ -131,45 +133,12 @@ function byTier(a: PriorityChange, b: PriorityChange): number {
 }
 
 /**
- * Recalculation's own state, falling back to the fields older versions kept
- * in the batch cache. `migrated` tells the caller to write the state under
- * its own descriptor, after which the fallback is never hit again.
- */
-async function loadState(
-  data: UserData,
-): Promise<{ state: RecalculationState; migrated: boolean }> {
-  const own = await data.load(RECALCULATION_STATE);
-  if (own) return { state: own, migrated: false };
-  const legacy = await data.load(BATCH_CACHE);
-  if (!legacy?.allWeeklySnapshot) return { state: {}, migrated: false };
-  const { artistSearchProgress: _, ...state } = legacy;
-  return { state, migrated: true };
-}
-
-interface SourcePlan {
-  /** What to record: the live snapshot, or the stored one if Spotify couldn't say. */
-  snapshot?: string;
-  /** Scan reusable as-is: its snapshot is known and unchanged. */
-  reusable?: PlaylistScanResult;
-  changed: boolean;
-}
-
-/**
  * A source counts as changed unless its stored snapshot is known and matches
- * (a cold cache is "changed"). If Spotify couldn't report a live snapshot, the
- * stored one stands — a transient read failure never forces a full re-scan.
+ * the live one. A cold state, or a live snapshot Spotify couldn't report,
+ * counts as changed: re-scoring is cheap once playlist reads hold the tracks.
  */
-function planSource(
-  stored: string | undefined,
-  live: string | undefined,
-  scanCache: CachedScanResult | undefined,
-): SourcePlan {
-  const changed = !stored || (live !== undefined && live !== stored);
-  const reusable =
-    !changed && scanCache && isRoleTaggedCache(scanCache)
-      ? toScanResult(scanCache)
-      : undefined;
-  return { snapshot: live ?? stored, reusable, changed };
+function sourceChanged(stored: string | undefined, live: string | undefined) {
+  return !(stored && live) || live !== stored;
 }
 
 function diffPriorities(
@@ -214,29 +183,25 @@ function mergePending(
 
 async function scanSource(
   source: Source,
-  plan: SourcePlan,
   userConfig: UserConfig,
   reads: SourceReads,
   onProgress: (e: RecalculationProgress) => void,
 ): Promise<PlaylistScanResult> {
   const name = source === 'aw' ? 'All Weekly' : secondarySourceName(userConfig);
-  let scan = plan.reusable;
-  if (!scan) {
-    onProgress({ phase: 'scan-start', source, name });
-    scan = await reads.scan(
-      source,
-      userConfig.sourcePlaylists,
-      (fetched, total) =>
-        onProgress({ phase: 'scan-progress', source, name, fetched, total }),
-    );
-  }
+  onProgress({ phase: 'scan-start', source, name });
+  const scan = await reads.scan(
+    source,
+    userConfig.sourcePlaylists,
+    (fetched, total) =>
+      onProgress({ phase: 'scan-progress', source, name, fetched, total }),
+  );
   onProgress({
     phase: 'scan-done',
     source,
     name,
     artists: scan.artistData.size,
     tracks: scan.totalTracks,
-    cached: !!plan.reusable,
+    cached: scan.cached,
   });
   return scan;
 }
@@ -259,21 +224,17 @@ export async function recalculate(
   const userConfig = await data.config.load();
   const onProgress = opts.onProgress ?? (() => {});
 
-  const [{ state, migrated }, prior, pending, live] = await Promise.all([
-    loadState(data),
+  const [state, prior, pending, live] = await Promise.all([
+    data.load(RECALCULATION_STATE).then((v) => v ?? {}),
     data.load(TRUSTED_ARTISTS),
     data.load(PENDING_PRIORITY_CHANGES),
     ports.sources.snapshots(userConfig.sourcePlaylists),
   ]);
-  const aw = planSource(state.allWeeklySnapshot, live.aw, state.awScanCache);
-  const boaw = planSource(
-    state.bestOfAllWeeklySnapshot,
-    live.boaw,
-    state.boawScanCache,
-  );
+  const changed =
+    sourceChanged(state.allWeeklySnapshot, live.aw) ||
+    sourceChanged(state.bestOfAllWeeklySnapshot, live.boaw);
 
-  if (prior && !(opts.force || aw.changed || boaw.changed)) {
-    if (migrated) await data.save(RECALCULATION_STATE, state);
+  if (prior && !(opts.force || changed)) {
     return {
       outcome: 'unchanged',
       roster: prior,
@@ -283,16 +244,9 @@ export async function recalculate(
   }
 
   onProgress({ phase: 'recalculating' });
-  const awScan = await scanSource(
-    'aw',
-    aw,
-    userConfig,
-    ports.sources,
-    onProgress,
-  );
+  const awScan = await scanSource('aw', userConfig, ports.sources, onProgress);
   const boawScan = await scanSource(
     'boaw',
-    boaw,
     userConfig,
     ports.sources,
     onProgress,
@@ -310,10 +264,8 @@ export async function recalculate(
   else await data.delete(PENDING_PRIORITY_CHANGES);
   await data.save(TRUSTED_ARTISTS, roster);
   await data.save(RECALCULATION_STATE, {
-    allWeeklySnapshot: aw.snapshot,
-    bestOfAllWeeklySnapshot: boaw.snapshot,
-    awScanCache: toCachedScanResult(awScan),
-    boawScanCache: toCachedScanResult(boawScan),
+    allWeeklySnapshot: live.aw,
+    bestOfAllWeeklySnapshot: live.boaw,
   });
 
   return { outcome: 'recalculated', roster, changes, pending: nextPending };

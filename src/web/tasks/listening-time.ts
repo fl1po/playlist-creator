@@ -43,7 +43,7 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
 
     const { playlists: candidates } = await unprocessedWeeklyPlaylists(
       {
-        store: spotifyWeeklyPlaylistStore(tc.session.gateway),
+        store: spotifyWeeklyPlaylistStore(tc.session),
         data: tc.session.data,
         userId: me.id,
       },

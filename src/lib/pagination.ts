@@ -1,12 +1,7 @@
 import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import type { SpotifyGateway } from './spotify/gateway.js';
 import { trackKey } from './track-utils.js';
-import type {
-  AlbumTrack,
-  PlaylistAlbumInfo,
-  PlaylistArtistData,
-  SimplePlaylist,
-} from './types.js';
+import type { AlbumTrack, PlaylistAlbumInfo, SimplePlaylist } from './types.js';
 
 type SpotifyInt = any; // Spotify SDK uses literal number union for limit/offset
 type Item = any; // page items are loosely typed by the SDK
@@ -54,11 +49,6 @@ export interface PlaylistTrackWithArtists {
   name: string;
   artistNames: string[];
   albumId: string;
-}
-
-export interface TracksWithPositionsResult {
-  artistData: Map<string, PlaylistArtistData>;
-  totalTracks: number;
 }
 
 // ── Private engine ───────────────────────────────────────────────────────────
@@ -205,26 +195,6 @@ export async function paginateReduce<TAcc>(
 }
 
 // ── Named readers (the public API) ──────────────────────────────────────────
-
-/** Get all track IDs from a playlist. */
-export function getAllPlaylistTracks(
-  ctx: SpotifyGateway,
-  playlistId: string,
-  opts?: PageOpts,
-): Promise<string[]> {
-  return runPagination<string[]>(ctx, {
-    fetch: (api, l, o) =>
-      api.playlists.getPlaylistItems(playlistId, undefined, undefined, l, o),
-    description: `playlist items ${playlistId}`,
-    init: () => [],
-    onPage: (acc, items) => {
-      for (const item of items as Item[]) {
-        if (item.track?.id) acc.push(item.track.id);
-      }
-    },
-    opts,
-  });
-}
 
 /** Get all playlists owned by a user. */
 export function getAllUserPlaylists(
@@ -388,96 +358,4 @@ export function getPlaylistTotalDuration(
     },
     opts,
   });
-}
-
-function paginateTracksWithPositions(
-  ctx: SpotifyGateway,
-  source: {
-    fetch: (
-      api: SpotifyApi,
-      limit: SpotifyInt,
-      offset: SpotifyInt,
-    ) => Promise<unknown>;
-    description: string;
-    invertPositions?: boolean;
-  },
-  opts?: PageOpts,
-): Promise<TracksWithPositionsResult> {
-  let position = 0;
-  return runPagination<TracksWithPositionsResult>(ctx, {
-    fetch: source.fetch,
-    description: source.description,
-    init: () => ({ artistData: new Map(), totalTracks: 0 }),
-    onPage: (acc, items, { total, pageIndex }) => {
-      if (pageIndex === 0) acc.totalTracks = total;
-      for (const item of items as Item[]) {
-        const track = item.track;
-        if (track?.artists) {
-          const logicalPosition = source.invertPositions
-            ? total - 1 - position
-            : position;
-          const artists = track.artists as Array<{ id: string; name: string }>;
-          artists.forEach((artist, index) => {
-            const isFeatured = index !== 0;
-            let data = acc.artistData.get(artist.name);
-            if (!data) {
-              data = {
-                primaryCount: 0,
-                featuredCount: 0,
-                latestPosition: -1,
-                featuredAtLatest: false,
-                id: artist.id,
-              };
-              acc.artistData.set(artist.name, data);
-            }
-            if (isFeatured) data.featuredCount++;
-            else data.primaryCount++;
-            if (logicalPosition > data.latestPosition) {
-              data.latestPosition = logicalPosition;
-              data.featuredAtLatest = isFeatured;
-            }
-          });
-        }
-        position++;
-      }
-    },
-    opts,
-  });
-}
-
-/** Scan playlist tracks with position info for recency calculations. */
-export function getPlaylistTracksWithPositions(
-  ctx: SpotifyGateway,
-  playlistId: string,
-  opts?: PageOpts,
-): Promise<TracksWithPositionsResult> {
-  return paginateTracksWithPositions(
-    ctx,
-    {
-      fetch: (api, l, o) =>
-        api.playlists.getPlaylistItems(playlistId, undefined, undefined, l, o),
-      description: `playlist tracks with positions ${playlistId}`,
-    },
-    opts,
-  );
-}
-
-/**
- * Scan Liked Songs (saved tracks) with position info for recency calculations.
- * Liked Songs are newest-first, so positions are inverted to match playlist
- * convention (higher position = more recent).
- */
-export function getLikedTracksWithPositions(
-  ctx: SpotifyGateway,
-  opts?: PageOpts,
-): Promise<TracksWithPositionsResult> {
-  return paginateTracksWithPositions(
-    ctx,
-    {
-      fetch: (api, l, o) => api.currentUser.tracks.savedTracks(l, o),
-      description: 'liked songs with positions',
-      invertPositions: true,
-    },
-    opts,
-  );
 }

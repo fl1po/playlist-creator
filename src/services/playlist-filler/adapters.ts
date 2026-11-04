@@ -72,8 +72,8 @@ export function fillPorts(
       popularity: deezerPopularitySource(checkAbort),
       checkpoints: batchCacheCheckpoints(new DurableFillStorage(data)),
     },
-    weekly: spotifyWeeklyPlaylistStore(gateway),
-    history: promotionReads(gateway, reads),
+    weekly: spotifyWeeklyPlaylistStore(session),
+    history: promotionReads(session, reads),
     recalculation: spotifyRecalculationPorts(session, { reads }),
     ai:
       apiKey === undefined

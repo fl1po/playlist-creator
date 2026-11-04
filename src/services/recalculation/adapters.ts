@@ -1,8 +1,9 @@
 import {
-  getLikedTracksWithPositions,
-  getPlaylistTracksWithPositions,
-} from '../../lib/pagination.js';
-import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
+  itemsOf,
+  type PlaylistItem,
+  playlistReads,
+} from '../../lib/playlist-reads/index.js';
+import type { PlaylistArtistData } from '../../lib/types.js';
 import type { UserSession } from '../../lib/user-session.js';
 import {
   deezerPopularitySource,
@@ -12,10 +13,56 @@ import {
 import type { ReleaseReads } from '../week-collection/index.js';
 import { spotifyWeeklyPlaylistStore } from '../weekly-playlists/adapters.js';
 import { unprocessedWeeklyPlaylists } from '../weekly-playlists/index.js';
-import type { RecalculationPorts, SourceReads } from './index.js';
+import type { RecalculationPorts, SourceReads, SourceScan } from './index.js';
 
-/** Production SourceReads: snapshot ids and position-aware scans via Spotify. */
-export function spotifySourceReads(ctx: SpotifyGateway): SourceReads {
+/**
+ * Per-artist counts and latest position over a source's items. Positions run
+ * oldest to newest (higher is more recent) and count every slot; `newestFirst`
+ * flips Liked Songs, which Spotify lists newest first.
+ */
+export function scanPositions(
+  items: PlaylistItem[],
+  newestFirst = false,
+): Omit<SourceScan, 'cached'> {
+  const artistData = new Map<string, PlaylistArtistData>();
+  const total = items.length;
+  items.forEach((item, position) => {
+    if (!item.track) return;
+    const logicalPosition = newestFirst ? total - 1 - position : position;
+    item.track.artists.forEach((artist, index) => {
+      const isFeatured = index !== 0;
+      let data = artistData.get(artist.name);
+      if (!data) {
+        data = {
+          primaryCount: 0,
+          featuredCount: 0,
+          latestPosition: -1,
+          featuredAtLatest: false,
+          id: artist.id,
+        };
+        artistData.set(artist.name, data);
+      }
+      if (isFeatured) data.featuredCount++;
+      else data.primaryCount++;
+      if (logicalPosition > data.latestPosition) {
+        data.latestPosition = logicalPosition;
+        data.featuredAtLatest = isFeatured;
+      }
+    });
+  });
+  return { artistData, totalTracks: total };
+}
+
+/**
+ * Production SourceReads: snapshot ids via Spotify, scans over the session's
+ * playlist reads, so a source that didn't change since any earlier read costs
+ * no item pages.
+ */
+export function spotifySourceReads(
+  session: Pick<UserSession, 'gateway' | 'data'>,
+): SourceReads {
+  const ctx = session.gateway;
+  const playlists = playlistReads(session);
   return {
     async snapshots(sources) {
       const snapshotOf = async (playlistId: string, what: string) => {
@@ -51,16 +98,16 @@ export function spotifySourceReads(ctx: SpotifyGateway): SourceReads {
       };
     },
 
-    scan(source, sources, onProgress) {
-      if (source === 'aw')
-        return getPlaylistTracksWithPositions(ctx, sources.allWeeklyId, {
-          onProgress,
-        });
-      return sources.useLikedSongs
-        ? getLikedTracksWithPositions(ctx, { onProgress })
-        : getPlaylistTracksWithPositions(ctx, sources.bestOfAllWeeklyId, {
-            onProgress,
-          });
+    async scan(source, sources, onProgress) {
+      const liked = source === 'boaw' && sources.useLikedSongs;
+      const read = liked
+        ? await playlists.likedSongs({ onProgress })
+        : await playlists.tracks(
+            source === 'aw' ? sources.allWeeklyId : sources.bestOfAllWeeklyId,
+            { onProgress },
+          );
+      const scan = scanPositions(itemsOf(read), liked);
+      return { ...scan, cached: read.success && read.cached };
     },
   };
 }
@@ -74,14 +121,14 @@ export function spotifyRecalculationPorts(
   session: UserSession,
   opts: { reads?: ReleaseReads } = {},
 ): RecalculationPorts {
-  const { gateway: ctx, userId, data } = session;
+  const { userId, data } = session;
   return {
-    sources: spotifySourceReads(ctx),
+    sources: spotifySourceReads(session),
     unprocessed: {
       find(allWeeklyId, log) {
         return unprocessedWeeklyPlaylists(
           {
-            store: spotifyWeeklyPlaylistStore(ctx),
+            store: spotifyWeeklyPlaylistStore(session),
             data,
             userId,
           },
@@ -91,9 +138,11 @@ export function spotifyRecalculationPorts(
       },
     },
     sync: {
-      reads: promotionReads(ctx, opts.reads),
-      popularity: deezerPopularitySource(() => ctx.signal?.throwIfAborted()),
-      writes: spotifyPlaylistWrites(ctx),
+      reads: promotionReads(session, opts.reads),
+      popularity: deezerPopularitySource(() =>
+        session.gateway.signal?.throwIfAborted(),
+      ),
+      writes: spotifyPlaylistWrites(session.gateway),
     },
   };
 }

@@ -101,13 +101,18 @@ test('weeks list newest first, by date rather than by name', async (t) => {
 
 // ── Reading a week live ─────────────────────────────────────────────────────
 
-test('present picks list highest confidence first; removed ones only count', async () => {
+test('present picks list highest confidence first; removed ones only count', async (t) => {
   const { gateway } = fakeSpotify([
     { name: '01.01.26', albumIds: ['x'] },
     { name: '02.01.26', albumIds: ['r', 'a', 'b', 'b'] },
   ]);
 
-  const week = await readWeekPicks(gateway, USER, '02.01.26', WEEK.picks);
+  const week = await readWeekPicks(
+    { gateway, data: tempCache(t) },
+    USER,
+    '02.01.26',
+    WEEK.picks,
+  );
 
   assert.deepEqual(week, {
     exists: true,
@@ -116,31 +121,51 @@ test('present picks list highest confidence first; removed ones only count', asy
   });
 });
 
-test('a partly pruned album still counts as present', async () => {
+test('a partly pruned album still counts as present', async (t) => {
   // Album "b" had several tracks; one is left.
   const { gateway } = fakeSpotify([{ name: '02.01.26', albumIds: ['b'] }]);
 
-  const week = await readWeekPicks(gateway, USER, '02.01.26', WEEK.picks);
+  const week = await readWeekPicks(
+    { gateway, data: tempCache(t) },
+    USER,
+    '02.01.26',
+    WEEK.picks,
+  );
 
   assert.deepEqual(week, { exists: true, total: 3, present: [pick('b', 90)] });
 });
 
-test('a fully pruned week keeps its pick count, unlike a zero-pick week', async () => {
+test('a fully pruned week keeps its pick count, unlike a zero-pick week', async (t) => {
   const { gateway } = fakeSpotify([{ name: '02.01.26', albumIds: ['r'] }]);
 
-  const pruned = await readWeekPicks(gateway, USER, '02.01.26', WEEK.picks);
-  const empty = await readWeekPicks(gateway, USER, '02.01.26', []);
+  const pruned = await readWeekPicks(
+    { gateway, data: tempCache(t) },
+    USER,
+    '02.01.26',
+    WEEK.picks,
+  );
+  const empty = await readWeekPicks(
+    { gateway, data: tempCache(t) },
+    USER,
+    '02.01.26',
+    [],
+  );
 
   assert.deepEqual(pruned, { exists: true, total: 3, present: [] });
   assert.deepEqual(empty, { exists: true, total: 0, present: [] });
 });
 
-test('a deleted weekly playlist reads as gone, without reading tracks', async () => {
+test('a deleted weekly playlist reads as gone, without reading tracks', async (t) => {
   const { gateway, calls } = fakeSpotify([
     { name: '09.01.26', albumIds: ['a'] },
   ]);
 
-  const week = await readWeekPicks(gateway, USER, '02.01.26', WEEK.picks);
+  const week = await readWeekPicks(
+    { gateway, data: tempCache(t) },
+    USER,
+    '02.01.26',
+    WEEK.picks,
+  );
 
   assert.deepEqual(week, { exists: false });
   assert.deepEqual(calls, ['list']);

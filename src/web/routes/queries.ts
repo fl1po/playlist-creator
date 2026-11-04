@@ -300,7 +300,7 @@ export function queryRoutes(ctx: RouteContext): Router {
           'user profile',
         ),
       );
-      const week = await readWeekPicks(session.gateway, me.id, date, picks);
+      const week = await readWeekPicks(session, me.id, date, picks);
       res.json({ ok: true, ...week });
     }),
   );

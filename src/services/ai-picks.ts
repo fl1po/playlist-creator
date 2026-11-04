@@ -1,8 +1,8 @@
 import { parseDate } from '../domain/tracks.js';
 import { getPlaylistTracksWithArtists } from '../lib/pagination.js';
-import type { SpotifyGateway } from '../lib/spotify/gateway.js';
 import type { UserData } from '../lib/user-data/index.js';
 import { AI_PICKS } from '../lib/user-data/index.js';
+import type { UserSession } from '../lib/user-session.js';
 import type { AiPicksRecord } from './week-collection/index.js';
 import { spotifyWeeklyPlaylistStore } from './weekly-playlists/adapters.js';
 import { findWeeklyPlaylist } from './weekly-playlists/index.js';
@@ -67,13 +67,14 @@ export type WeekPicks =
 
 /** Read the date's weekly playlist live to see which picks are still in it. */
 export async function readWeekPicks(
-  gateway: SpotifyGateway,
+  session: Pick<UserSession, 'gateway' | 'data'>,
   userId: string,
   date: string,
   picks: AiPick[],
 ): Promise<WeekPicks> {
+  const { gateway } = session;
   const playlist = await findWeeklyPlaylist(
-    spotifyWeeklyPlaylistStore(gateway),
+    spotifyWeeklyPlaylistStore(session),
     userId,
     date,
   );

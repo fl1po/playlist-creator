@@ -119,28 +119,17 @@ export interface DateResult {
   error?: string;
 }
 
-export interface CachedScanResult {
-  artistData: Record<string, PlaylistArtistData>;
-  totalTracks: number;
-}
-
 /**
  * What recalculation remembers between runs: the source snapshots it last
- * scored against, and the scans it can reuse while a source is unchanged.
+ * scored against. The sources' tracks live in playlist reads (ADR-0011).
  */
 export interface RecalculationState {
   allWeeklySnapshot?: string;
   bestOfAllWeeklySnapshot?: string;
-  awScanCache?: CachedScanResult;
-  boawScanCache?: CachedScanResult;
 }
 
-/**
- * The fill's week progress. Caches written before recalculation got its own
- * state still carry the `RecalculationState` fields; recalculation reads them
- * once as a migration and never writes them here again.
- */
-export interface BatchCache extends Partial<RecalculationState> {
+/** The fill's week progress. */
+export interface BatchCache {
   artistSearchProgress?: {
     date: string;
     artistsSearched: number;
@@ -167,33 +156,4 @@ export interface PlaylistArtistData {
 export interface PlaylistScanResult {
   artistData: Map<string, PlaylistArtistData>;
   totalTracks: number;
-}
-
-/**
- * Whether a cached scan uses the current role-aware shape. Caches written
- * before the featured-multiplier change carry the legacy {positions,trackCount}
- * shape; reusing them would read `undefined` role fields and produce NaN scores,
- * so callers must treat a stale-shaped cache as a miss and re-scan.
- */
-export function isRoleTaggedCache(cached: CachedScanResult): boolean {
-  const first = Object.values(cached.artistData)[0];
-  if (!first) return true; // empty cache is trivially compatible
-  return (
-    typeof first.primaryCount === 'number' &&
-    typeof first.latestPosition === 'number'
-  );
-}
-
-export function toScanResult(cached: CachedScanResult): PlaylistScanResult {
-  return {
-    artistData: new Map(Object.entries(cached.artistData)),
-    totalTracks: cached.totalTracks,
-  };
-}
-
-export function toCachedScanResult(scan: PlaylistScanResult): CachedScanResult {
-  return {
-    artistData: Object.fromEntries(scan.artistData),
-    totalTracks: scan.totalTracks,
-  };
 }

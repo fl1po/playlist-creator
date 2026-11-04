@@ -100,6 +100,32 @@ export const WEEKLY_PLAYLIST_TRACKS: Dataset<
   isEmpty: (v) => !v || Object.keys(v).length === 0,
 };
 
+/**
+ * One playlist's items as of one snapshot, in the playlist reads module's
+ * compact encoding. `readAt` (ms) drives pruning of entries nobody reads.
+ */
+export interface StoredPlaylistTracks {
+  snapshot: string;
+  readAt: number;
+  items: unknown[];
+}
+
+/** Owned by the playlist reads module: tracks by playlist id (ADR-0011). */
+export const PLAYLIST_TRACKS: Dataset<Record<string, StoredPlaylistTracks>> = {
+  name: 'playlistTracks',
+  file: 'playlist-tracks.json',
+  isEmpty: (v) => !v || Object.keys(v).length === 0,
+};
+
+/**
+ * Owned by the playlist reads module: Liked Songs, newest first, keyed by
+ * `total:newest added_at` since Liked Songs has no snapshot id (ADR-0011).
+ */
+export const LIKED_SONGS_TRACKS: Dataset<StoredPlaylistTracks> = {
+  name: 'likedSongsTracks',
+  file: 'liked-songs-tracks.json',
+};
+
 /** Each opted-in week's AI picks or skip reason, keyed by weekly playlist date. */
 export const AI_PICKS: Dataset<Record<string, AiPicksRecord>> = {
   name: 'aiPicks',
@@ -167,6 +193,8 @@ export const DATASETS: ReadonlyArray<Dataset<unknown>> = [
   LISTENING_TIME,
   AW_BREAKDOWN,
   WEEKLY_PLAYLIST_TRACKS,
+  PLAYLIST_TRACKS,
+  LIKED_SONGS_TRACKS,
   AI_PICKS,
   DEEZER_ARTISTS,
   RELATED_ARTIST_GRAPH,

@@ -1,8 +1,7 @@
-import {
-  getAllPlaylistTracks,
-  getPlaylistTracksWithArtists,
-} from '../../lib/pagination.js';
+import { getPlaylistTracksWithArtists } from '../../lib/pagination.js';
+import { itemsOf, playlistReads } from '../../lib/playlist-reads/index.js';
 import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
+import type { UserSession } from '../../lib/user-session.js';
 import type { ReleaseReads } from '../week-collection/index.js';
 import { spotifyReleaseReads } from '../week-collection/spotify-reads.js';
 import type { PlaylistWrites, PromotionReads } from './index.js';
@@ -15,21 +14,30 @@ const WRITE_CHUNK = 100;
 /**
  * Production PromotionReads adapter: the week-collection ReleaseReads adapter
  * plus the two playlist-track readers. Pass `reads` to share one operation's
- * remembered release reads (a fill's) instead of starting fresh.
+ * remembered release reads (a fill's) instead of starting fresh. Track ids
+ * come through the session's playlist reads (ADR-0011).
  */
 export function promotionReads(
-  ctx: SpotifyGateway,
-  reads: ReleaseReads = spotifyReleaseReads(ctx),
+  session: Pick<UserSession, 'gateway' | 'data'>,
+  reads: ReleaseReads = spotifyReleaseReads(session.gateway),
 ): PromotionReads {
+  const playlists = playlistReads(session);
   return {
     ...reads,
     playlistTracksWithArtists(playlistId) {
-      return getPlaylistTracksWithArtists(ctx, playlistId);
+      return getPlaylistTracksWithArtists(session.gateway, playlistId);
     },
-    playlistTrackIds(playlistId) {
-      return getAllPlaylistTracks(ctx, playlistId);
+    async playlistTrackIds(playlistId) {
+      return trackIdsOf(await playlists.tracks(playlistId));
     },
   };
+}
+
+/** Every track id on a read playlist, in order; throws if the read failed. */
+export function trackIdsOf(
+  read: Awaited<ReturnType<ReturnType<typeof playlistReads>['tracks']>>,
+): string[] {
+  return itemsOf(read).flatMap((i) => (i.track ? [i.track.id] : []));
 }
 
 /**

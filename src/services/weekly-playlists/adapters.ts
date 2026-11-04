@@ -1,19 +1,23 @@
-import {
-  getAllPlaylistTracks,
-  getAllUserPlaylists,
-} from '../../lib/pagination.js';
-import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
+import { getAllUserPlaylists } from '../../lib/pagination.js';
+import { playlistReads } from '../../lib/playlist-reads/index.js';
 import type { SimplePlaylist } from '../../lib/types.js';
-import { spotifyPlaylistWrites } from '../promotion-sync/adapters.js';
+import type { UserSession } from '../../lib/user-session.js';
+import {
+  spotifyPlaylistWrites,
+  trackIdsOf,
+} from '../promotion-sync/adapters.js';
 import type { WeeklyPlaylistStore } from './index.js';
 
 /**
- * Production WeeklyPlaylistStore over SpotifyGateway + pagination. Track
- * writes reuse promotion sync's adapter (100-item chunks, uri formatting).
+ * Production WeeklyPlaylistStore over the session's gateway. Track reads go
+ * through its playlist reads (ADR-0011); writes reuse promotion sync's
+ * adapter (100-item chunks, uri formatting).
  */
 export function spotifyWeeklyPlaylistStore(
-  ctx: SpotifyGateway,
+  session: Pick<UserSession, 'gateway' | 'data'>,
 ): WeeklyPlaylistStore {
+  const ctx = session.gateway;
+  const playlists = playlistReads(session);
   const writes = spotifyPlaylistWrites(ctx);
   return {
     list(userId, onProgress) {
@@ -35,8 +39,8 @@ export function spotifyWeeklyPlaylistStore(
       return { id: result.data.id, url: result.data.external_urls.spotify };
     },
     addTracks: writes.addTracks,
-    trackIds(playlistId) {
-      return getAllPlaylistTracks(ctx, playlistId);
+    async trackIds(playlistId) {
+      return trackIdsOf(await playlists.tracks(playlistId));
     },
   };
 }

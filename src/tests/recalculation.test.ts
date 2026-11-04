@@ -5,17 +5,11 @@ import path from 'node:path';
 import { test } from 'node:test';
 import type { PlaylistTrackWithArtists } from '../lib/pagination.js';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
-import {
-  type PlaylistScanResult,
-  type SimplePlaylist,
-  toCachedScanResult,
-} from '../lib/types.js';
+import type { PlaylistScanResult, SimplePlaylist } from '../lib/types.js';
 import { DEFAULT_USER_CONFIG, type UserConfig } from '../lib/user-config.js';
 import {
-  BATCH_CACHE,
   localUserData,
   PENDING_PRIORITY_CHANGES,
-  TRUSTED_ARTISTS,
   type UserData,
 } from '../lib/user-data/index.js';
 import type { UserSession } from '../lib/user-session.js';
@@ -70,13 +64,21 @@ function fixtureSources(initial: { aw: Plays; boaw?: Plays }) {
     boawVersion: 1,
     scans: { aw: 0, boaw: 0 },
   };
+  // Like playlist reads: a source's tracks are fetched only when its
+  // version moved; `scans` counts those fetches.
+  const held: Record<Source, number> = { aw: 0, boaw: 0 };
   const reads: SourceReads = {
     async snapshots() {
       return { aw: `aw-${world.awVersion}`, boaw: `boaw-${world.boawVersion}` };
     },
     async scan(source: Source) {
-      world.scans[source]++;
-      return scanOf(world[source]);
+      const version = source === 'aw' ? world.awVersion : world.boawVersion;
+      const cached = held[source] === version;
+      if (!cached) {
+        world.scans[source]++;
+        held[source] = version;
+      }
+      return { ...scanOf(world[source]), cached };
     },
   };
   return {
@@ -405,24 +407,4 @@ test('a promotion undone before any sync nets out to nothing pending', async (t)
 
   assert.deepEqual(undone.changes, [{ artist: 'Flicker', from: 2, to: 3 }]);
   assert.deepEqual(undone.pending, []);
-});
-
-test('state left in batch-cache.json by older versions is picked up once', async (t) => {
-  const sources = fixtureSources({ aw: { Steady: 3 } });
-  const first = await recalc(config(), setup(t, sources).deps);
-  // A second store in the pre-split layout: the roster, plus snapshots and
-  // scans kept in the batch cache instead of recalculation's own state.
-  const legacy = setup(t, sources);
-  await legacy.cache.save(TRUSTED_ARTISTS, first.roster);
-  await legacy.cache.save(BATCH_CACHE, {
-    allWeeklySnapshot: 'aw-1',
-    bestOfAllWeeklySnapshot: 'boaw-1',
-    awScanCache: toCachedScanResult(scanOf({ Steady: 3 })),
-    boawScanCache: toCachedScanResult(scanOf({})),
-  });
-
-  const result = await recalc(config(), legacy.deps);
-
-  assert.equal(result.outcome, 'unchanged');
-  assert.deepEqual(sources.world.scans, { aw: 1, boaw: 1 }); // no new scans
 });

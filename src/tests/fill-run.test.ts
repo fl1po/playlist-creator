@@ -357,6 +357,7 @@ test('a fill aborted after a mid-fill recalculation leaves the sync for the next
           ],
         ]),
         totalTracks: 1000,
+        cached: false,
       };
     },
   };
@@ -435,7 +436,7 @@ function unchangedRecalculation(
       },
       async scan() {
         calls.push('scan');
-        return { artistData: new Map(), totalTracks: 0 };
+        return { artistData: new Map(), totalTracks: 0, cached: false };
       },
     },
     unprocessed: {
@@ -1207,4 +1208,59 @@ test('the production fill ports share one release reads memo between the weeks a
   await fillPorts(session, {}).week.reads.artistAlbums('art-a');
 
   assert.equal(albumReads, 2);
+});
+
+test('the production fill ports read All Weekly once for history, recalculation and the sync', async (t) => {
+  const awPages: number[] = [];
+  const aw = Array.from({ length: 60 }, (_, i) => ({
+    added_at: '2026-01-01T00:00:00Z',
+    track: {
+      id: `aw-${i}`,
+      uri: `spotify:track:aw-${i}`,
+      name: `Song ${i}`,
+      duration_ms: 1000,
+      artists: [{ id: 'ar-1', name: 'Steady' }],
+      album: { id: 'al-1', name: 'A', release_date: '2026-01-01', artists: [] },
+    },
+  }));
+  const api = {
+    playlists: {
+      async getPlaylist() {
+        return { snapshot_id: 'aw@1' };
+      },
+      async getPlaylistItems(
+        _id: string,
+        _market: unknown,
+        _fields: unknown,
+        limit: number,
+        offset: number,
+      ) {
+        awPages.push(offset);
+        return { total: aw.length, items: aw.slice(offset, offset + limit) };
+      },
+      async getUsersPlaylists() {
+        return { items: [], total: 0 };
+      },
+    },
+  };
+  const session = {
+    gateway: fixtureGateway(api),
+    userId: 'user-1',
+    data: localUserData(tmpDataDir(t)),
+  };
+  const ports = fillPorts(session, {});
+  const sources = {
+    ...DEFAULT_USER_CONFIG.sourcePlaylists,
+    allWeeklyId: 'aw',
+    useLikedSongs: false,
+  };
+
+  await ports.history.playlistTrackIds('aw');
+  const scan = await ports.recalculation.sources.scan('aw', sources, () => {});
+  const found = await ports.recalculation.unprocessed.find('aw', () => {});
+
+  assert.deepEqual(awPages, [0, 50]);
+  assert.equal(scan.cached, true);
+  assert.equal(scan.artistData.get('Steady')?.primaryCount, 60);
+  assert.equal(found.awTrackIds.size, 60);
 });

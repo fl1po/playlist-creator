@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { Redis } from '@upstash/redis';
 import {
   DEFAULT_USER_CONFIG,
@@ -14,7 +15,9 @@ export * from './datasets.js';
  * One user's user data (CONTEXT.md): every dataset, config included. Built
  * once per session or CLI run, in one of two modes:
  * - durable: the file is read first, and Redis keeps the copy that survives
- *   an ephemeral disk. A Redis failure never fails a load or a save.
+ *   an ephemeral disk. A Redis failure never fails a load or a save; it is
+ *   logged. Values over `COMPRESS_OVER` bytes are gzipped in Redis only (the
+ *   file stays readable JSON), so a large dataset fits Upstash's request size.
  * - local: file only.
  * A dataset that isn't there loads as null.
  */
@@ -114,6 +117,29 @@ export async function copyUserData(
   return copied;
 }
 
+/** Redis copies larger than this are stored gzipped and base64-encoded. */
+export const COMPRESS_OVER = 256 * 1024;
+const GZIP_PREFIX = 'gz:';
+
+/** The Redis encoding of a JSON text: as-is, or `gz:` + base64 gzip when large. */
+export function encodeForRedis(json: string): string {
+  if (json.length <= COMPRESS_OVER) return json;
+  return GZIP_PREFIX + gzipSync(json).toString('base64');
+}
+
+/** The JSON text back from what `encodeForRedis` wrote (or a plain value). */
+export function decodeFromRedis(raw: string): string {
+  if (!raw.startsWith(GZIP_PREFIX)) return raw;
+  return gunzipSync(
+    Buffer.from(raw.slice(GZIP_PREFIX.length), 'base64'),
+  ).toString('utf8');
+}
+
+function warnRedis(op: string, dataset: Dataset<unknown>, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  console.warn(`[user-data] Redis ${op} of ${dataset.name} failed: ${message}`);
+}
+
 function defaultIsEmpty<T>(value: T): boolean {
   return value === null || value === undefined;
 }
@@ -141,11 +167,11 @@ function createUserData(
       try {
         const raw = await redis.get(key(dataset));
         if (raw !== null) {
-          const parsed = JSON.parse(raw) as T;
+          const parsed = JSON.parse(decodeFromRedis(raw)) as T;
           if (!isEmpty(parsed)) return parsed;
         }
-      } catch {
-        /* redis optional */
+      } catch (err) {
+        warnRedis('load', dataset, err);
       }
     }
 
@@ -158,9 +184,9 @@ function createUserData(
     fs.writeFileSync(filePath(dataset), JSON.stringify(value, null, 2));
     if (redis) {
       try {
-        await redis.set(key(dataset), JSON.stringify(value));
-      } catch {
-        /* redis optional */
+        await redis.set(key(dataset), encodeForRedis(JSON.stringify(value)));
+      } catch (err) {
+        warnRedis('save', dataset, err);
       }
     }
   }
@@ -174,8 +200,8 @@ function createUserData(
     if (redis) {
       try {
         await redis.del(key(dataset));
-      } catch {
-        /* redis optional */
+      } catch (err) {
+        warnRedis('delete', dataset, err);
       }
     }
   }
