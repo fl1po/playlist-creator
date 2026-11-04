@@ -1,4 +1,5 @@
-import { getPlaylistTracksDetailed } from '../../lib/pagination.js';
+import { itemsOf, playlistReads } from '../../lib/playlist-reads/index.js';
+import { trackKey } from '../../lib/track-utils.js';
 import { spotifyWeeklyPlaylistStore } from '../../services/weekly-playlists/adapters.js';
 import { unprocessedWeeklyPlaylists } from '../../services/weekly-playlists/index.js';
 import type {
@@ -46,8 +47,21 @@ export const dedupScanTask: TaskDefinition<DedupScanEvents> = {
     }> = [];
     let totalDuplicates = 0;
 
+    const playlists = playlistReads(tc.session);
     await tc.iter(candidates, async (pl) => {
-      const tracks = await getPlaylistTracksDetailed(tc.session.gateway, pl.id);
+      const read = await playlists.tracks(pl.id, { snapshot: pl.snapshotId });
+      const tracks = itemsOf(read).flatMap(({ track, uri }) => {
+        if (!(track && uri)) return [];
+        const artistNames = track.artists.map((a) => a.name);
+        return [
+          {
+            uri,
+            name: track.name,
+            key: trackKey(artistNames, track.name),
+            artists: artistNames.join(', '),
+          },
+        ];
+      });
 
       const groups = new Map<
         string,

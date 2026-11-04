@@ -1,5 +1,8 @@
-import { getPlaylistTracksWithArtists } from '../../lib/pagination.js';
-import { itemsOf, playlistReads } from '../../lib/playlist-reads/index.js';
+import {
+  itemsOf,
+  type PlaylistRead,
+  playlistReads,
+} from '../../lib/playlist-reads/index.js';
 import type { SpotifyGateway } from '../../lib/spotify/gateway.js';
 import type { UserSession } from '../../lib/user-session.js';
 import type { ReleaseReads } from '../week-collection/index.js';
@@ -14,8 +17,10 @@ const WRITE_CHUNK = 100;
 /**
  * Production PromotionReads adapter: the week-collection ReleaseReads adapter
  * plus the two playlist-track readers. Pass `reads` to share one operation's
- * remembered release reads (a fill's) instead of starting fresh. Track ids
- * come through the session's playlist reads (ADR-0011).
+ * remembered release reads (a fill's) instead of starting fresh. Playlist
+ * tracks come through the session's playlist reads (ADR-0011), always with a
+ * live snapshot check: the removal phase edits the very playlists the
+ * addition phase reads next, so a listing's snapshot would be stale.
  */
 export function promotionReads(
   session: Pick<UserSession, 'gateway' | 'data'>,
@@ -24,8 +29,21 @@ export function promotionReads(
   const playlists = playlistReads(session);
   return {
     ...reads,
-    playlistTracksWithArtists(playlistId) {
-      return getPlaylistTracksWithArtists(session.gateway, playlistId);
+    async playlistTracksWithArtists(playlistId) {
+      const read = await playlists.tracks(playlistId);
+      return itemsOf(read).flatMap(({ track }) =>
+        track
+          ? [
+              {
+                uri: `spotify:track:${track.id}`,
+                id: track.id,
+                name: track.name,
+                artistNames: track.artists.map((a) => a.name),
+                albumId: track.album.id,
+              },
+            ]
+          : [],
+      );
     },
     async playlistTrackIds(playlistId) {
       return trackIdsOf(await playlists.tracks(playlistId));
@@ -34,9 +52,7 @@ export function promotionReads(
 }
 
 /** Every track id on a read playlist, in order; throws if the read failed. */
-export function trackIdsOf(
-  read: Awaited<ReturnType<ReturnType<typeof playlistReads>['tracks']>>,
-): string[] {
+export function trackIdsOf(read: PlaylistRead): string[] {
   return itemsOf(read).flatMap((i) => (i.track ? [i.track.id] : []));
 }
 

@@ -1,8 +1,9 @@
 import {
-  getPlaylistTracksGroupedByWeek,
+  groupTracksByWeek,
   type WeekBreakdownEntry,
 } from '../../domain/aw-breakdown.js';
 import { formatHm } from '../../domain/tracks.js';
+import { itemsOf, playlistReads } from '../../lib/playlist-reads/index.js';
 import { AW_BREAKDOWN } from '../../lib/user-data/index.js';
 import type {
   BaseEvents,
@@ -10,8 +11,8 @@ import type {
   TaskDefinition,
 } from '../task-runner.js';
 
-interface AwBreakdownCache {
-  snapshotId: string;
+/** The last breakdown, kept until the next; the page shows it on load. */
+interface AwBreakdownResult {
   totalTracks: number;
   totalDurationMs: number;
   weekCount: number;
@@ -19,7 +20,7 @@ interface AwBreakdownCache {
 }
 
 interface AwBreakdownEvents extends BaseEvents {
-  'awBreakdown:complete': AwBreakdownCache;
+  'awBreakdown:complete': AwBreakdownResult;
 }
 
 export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
@@ -31,55 +32,25 @@ export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
     const userConfig = await tc.userConfig();
     const awId = userConfig.sourcePlaylists.allWeeklyId;
 
-    const cached = (await tc.session.data.load(
-      AW_BREAKDOWN,
-    )) as AwBreakdownCache | null;
-
-    const awInfo = await tc.session.gateway.call(
-      (api) => api.playlists.getPlaylist(awId, undefined, 'snapshot_id'),
-      'AW playlist info',
-    );
-    const liveSnapshot = awInfo.success ? awInfo.data.snapshot_id : undefined;
-
-    const force = !!tc.body.force;
-
-    if (
-      !force &&
-      cached &&
-      liveSnapshot &&
-      cached.snapshotId === liveSnapshot
-    ) {
-      tc.emit('awBreakdown:complete', cached);
-      tc.log(
-        'success',
-        `AW breakdown: ${cached.weekCount} weeks, ${cached.totalTracks} tracks (cached)`,
-      );
-      return;
-    }
-
-    tc.log('info', 'Fetching AW tracks...');
-
-    const weeks = await getPlaylistTracksGroupedByWeek(
-      tc.session.gateway,
-      awId,
-      {
-        onProgress: (fetched, total) => {
-          tc.checkAbort();
-          tc.progress.bar(
-            'aw',
-            fetched,
-            total,
-            `Fetching tracks: ${fetched}/${total}`,
-          );
-        },
+    // All Weekly comes from playlist reads, so an unchanged one costs a
+    // single snapshot call and the grouping is recomputed in memory.
+    const read = await playlistReads(tc.session).tracks(awId, {
+      onProgress: (fetched, total) => {
+        tc.checkAbort();
+        tc.progress.bar(
+          'aw',
+          fetched,
+          total,
+          `Fetching tracks: ${fetched}/${total}`,
+        );
       },
-    );
+    });
+    const weeks = groupTracksByWeek(itemsOf(read));
 
     const totalTracks = weeks.reduce((s, w) => s + w.trackCount, 0);
     const totalDurationMs = weeks.reduce((s, w) => s + w.durationMs, 0);
 
-    const result: AwBreakdownCache = {
-      snapshotId: liveSnapshot ?? '',
+    const result: AwBreakdownResult = {
       totalTracks,
       totalDurationMs,
       weekCount: weeks.length,
@@ -95,7 +66,7 @@ export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
       weeks.length > 0 ? formatHm(totalDurationMs / weeks.length) : '0m';
     tc.log(
       'success',
-      `AW breakdown: ${weeks.length} weeks, ${totalTracks} tracks, ${formatHm(totalDurationMs)} · avg ${avgTracks} tracks/${avgDuration} per week`,
+      `AW breakdown: ${weeks.length} weeks, ${totalTracks} tracks, ${formatHm(totalDurationMs)} · avg ${avgTracks} tracks/${avgDuration} per week${read.success && read.cached ? ' (cached)' : ''}`,
     );
   },
 };

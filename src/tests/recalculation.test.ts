@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import type { PlaylistTrackWithArtists } from '../lib/pagination.js';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
 import type { PlaylistScanResult, SimplePlaylist } from '../lib/types.js';
 import { DEFAULT_USER_CONFIG, type UserConfig } from '../lib/user-config.js';
@@ -13,7 +12,10 @@ import {
   type UserData,
 } from '../lib/user-data/index.js';
 import type { UserSession } from '../lib/user-session.js';
-import type { PlaylistWrites } from '../services/promotion-sync/index.js';
+import type {
+  PlaylistTrackWithArtists,
+  PlaylistWrites,
+} from '../services/promotion-sync/index.js';
 import {
   describeRecalculationResult,
   describeSync,

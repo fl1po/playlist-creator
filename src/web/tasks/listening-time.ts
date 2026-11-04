@@ -1,10 +1,6 @@
 import { formatHm } from '../../domain/tracks.js';
-import { getPlaylistTotalDuration } from '../../lib/pagination.js';
-import {
-  DURATION_SNAPSHOTS,
-  type DurationSnapshots,
-  LISTENING_TIME,
-} from '../../lib/user-data/index.js';
+import { itemsOf, playlistReads } from '../../lib/playlist-reads/index.js';
+import { LISTENING_TIME } from '../../lib/user-data/index.js';
 import { spotifyWeeklyPlaylistStore } from '../../services/weekly-playlists/adapters.js';
 import { unprocessedWeeklyPlaylists } from '../../services/weekly-playlists/index.js';
 import type {
@@ -50,60 +46,30 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
       (msg, level) => tc.log(level ?? 'info', msg),
     );
 
-    const force = !!tc.body.force;
-
-    const snapshots: DurationSnapshots = force
-      ? {}
-      : ((await tc.session.data.load(DURATION_SNAPSHOTS)) ?? {});
-
+    // Each playlist's tracks come from playlist reads with the listing's
+    // snapshot, so an unchanged one costs no call at all.
+    const playlists = playlistReads(tc.session);
     let totalMs = 0;
     let totalTracks = 0;
     let cached = 0;
     const perPlaylist: ListeningTimeResult['perPlaylist'] = [];
 
     await tc.iter(candidates, async (pl, i) => {
-      let plMs: number;
-      let plTracks: number;
-
-      const plInfo = await tc.session.gateway.call(
-        (api) =>
-          api.playlists.getPlaylist(
-            pl.id,
-            undefined,
-            'snapshot_id,description',
-          ),
-        `playlist info ${pl.id}`,
+      const read = await playlists.tracks(pl.id, { snapshot: pl.snapshotId });
+      const tracks = itemsOf(read).flatMap((item) =>
+        item.track ? [item.track] : [],
       );
-      const liveSnapshotId = plInfo.success
-        ? plInfo.data.snapshot_id
-        : undefined;
-      const ready = plInfo.success ? !plInfo.data.description : false;
-
-      const snap = snapshots[pl.id];
-      if (snap && liveSnapshotId && snap.snapshotId === liveSnapshotId) {
-        plMs = snap.totalMs;
-        plTracks = snap.trackCount;
-        cached++;
-      } else {
-        const dur = await getPlaylistTotalDuration(tc.session.gateway, pl.id);
-        plMs = dur.totalMs;
-        plTracks = dur.trackCount;
-        if (liveSnapshotId) {
-          snapshots[pl.id] = {
-            snapshotId: liveSnapshotId,
-            totalMs: plMs,
-            trackCount: plTracks,
-          };
-        }
-      }
+      if (read.success && read.cached) cached++;
+      const plMs = tracks.reduce((sum, t) => sum + t.durationMs, 0);
 
       totalMs += plMs;
-      totalTracks += plTracks;
+      totalTracks += tracks.length;
       perPlaylist.push({
         name: pl.name,
         durationMs: plMs,
-        trackCount: plTracks,
-        ready,
+        trackCount: tracks.length,
+        // A weekly playlist is ready once its description is cleared.
+        ready: !pl.description,
       });
 
       tc.progress.bar(
@@ -113,13 +79,6 @@ export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
         `${i + 1}/${candidates.length} — ${pl.name} (${formatHm(totalMs)})`,
       );
     });
-
-    // Drop snapshots of playlists that are no longer unprocessed.
-    const candidateIds = new Set(candidates.map((c) => c.id));
-    for (const id of Object.keys(snapshots)) {
-      if (!candidateIds.has(id)) delete snapshots[id];
-    }
-    await tc.session.data.save(DURATION_SNAPSHOTS, snapshots);
 
     const result: ListeningTimeResult = {
       computedAt: new Date().toISOString(),

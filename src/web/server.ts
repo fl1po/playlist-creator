@@ -4,13 +4,14 @@ import { fileURLToPath } from 'node:url';
 import compression from 'compression';
 import express from 'express';
 import { createAppConfigStore } from '../lib/config.js';
+import { playlistReads } from '../lib/playlist-reads/index.js';
 import { createCallStats } from '../lib/spotify/call-stats.js';
+import { RequestPacer, type SessionGateway } from '../lib/spotify/gateway.js';
 import {
-  RequestPacer,
-  type SessionGateway,
-  type SpotifyGateway,
-} from '../lib/spotify/gateway.js';
-import { UpstashRedisPort, upstashFromEnv } from '../lib/user-data/index.js';
+  UpstashRedisPort,
+  type UserData,
+  upstashFromEnv,
+} from '../lib/user-data/index.js';
 import { createAuthManager } from './auth.js';
 import { bearerIdentity } from './bearer-identity.js';
 import { createBroadcaster, type DeployInfo } from './broadcast.js';
@@ -24,7 +25,7 @@ import {
   getSessionUserId,
   verifyStreamTicket,
 } from './session.js';
-import { orThrow, SpotifyCallFailed, spotifyRoute } from './spotify-http.js';
+import { orThrow, spotifyRoute } from './spotify-http.js';
 import {
   createTaskRunner,
   mountTask,
@@ -260,123 +261,85 @@ app.get('/api/debug/spotify-calls', (req, res) => {
 
 // ── Playback tracking ──────────────────────────────────────────────────────
 
-interface PlaylistCache {
-  name: string;
-  snapshotId: string;
-  tracks: Array<{ id: string; duration_ms: number }>;
-  totalMs: number;
+/**
+ * The playlist a user is playing, as the playback poll last saw it. The
+ * tracks themselves live in playlist reads (ADR-0011); this holds only the
+ * last answer and the throttles, for one playlist per user.
+ */
+interface PlayingPlaylist {
+  playlistId: string;
+  name?: string;
+  /** The live snapshot, as of `checkedAt`. */
+  snapshot?: string;
+  checkedAt: number;
+  /** The last loaded tracks (possibly of an older snapshot) and their snapshot. */
+  tracks?: Array<{ id: string; durationMs: number }>;
+  totalMs?: number;
+  tracksSnapshot?: string;
+  loadStartedAt: number;
 }
 
-const PLAYLIST_CACHE_MAX = 50;
-const playlistDurationCache = new Map<string, PlaylistCache>();
-/** Per-playlist timestamp (ms) of the last snapshot_id staleness check. */
-const lastSnapshotCheck = new Map<string, number>();
-/** Re-verify a cached playlist's snapshot at most this often. */
+const playingByUser = new Map<string, PlayingPlaylist>();
+/** Check the playing playlist's snapshot, or retry a load, at most this often. */
 const SNAPSHOT_CHECK_INTERVAL_MS = 60_000;
 
-function cachePlaylist(id: string, entry: PlaylistCache) {
-  if (playlistDurationCache.size >= PLAYLIST_CACHE_MAX) {
-    const oldest = playlistDurationCache.keys().next().value;
-    if (oldest) playlistDurationCache.delete(oldest);
+function playingPlaylist(userId: string, playlistId: string): PlayingPlaylist {
+  let playing = playingByUser.get(userId);
+  if (playing?.playlistId !== playlistId) {
+    playing = { playlistId, checkedAt: 0, loadStartedAt: 0 };
+    playingByUser.set(userId, playing);
   }
-  playlistDurationCache.set(id, entry);
+  return playing;
 }
-
-/** Playlists being loaded now, and when each load last started (ms). */
-const playlistLoads = new Set<string>();
-const lastLoadStart = new Map<string, number>();
 
 /**
- * Load the playlist into the cache in the background: the poll answers with
- * whatever is cached and a later poll picks the load up. A big playlist (All
- * Weekly) is 100+ pages, minutes of the shared pacer. So at most one load per
- * playlist runs, and a failed one is not retried before the snapshot interval:
- * otherwise every poll during a load starts another. Nothing waits on the
- * load, so it goes on the background lane and takes turns with a running
- * task's calls instead of being served before every one of them.
+ * Load the playing playlist's tracks in the background: the poll answers with
+ * whatever it has and a later poll picks the load up. Nothing waits on the
+ * load, so it runs on the background lane and takes turns with a running
+ * task's calls. A failed load isn't retried before the check interval, or
+ * every poll during an outage would start another.
  */
-function refreshPlaylistCache(gateway: SessionGateway, playlistId: string) {
-  if (playlistLoads.has(playlistId)) return;
-  const last = lastLoadStart.get(playlistId) ?? 0;
-  if (Date.now() - last < SNAPSHOT_CHECK_INTERVAL_MS) return;
-  playlistLoads.add(playlistId);
-  lastLoadStart.set(playlistId, Date.now());
-  const background = gateway.forTask({
+function loadPlayingTracks(
+  session: { gateway: SessionGateway; data: UserData },
+  playing: PlayingPlaylist,
+) {
+  const snapshot = playing.snapshot;
+  if (!snapshot) return;
+  if (Date.now() - playing.loadStartedAt < SNAPSHOT_CHECK_INTERVAL_MS) return;
+  playing.loadStartedAt = Date.now();
+  const background = session.gateway.forTask({
     signal: new AbortController().signal,
   });
-  loadPlaylistCache(background, playlistId)
-    .then((loaded) => {
-      if (loaded) cachePlaylist(playlistId, loaded);
+  playlistReads({ gateway: background, data: session.data })
+    .tracks(playing.playlistId, { snapshot })
+    .then((read) => {
+      if (!read.success) return;
+      const tracks = read.items.flatMap(({ track }) =>
+        track ? [{ id: track.id, durationMs: track.durationMs }] : [],
+      );
+      playing.tracks = tracks;
+      playing.totalMs = tracks.reduce((sum, t) => sum + t.durationMs, 0);
+      playing.tracksSnapshot = snapshot;
     })
     // Auth loss surfaces on the next poll's own calls.
-    .catch(() => {})
-    .finally(() => playlistLoads.delete(playlistId));
-}
-
-/** Null when Spotify can't serve the playlist right now; auth loss still throws. */
-async function loadPlaylistCache(
-  gateway: SpotifyGateway,
-  playlistId: string,
-): Promise<PlaylistCache | null> {
-  try {
-    const meta = orThrow(
-      await gateway.call(
-        (api) => api.playlists.getPlaylist(playlistId),
-        `playlist ${playlistId}`,
-      ),
-    );
-    const tracks: Array<{ id: string; duration_ms: number }> = [];
-    let totalMs = 0;
-    let offset = 0;
-    const limit = 50;
-    while (true) {
-      const page = orThrow(
-        await gateway.call(
-          (api) =>
-            api.playlists.getPlaylistItems(
-              playlistId,
-              undefined,
-              undefined,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              limit as any,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              offset as any,
-            ),
-          `playlist items ${playlistId}`,
-        ),
-      );
-      for (const item of page.items) {
-        const t = item.track;
-        if (t && 'duration_ms' in t) {
-          tracks.push({ id: t.id, duration_ms: t.duration_ms });
-          totalMs += t.duration_ms;
-        }
-      }
-      if (offset + page.items.length >= page.total) break;
-      offset += page.items.length;
-    }
-    return { name: meta.name, snapshotId: meta.snapshot_id, tracks, totalMs };
-  } catch (err) {
-    if (err instanceof SpotifyCallFailed) return null;
-    throw err;
-  }
+    .catch(() => {});
 }
 
 function computeRemaining(
-  cached: PlaylistCache,
+  tracks: Array<{ id: string; durationMs: number }>,
   trackId: string,
   progressMs: number,
   durationMs: number,
 ): { ms: number; tracks: number } | null {
-  const idx = cached.tracks.findIndex((t) => t.id === trackId);
+  const idx = tracks.findIndex((t) => t.id === trackId);
   if (idx < 0) return null;
   let afterMs = 0;
-  for (let i = idx + 1; i < cached.tracks.length; i++) {
-    afterMs += cached.tracks[i].duration_ms;
+  for (let i = idx + 1; i < tracks.length; i++) {
+    afterMs += tracks[i].durationMs;
   }
   return {
     ms: durationMs - progressMs + afterMs,
-    tracks: cached.tracks.length - idx - 1,
+    tracks: tracks.length - idx - 1,
   };
 }
 
@@ -429,40 +392,32 @@ app.get(
       const [, ctxType, ctxId] = ctxUri.split(':');
       if (ctxType === 'playlist' && ctxId) {
         contextInfo = { type: 'playlist', id: ctxId };
-        const cached = playlistDurationCache.get(ctxId);
-        // Reload when the playlist has changed since we cached it. Spotify's
-        // snapshot_id changes on any edit, so a cheap fetch of just that field
-        // tells us whether the cached track list is stale. This poll runs every
-        // few seconds, so throttle the staleness check to once per interval per
-        // playlist — otherwise the background polling saturates the rate limit.
-        let currentSnapshot: string | undefined;
-        const lastCheck = lastSnapshotCheck.get(ctxId) ?? 0;
-        const dueForCheck =
-          Date.now() - lastCheck >= SNAPSHOT_CHECK_INTERVAL_MS;
-        if (cached && dueForCheck) {
+        const playing = playingPlaylist(session.userId, ctxId);
+        // Spotify's snapshot_id changes on any edit, so a cheap fetch of it
+        // (and the name) says whether the tracks held are stale. This poll
+        // runs every few seconds, so the check is throttled per playlist.
+        if (Date.now() - playing.checkedAt >= SNAPSHOT_CHECK_INTERVAL_MS) {
           const head = await gateway.call(
-            (api) => api.playlists.getPlaylist(ctxId, undefined, 'snapshot_id'),
+            (api) =>
+              api.playlists.getPlaylist(ctxId, undefined, 'snapshot_id,name'),
             `playlist snapshot ${ctxId}`,
           );
-          // On failure, fall back to whatever is cached.
+          // On failure, answer with what's held and check again next poll.
           if (head.success) {
-            currentSnapshot = head.data.snapshot_id;
-            lastSnapshotCheck.set(ctxId, Date.now());
+            playing.snapshot = head.data.snapshot_id;
+            playing.name = head.data.name;
+            playing.checkedAt = Date.now();
           }
         }
-        if (
-          !cached ||
-          (currentSnapshot && cached.snapshotId !== currentSnapshot)
-        ) {
-          // Until it lands, a stale list is a better answer than none.
-          refreshPlaylistCache(gateway, ctxId);
-        }
-        if (cached) {
-          contextInfo.name = cached.name;
-          contextInfo.totalTracks = cached.tracks.length;
-          contextInfo.totalMs = cached.totalMs;
+        // Until the load lands, a stale list is a better answer than none.
+        if (playing.tracksSnapshot !== playing.snapshot)
+          loadPlayingTracks(session, playing);
+        if (playing.tracks) {
+          contextInfo.name = playing.name;
+          contextInfo.totalTracks = playing.tracks.length;
+          contextInfo.totalMs = playing.totalMs;
           remaining = computeRemaining(
-            cached,
+            playing.tracks,
             item.id,
             progressMs,
             item.duration_ms,

@@ -804,7 +804,6 @@
       <h2>Listening Time</h2>
       <div class="card-row">
         <button id="listeningTimeBtn" onclick="calcListeningTime()">Calculate</button>
-        <label class="toggle"><input type="checkbox" id="ltForceRecalc"> Force</label>
       </div>
       <p class="hint">Calculate total listening time of unprocessed weekly playlists.</p>
       <p id="ltProgressText" class="progress-text"></p>
@@ -831,7 +830,6 @@
       <h2>AW Breakdown</h2>
       <div class="card-row">
         <button id="awBreakdownBtn" onclick="calcAwBreakdown()">Calculate</button>
-        <label class="toggle"><input type="checkbox" id="awForceRecalc"> Force</label>
       </div>
       <p class="hint">Break down the All Weekly playlist into weekly stats.</p>
       <p id="awProgressText" class="progress-text"></p>
@@ -1926,9 +1924,8 @@ async function loadListeningTime() {
 async function calcListeningTime() {
   document.getElementById('ltResult').style.display = 'none';
   shouldScrollToLog = true;
-  const force = document.getElementById('ltForceRecalc').checked;
-  // No client caches — the server reuses its own snapshots (file ?? Redis).
-  const res = await api('POST', '/api/listening-time', { force });
+  // No client caches — the server's playlist reads reuse unchanged playlists.
+  const res = await api('POST', '/api/listening-time', {});
   if (!res.ok) log('error', res.error || 'Failed to start listening time calculation', undefined, 'listening-time');
 }
 
@@ -2062,9 +2059,8 @@ async function loadAwBreakdown() {
 async function calcAwBreakdown() {
   document.getElementById('awResult').style.display = 'none';
   shouldScrollToLog = true;
-  const force = document.getElementById('awForceRecalc').checked;
-  // No client caches — the server reuses its own cache (file ?? Redis).
-  const res = await api('POST', '/api/aw-breakdown', { force });
+  // No client caches — the server's playlist reads reuse an unchanged AW.
+  const res = await api('POST', '/api/aw-breakdown', {});
   if (!res.ok) log('error', res.error || 'Failed to start AW breakdown calculation', undefined, 'aw-breakdown');
 }
 

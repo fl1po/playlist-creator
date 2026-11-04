@@ -1,8 +1,5 @@
-import { type PageOpts, paginateReduce } from '../lib/pagination.js';
-import type { SpotifyGateway } from '../lib/spotify/gateway.js';
+import type { PlaylistItem } from '../lib/playlist-reads/index.js';
 import { formatDdMmYy, parseDate, toReleaseFriday } from './tracks.js';
-
-type Item = any;
 
 export interface FrequentArtistEntry {
   label: string; // "Artist (N)"
@@ -36,65 +33,32 @@ function trackFriday(releaseDate: string | undefined, addedAt: string): string {
 }
 
 /**
- * Get all tracks from a playlist grouped by release week — the Friday of the
- * album's release date, falling back to the date added. Tracks with neither
- * are folded into the latest week.
+ * A playlist's tracks grouped by release week — the Friday of the album's
+ * release date, falling back to the date added. Tracks with neither are
+ * folded into the latest week.
  */
-export async function getPlaylistTracksGroupedByWeek(
-  ctx: SpotifyGateway,
-  playlistId: string,
-  opts?: PageOpts,
-): Promise<WeekBreakdownEntry[]> {
-  const { byFriday, addedAtCounts } = await paginateReduce(
-    ctx,
-    {
-      fetch: (api, l, o) =>
-        api.playlists.getPlaylistItems(playlistId, undefined, undefined, l, o),
-      description: `playlist tracks grouped ${playlistId}`,
-    },
-    () => ({
-      byFriday: new Map<string, RawTrack[]>(),
-      addedAtCounts: new Map<string, Map<string, number>>(),
-    }),
-    (acc, rawItem) => {
-      const item = rawItem as Item;
-      if (!item.track) return;
-      const addedAt = item.added_at as string | undefined;
-      const addedAtDate = addedAt ? addedAt.slice(0, 10) : 'unknown';
-      const durationMs = item.track.duration_ms ?? 0;
-      const artists = (item.track.artists as Array<{ name: string }>).map(
-        (a) => a.name,
-      );
-      const album = item.track.album as
-        | {
-            id?: string;
-            name?: string;
-            release_date?: string;
-            artists?: Array<{ name: string }>;
-          }
-        | undefined;
-      const releaseDate = album?.release_date;
-      const albumId = album?.id ?? '';
-      const albumArtist = album?.artists?.[0]?.name ?? '';
-      const albumName = album?.name ?? '';
+export function groupTracksByWeek(items: PlaylistItem[]): WeekBreakdownEntry[] {
+  const byFriday = new Map<string, RawTrack[]>();
+  const addedAtCounts = new Map<string, Map<string, number>>();
+  for (const item of items) {
+    const { track } = item;
+    if (!track) continue;
+    const addedAtDate = item.addedAt ? item.addedAt.slice(0, 10) : 'unknown';
+    const fri = trackFriday(track.album.releaseDate || undefined, addedAtDate);
+    if (!byFriday.has(fri)) byFriday.set(fri, []);
+    byFriday.get(fri)?.push({
+      durationMs: track.durationMs,
+      artists: track.artists.map((a) => a.name),
+      albumId: track.album.id,
+      albumArtist: track.album.artistNames[0] ?? '',
+      albumName: track.album.name,
+      addedAtDate,
+    });
 
-      const fri = trackFriday(releaseDate, addedAtDate);
-      if (!acc.byFriday.has(fri)) acc.byFriday.set(fri, []);
-      acc.byFriday.get(fri)?.push({
-        durationMs,
-        artists,
-        albumId,
-        albumArtist,
-        albumName,
-        addedAtDate,
-      });
-
-      if (!acc.addedAtCounts.has(fri)) acc.addedAtCounts.set(fri, new Map());
-      const counts = acc.addedAtCounts.get(fri);
-      counts?.set(addedAtDate, (counts.get(addedAtDate) ?? 0) + 1);
-    },
-    opts,
-  );
+    if (!addedAtCounts.has(fri)) addedAtCounts.set(fri, new Map());
+    const counts = addedAtCounts.get(fri);
+    counts?.set(addedAtDate, (counts.get(addedAtDate) ?? 0) + 1);
+  }
 
   const sortedFridays = [...byFriday.keys()]
     .filter((f) => f !== 'unknown')

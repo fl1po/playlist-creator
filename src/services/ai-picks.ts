@@ -1,5 +1,5 @@
 import { parseDate } from '../domain/tracks.js';
-import { getPlaylistTracksWithArtists } from '../lib/pagination.js';
+import { itemsOf, playlistReads } from '../lib/playlist-reads/index.js';
 import type { UserData } from '../lib/user-data/index.js';
 import { AI_PICKS } from '../lib/user-data/index.js';
 import type { UserSession } from '../lib/user-session.js';
@@ -72,7 +72,6 @@ export async function readWeekPicks(
   date: string,
   picks: AiPick[],
 ): Promise<WeekPicks> {
-  const { gateway } = session;
   const playlist = await findWeeklyPlaylist(
     spotifyWeeklyPlaylistStore(session),
     userId,
@@ -80,8 +79,12 @@ export async function readWeekPicks(
   );
   if (!playlist) return { exists: false };
 
-  const tracks = await getPlaylistTracksWithArtists(gateway, playlist.id);
-  const albums = new Set(tracks.map((t) => t.albumId));
+  const read = await playlistReads(session).tracks(playlist.id, {
+    snapshot: playlist.snapshotId,
+  });
+  const albums = new Set(
+    itemsOf(read).flatMap((i) => (i.track ? [i.track.album.id] : [])),
+  );
   const present = picks
     .filter((p) => albums.has(p.albumId))
     .sort((a, b) => b.confidence - a.confidence);

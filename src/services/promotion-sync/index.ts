@@ -1,6 +1,5 @@
 import { filterByPriority } from '../../domain/artists.js';
 import { getValidDates, parseDate } from '../../domain/tracks.js';
-import type { PlaylistTrackWithArtists } from '../../lib/pagination.js';
 import { trackKey } from '../../lib/track-utils.js';
 import type {
   FoundRelease,
@@ -33,10 +32,19 @@ export interface PriorityChange {
 
 // ── Ports (the seam) ─────────────────────────────────────────────────────────
 
+/** A weekly playlist's track as the removal phase sees it. */
+export interface PlaylistTrackWithArtists {
+  uri: string;
+  id: string;
+  name: string;
+  artistNames: string[];
+  albumId: string;
+}
+
 /**
  * The reads a promotion sync needs: every release read (shared with week
  * collection via the engine) plus the two playlist-track reads the removal and
- * addition phases use. Prod adapter wraps SpotifyGateway + pagination; test
+ * addition phases use. Prod adapter wraps the session's playlist reads; test
  * adapter is an in-memory fixture catalog.
  */
 export interface PromotionReads extends ReleaseReads {

@@ -22,14 +22,6 @@ export interface Dataset<T> {
   isEmpty?(value: T): boolean;
 }
 
-export interface DurationSnapshot {
-  snapshotId: string;
-  totalMs: number;
-  trackCount: number;
-}
-
-export type DurationSnapshots = Record<string, DurationSnapshot>;
-
 /** Read through `UserData.config`, which merges in the defaults. */
 export const CONFIG: Dataset<Partial<UserConfig>> = {
   name: 'config',
@@ -65,11 +57,6 @@ export const FILL_HISTORY: Dataset<unknown[]> = {
   name: 'fillHistory',
   file: 'fill-history.json',
   isEmpty: (v) => !Array.isArray(v) || v.length === 0,
-};
-
-export const DURATION_SNAPSHOTS: Dataset<DurationSnapshots> = {
-  name: 'durationSnapshots',
-  file: 'duration-snapshots.json',
 };
 
 export const LISTENING_TIME: Dataset<unknown> = {
@@ -171,7 +158,6 @@ export const DATASETS: ReadonlyArray<Dataset<unknown>> = [
   RECALCULATION_STATE,
   PENDING_PRIORITY_CHANGES,
   FILL_HISTORY,
-  DURATION_SNAPSHOTS,
   LISTENING_TIME,
   AW_BREAKDOWN,
   PLAYLIST_TRACKS,

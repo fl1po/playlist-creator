@@ -1,3 +1,4 @@
+import { playlistReads } from '../lib/playlist-reads/index.js';
 import type { ApiResult } from '../lib/spotify/gateway.js';
 import { type LogLine, line } from '../lib/task-log.js';
 import type { UserSession } from '../lib/user-session.js';
@@ -72,33 +73,14 @@ export class PlaylistClearerService {
       trackCount: target.trackCount,
     });
 
-    const uris: Array<{ uri: string }> = [];
-    let itemOffset = 0;
-
-    while (true) {
-      const result = await this.session.gateway.call(
-        (api) =>
-          api.playlists.getPlaylistItems(
-            target.id,
-            undefined,
-            undefined,
-            50,
-            itemOffset,
-          ),
-        `playlist items ${target.id}`,
-      );
-      if (!result.success) {
-        throw failure(`read tracks of "${target.name}"`, result);
-      }
-
-      for (const item of result.data.items) {
-        // The item's own URI also covers episodes and local files, which
-        // have no usable track id.
-        if (item.track?.uri) uris.push({ uri: item.track.uri });
-      }
-      if (result.data.items.length < 50) break;
-      itemOffset += 50;
+    // A live snapshot check: the clear removes exactly what is there now.
+    // A slot's uri also covers episodes and local files, which have no
+    // usable track id.
+    const read = await playlistReads(this.session).tracks(target.id);
+    if (!read.success) {
+      throw failure(`read tracks of "${target.name}"`, read);
     }
+    const uris = read.items.flatMap((i) => (i.uri ? [{ uri: i.uri }] : []));
 
     // Spotify caps removals at 100 items per request; going through the gateway's call
     // (not the raw SDK) keeps retry/abort handling.

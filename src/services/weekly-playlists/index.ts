@@ -13,7 +13,8 @@ import type { SimplePlaylist } from '../../lib/types.js';
 
 /**
  * The playlist reads and writes a weekly playlist needs. Prod adapter wraps
- * SpotifyGateway + pagination; test adapter is an in-memory listing.
+ * the session's gateway and playlist reads; test adapter is an in-memory
+ * listing.
  *
  * Error contract: `create` and `addTracks` throw on any failure, auth
  * failures included (the fill re-auths and retries the date). A throw from

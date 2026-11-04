@@ -1,6 +1,6 @@
-import type { PlaylistTrackWithArtists } from '../../lib/pagination.js';
 import type { AlbumTrack, PlaylistAlbumInfo } from '../../lib/types.js';
 import type {
+  PlaylistTrackWithArtists,
   PlaylistWrites,
   PromotionReads,
 } from '../../services/promotion-sync/index.js';

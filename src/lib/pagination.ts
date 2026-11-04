@@ -36,21 +36,6 @@ export class PaginationFailure extends Error {
   }
 }
 
-export interface PlaylistTrackDetailed {
-  uri: string;
-  name: string;
-  key: string;
-  artists: string;
-}
-
-export interface PlaylistTrackWithArtists {
-  uri: string;
-  id: string;
-  name: string;
-  artistNames: string[];
-  albumId: string;
-}
-
 // ── Private engine ───────────────────────────────────────────────────────────
 
 interface EngineOptions<TAcc> {
@@ -214,6 +199,7 @@ export function getAllUserPlaylists(
             name: item.name,
             trackCount: item.tracks.total,
             snapshotId: item.snapshot_id,
+            description: item.description || undefined,
           });
         }
       }
@@ -277,85 +263,5 @@ export function getPlaylistAlbums(
       }
     },
     opts: { maxOffset: 200, ...opts },
-  });
-}
-
-/** Get all tracks from a playlist with normalized dedup keys. */
-export function getPlaylistTracksDetailed(
-  ctx: SpotifyGateway,
-  playlistId: string,
-  opts?: PageOpts,
-): Promise<PlaylistTrackDetailed[]> {
-  return runPagination<PlaylistTrackDetailed[]>(ctx, {
-    fetch: (api, l, o) =>
-      api.playlists.getPlaylistItems(playlistId, undefined, undefined, l, o),
-    description: `playlist items ${playlistId}`,
-    init: () => [],
-    onPage: (acc, items) => {
-      for (const item of items as Item[]) {
-        if (!item.track?.id) continue;
-        const trackArtists: Array<{ name: string }> = item.track.artists ?? [];
-        const artistNames = trackArtists.map((a) => a.name);
-        acc.push({
-          uri: item.track.uri,
-          name: item.track.name,
-          key: trackKey(artistNames, item.track.name),
-          artists: artistNames.join(', '),
-        });
-      }
-    },
-    opts,
-  });
-}
-
-/** Get all tracks from a playlist with individual artist names (not comma-joined). */
-export function getPlaylistTracksWithArtists(
-  ctx: SpotifyGateway,
-  playlistId: string,
-  opts?: PageOpts,
-): Promise<PlaylistTrackWithArtists[]> {
-  return runPagination<PlaylistTrackWithArtists[]>(ctx, {
-    fetch: (api, l, o) =>
-      api.playlists.getPlaylistItems(playlistId, undefined, undefined, l, o),
-    description: `playlist items ${playlistId}`,
-    init: () => [],
-    onPage: (acc, items) => {
-      for (const item of items as Item[]) {
-        if (!item.track?.id) continue;
-        acc.push({
-          uri: item.track.uri,
-          id: item.track.id,
-          name: item.track.name,
-          artistNames: (item.track.artists ?? []).map(
-            (a: { name: string }) => a.name,
-          ),
-          albumId: item.track.album?.id ?? '',
-        });
-      }
-    },
-    opts,
-  });
-}
-
-/** Get total duration of all tracks in a playlist. */
-export function getPlaylistTotalDuration(
-  ctx: SpotifyGateway,
-  playlistId: string,
-  opts?: PageOpts,
-): Promise<{ totalMs: number; trackCount: number }> {
-  return runPagination<{ totalMs: number; trackCount: number }>(ctx, {
-    fetch: (api, l, o) =>
-      api.playlists.getPlaylistItems(playlistId, undefined, undefined, l, o),
-    description: `playlist duration ${playlistId}`,
-    init: () => ({ totalMs: 0, trackCount: 0 }),
-    onPage: (acc, items) => {
-      for (const item of items as Item[]) {
-        if (item.track) {
-          acc.totalMs += item.track.duration_ms ?? 0;
-          acc.trackCount++;
-        }
-      }
-    },
-    opts,
   });
 }

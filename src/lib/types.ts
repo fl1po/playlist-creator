@@ -29,6 +29,8 @@ export interface SimplePlaylist {
   trackCount: number;
   /** Spotify's version of the playlist; changes on any edit, by anyone. */
   snapshotId?: string;
+  /** The playlist's description, when the listing gave one. */
+  description?: string;
 }
 
 export interface AlbumTrack {
