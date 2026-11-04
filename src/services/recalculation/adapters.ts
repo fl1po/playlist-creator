@@ -121,7 +121,7 @@ export function spotifyRecalculationPorts(
   session: UserSession,
   opts: { reads?: ReleaseReads } = {},
 ): RecalculationPorts {
-  const { userId, data } = session;
+  const { userId } = session;
   return {
     sources: spotifySourceReads(session),
     unprocessed: {
@@ -129,7 +129,6 @@ export function spotifyRecalculationPorts(
         return unprocessedWeeklyPlaylists(
           {
             store: spotifyWeeklyPlaylistStore(session),
-            data,
             userId,
           },
           allWeeklyId,

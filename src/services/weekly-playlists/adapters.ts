@@ -39,8 +39,10 @@ export function spotifyWeeklyPlaylistStore(
       return { id: result.data.id, url: result.data.external_urls.spotify };
     },
     addTracks: writes.addTracks,
-    async trackIds(playlistId) {
-      return trackIdsOf(await playlists.tracks(playlistId));
+    async trackIds(playlistId, snapshotId) {
+      return trackIdsOf(
+        await playlists.tracks(playlistId, { snapshot: snapshotId }),
+      );
     },
   };
 }

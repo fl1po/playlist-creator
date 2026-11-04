@@ -52,8 +52,8 @@ export function batchCacheCheckpoints(storage: FillStorage): CheckpointStore {
 
 /**
  * The production port set for one user's fill. The user data holds that
- * user's week progress, unprocessed-playlists listing and the Deezer artist
- * lookups AI finds reuse. AI finds' ports exist only when `env` has an
+ * user's week progress, the playlist tracks playlist reads keep (ADR-0011)
+ * and the Deezer artist lookups AI finds reuse. AI finds' ports exist only when `env` has an
  * Anthropic key.
  */
 export function fillPorts(

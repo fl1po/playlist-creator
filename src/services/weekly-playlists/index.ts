@@ -1,10 +1,5 @@
 import { generateFridayDates, parseDate } from '../../domain/tracks.js';
 import type { SimplePlaylist } from '../../lib/types.js';
-import {
-  type UserData,
-  WEEKLY_PLAYLIST_TRACKS,
-  type WeeklyPlaylistTrackIds,
-} from '../../lib/user-data/index.js';
 
 /**
  * Weekly playlists — the date-named (`DD.MM.YY`) playlists holding one
@@ -36,8 +31,11 @@ export interface WeeklyPlaylistStore {
   ): Promise<SimplePlaylist[]>;
   create(userId: string, name: string): Promise<{ id: string; url: string }>;
   addTracks(playlistId: string, trackIds: string[]): Promise<void>;
-  /** Every track id on a playlist, all pages. */
-  trackIds(playlistId: string): Promise<string[]>;
+  /**
+   * Every track id on a playlist, all pages. Pass the `snapshotId` the
+   * listing gave, so an unchanged playlist is answered without a call.
+   */
+  trackIds(playlistId: string, snapshotId?: string): Promise<string[]>;
 }
 
 // ── Naming ───────────────────────────────────────────────────────────────────
@@ -185,8 +183,6 @@ export function weeklyPlaylists(deps: WeeklyPlaylistsDeps): WeeklyPlaylists {
 
 export interface UnprocessedWeeklyPlaylistsDeps {
   store: WeeklyPlaylistStore;
-  /** Holds each walked playlist's track ids by snapshot between listings. */
-  data: UserData;
   userId: string;
 }
 
@@ -196,16 +192,16 @@ export interface UnprocessedWeeklyPlaylistsDeps {
  * older than that cutoff is assumed listened.
  *
  * Always current, with nothing to invalidate: All Weekly and the playlist
- * listing are read fresh every time, and a playlist's tracks are reused only
- * while its Spotify snapshot is unchanged. Any edit to a playlist, by the app
- * or anyone else, makes the next listing re-read just that playlist.
+ * listing are checked fresh every time, and each weekly playlist's tracks are
+ * read with the snapshot id the listing gave, so the store rereads only a
+ * playlist that changed (ADR-0009, ADR-0011).
  */
 export async function unprocessedWeeklyPlaylists(
   deps: UnprocessedWeeklyPlaylistsDeps,
   allWeeklyId: string,
   log: (message: string, level?: 'info' | 'debug') => void = () => {},
 ): Promise<{ playlists: SimplePlaylist[]; awTrackIds: Set<string> }> {
-  const { store, data, userId } = deps;
+  const { store, userId } = deps;
 
   const awTrackIds = new Set(await store.trackIds(allWeeklyId));
   log(`Loaded ${awTrackIds.size} tracks from All Weekly`);
@@ -215,25 +211,9 @@ export async function unprocessedWeeklyPlaylists(
     .sort((a, b) => parseDate(b.name).getTime() - parseDate(a.name).getTime());
   log(`Found ${weeklies.length} weekly playlists, scanning from newest...`);
 
-  const cached = (await data.load(WEEKLY_PLAYLIST_TRACKS)) ?? {};
-  // Only the playlists this walk visits are kept; the rest drop out.
-  const walked: Record<string, WeeklyPlaylistTrackIds> = {};
   const unprocessed: SimplePlaylist[] = [];
-  let read = 0;
-  let reused = 0;
-
   for (const pl of weeklies) {
-    const hit = cached[pl.id];
-    let trackIds: string[];
-    if (pl.snapshotId && hit?.snapshotId === pl.snapshotId) {
-      trackIds = hit.trackIds;
-      reused++;
-    } else {
-      trackIds = await store.trackIds(pl.id);
-      read++;
-    }
-    if (pl.snapshotId) walked[pl.id] = { snapshotId: pl.snapshotId, trackIds };
-
+    const trackIds = await store.trackIds(pl.id, pl.snapshotId);
     if (trackIds.some((id) => awTrackIds.has(id))) {
       log(`  ${pl.name} — AW overlap found, cutoff reached`, 'debug');
       break;
@@ -242,10 +222,6 @@ export async function unprocessedWeeklyPlaylists(
     unprocessed.push(pl);
   }
 
-  await data.save(WEEKLY_PLAYLIST_TRACKS, walked);
-  log(
-    `Result: ${unprocessed.length} unprocessed weekly playlists (${read} read, ${reused} unchanged)`,
-  );
-
+  log(`Result: ${unprocessed.length} unprocessed weekly playlists`);
   return { playlists: unprocessed.reverse(), awTrackIds };
 }

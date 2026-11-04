@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { test } from 'node:test';
+import { type TestContext, test } from 'node:test';
+import { fixtureGateway } from '../lib/spotify/fixture.js';
+import { localUserData } from '../lib/user-data/index.js';
 import {
-  localUserData,
-  WEEKLY_PLAYLIST_TRACKS,
-} from '../lib/user-data/index.js';
-import { memoryWeeklyPlaylistStore } from '../services/weekly-playlists/adapters.js';
+  memoryWeeklyPlaylistStore,
+  spotifyWeeklyPlaylistStore,
+} from '../services/weekly-playlists/adapters.js';
 import {
   findWeeklyPlaylist,
   unprocessedWeeklyPlaylists,
@@ -62,92 +63,140 @@ const AW = 'aw';
 /**
  * Four weekly playlists, newest last; All Weekly holds a track of 05.09.25, so
  * that's the cutoff and the two after it are unprocessed. 26.09.25 is empty.
+ * Runs the production store over a fake Spotify whose snapshot ids change on
+ * every edit; `trackReads` lists each playlist whose items were fetched.
  */
-function listeningWorld(t: { after: (fn: () => void) => void }) {
+function listeningWorld(t: TestContext) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'weekly-playlists-test-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const data = localUserData(dir);
-  const store = memoryWeeklyPlaylistStore(
-    [
-      { id: 'pl-0', name: '29.08.25', trackCount: 1 },
-      { id: 'pl-1', name: '05.09.25', trackCount: 1 },
-      { id: 'pl-2', name: '12.09.25', trackCount: 1 },
-      { id: 'pl-3', name: '19.09.25', trackCount: 1 },
-      { id: 'pl-4', name: '26.09.25', trackCount: 0 },
-      { id: 'pl-mix', name: 'Road trip', trackCount: 1 },
-    ],
-    [],
-    {
+
+  const listed = [
+    { id: 'pl-0', name: '29.08.25' },
+    { id: 'pl-1', name: '05.09.25' },
+    { id: 'pl-2', name: '12.09.25' },
+    { id: 'pl-3', name: '19.09.25' },
+    { id: 'pl-4', name: '26.09.25' },
+    { id: 'pl-mix', name: 'Road trip' },
+  ];
+  const contents = new Map<string, string[]>(
+    Object.entries({
       [AW]: ['a1', 'x1'],
       'pl-0': ['z1'],
       'pl-1': ['a1'],
       'pl-2': ['b1'],
       'pl-3': ['c1'],
+      'pl-4': [],
       'pl-mix': ['c1'],
-    },
+    }),
   );
+  const versions = new Map<string, number>();
+  const snapshot = (id: string) => `${id}@${versions.get(id) ?? 0}`;
+  const edit = (id: string, trackIds: string[]) => {
+    contents.set(id, trackIds);
+    versions.set(id, (versions.get(id) ?? 0) + 1);
+  };
+  const trackReads: string[] = [];
+
+  const api = {
+    playlists: {
+      async getUsersPlaylists(_user: string, limit: number, offset: number) {
+        return {
+          total: listed.length,
+          items: listed.slice(offset, offset + limit).map((p) => ({
+            ...p,
+            owner: { id: USER },
+            tracks: { total: contents.get(p.id)?.length ?? 0 },
+            snapshot_id: snapshot(p.id),
+          })),
+        };
+      },
+      async getPlaylist(id: string) {
+        return { snapshot_id: snapshot(id) };
+      },
+      async getPlaylistItems(
+        id: string,
+        _market: unknown,
+        _fields: unknown,
+        limit: number,
+        offset: number,
+      ) {
+        if (offset === 0) trackReads.push(id);
+        const ids = contents.get(id) ?? [];
+        return {
+          total: ids.length,
+          items: ids.slice(offset, offset + limit).map((trackId) => ({
+            added_at: '2025-09-01T00:00:00Z',
+            track: { id: trackId, name: trackId, artists: [], album: {} },
+          })),
+        };
+      },
+      async addItemsToPlaylist(id: string, uris: string[]) {
+        edit(id, [
+          ...(contents.get(id) ?? []),
+          ...uris.map((u) => u.replace('spotify:track:', '')),
+        ]);
+      },
+    },
+  };
+  const store = spotifyWeeklyPlaylistStore({
+    gateway: fixtureGateway(api),
+    data,
+  });
+
   const unprocessed = async () => {
-    store.trackReads.length = 0;
+    trackReads.length = 0;
     const { playlists } = await unprocessedWeeklyPlaylists(
-      { store, data, userId: USER },
+      { store, userId: USER },
       AW,
     );
     return playlists.map((p) => p.name);
   };
-  return { store, data, unprocessed };
+  return { store, edit, trackReads, unprocessed };
 }
 
 test('unprocessed weekly playlists are the ones newer than the newest overlapping All Weekly, oldest first', async (t) => {
-  const { store, unprocessed } = listeningWorld(t);
+  const { trackReads, unprocessed } = listeningWorld(t);
 
   assert.deepEqual(await unprocessed(), ['12.09.25', '19.09.25']);
   // Nothing older than the cutoff is read, nor any empty or non-weekly playlist.
-  assert.deepEqual(store.trackReads, [AW, 'pl-3', 'pl-2', 'pl-1']);
+  assert.deepEqual(trackReads, [AW, 'pl-3', 'pl-2', 'pl-1']);
 });
 
 test('listening moves the cutoff without re-reading any weekly playlist', async (t) => {
-  const { store, unprocessed } = listeningWorld(t);
+  const { edit, trackReads, unprocessed } = listeningWorld(t);
   await unprocessed();
 
-  store.edit(AW, ['a1', 'x1', 'b1']);
+  edit(AW, ['a1', 'x1', 'b1']);
 
   assert.deepEqual(await unprocessed(), ['19.09.25']);
-  assert.deepEqual(store.trackReads, [AW]);
+  assert.deepEqual(trackReads, [AW]);
 });
 
 test('a weekly playlist write re-reads only that playlist on the next listing', async (t) => {
-  const { store, unprocessed } = listeningWorld(t);
+  const { store, trackReads, unprocessed } = listeningWorld(t);
   await unprocessed();
 
   await weeklyPlaylists({ store, userId: USER }).write('26.09.25', ['d1']);
 
   assert.deepEqual(await unprocessed(), ['12.09.25', '19.09.25', '26.09.25']);
-  assert.deepEqual(store.trackReads, [AW, 'pl-4']);
+  assert.deepEqual(trackReads, ['pl-4']);
 });
 
 test('a cleared weekly playlist drops out of the next listing', async (t) => {
-  const { store, unprocessed } = listeningWorld(t);
+  const { edit, trackReads, unprocessed } = listeningWorld(t);
   await unprocessed();
 
-  store.edit('pl-3', []);
+  edit('pl-3', []);
 
   assert.deepEqual(await unprocessed(), ['12.09.25']);
-  assert.deepEqual(store.trackReads, [AW]);
+  assert.deepEqual(trackReads, []);
 });
 
-test('only the playlists the last listing walked are kept', async (t) => {
-  const { store, data, unprocessed } = listeningWorld(t);
-  await unprocessed();
-  assert.deepEqual(
-    Object.keys((await data.load(WEEKLY_PLAYLIST_TRACKS)) ?? {}).sort(),
-    ['pl-1', 'pl-2', 'pl-3'],
-  );
-
-  store.edit(AW, ['a1', 'x1', 'c1']);
+test('an unchanged listing reads no playlist items at all', async (t) => {
+  const { trackReads, unprocessed } = listeningWorld(t);
   await unprocessed();
 
-  assert.deepEqual(
-    Object.keys((await data.load(WEEKLY_PLAYLIST_TRACKS)) ?? {}),
-    ['pl-3'],
-  );
+  assert.deepEqual(await unprocessed(), ['12.09.25', '19.09.25']);
+  assert.deepEqual(trackReads, []);
 });
