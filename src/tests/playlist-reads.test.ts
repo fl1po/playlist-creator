@@ -66,7 +66,7 @@ function fakeSpotify() {
   let liked: RawItem[] = []; // newest first
   const calls: string[] = [];
   const failing = { snapshot: false, itemsAtOffset: -1 };
-  let onItemsPage: (() => void) | null = null;
+  let onItemsPage: (() => void | Promise<void>) | null = null;
 
   const api = {
     playlists: {
@@ -85,7 +85,7 @@ function fakeSpotify() {
       ) {
         calls.push(`items ${id} @${offset}`);
         if (offset === failing.itemsAtOffset) throw new Error('spotify 502');
-        onItemsPage?.();
+        await onItemsPage?.();
         const items = playlists.get(id)?.items ?? [];
         return {
           total: items.length,
@@ -117,10 +117,11 @@ function fakeSpotify() {
     setLiked(items: RawItem[]) {
       liked = items;
     },
-    duringNextItemsPage(fn: () => void) {
+    /** Runs `fn` while the next item page is fetched; the page waits for it. */
+    duringNextItemsPage(fn: () => void | Promise<void>) {
       onItemsPage = () => {
         onItemsPage = null;
-        fn();
+        return fn();
       };
     },
     /** Calls since the last `take`. */
@@ -288,6 +289,75 @@ test('concurrent reads of one playlist share one fetch', async (t) => {
   assert.deepEqual(ids(a), ids(b));
   const itemCalls = spotify.take().filter((c) => c.startsWith('items'));
   assert.deepEqual(itemCalls, ['items aw @0', 'items aw @50']);
+});
+
+test('a reader that joins a read in flight sees its progress', async (t) => {
+  const { spotify, reads } = setup(t);
+  spotify.set('aw', tracks('a', 60));
+  const first: Array<[number, number]> = [];
+  const joiner: Array<[number, number]> = [];
+  let joined: Promise<PlaylistRead> | null = null;
+  spotify.duringNextItemsPage(() => {
+    joined = reads.tracks('aw', {
+      onProgress: (fetched, total) => joiner.push([fetched, total]),
+    });
+  });
+
+  await reads.tracks('aw', {
+    onProgress: (fetched, total) => first.push([fetched, total]),
+  });
+  await joined;
+
+  assert.deepEqual(first, [
+    [50, 60],
+    [60, 60],
+  ]);
+  // Whenever it joined, it hears where the read is and follows it to the end.
+  assert.deepEqual(joiner.at(-1), [60, 60]);
+  assert.deepEqual(joiner, first.slice(-joiner.length));
+  const itemCalls = spotify.take().filter((c) => c.startsWith('items'));
+  assert.deepEqual(itemCalls, ['items aw @0', 'items aw @50']);
+});
+
+test('a reader that stops while sharing a read fails alone', async (t) => {
+  const { spotify, reads } = setup(t);
+  spotify.set('aw', tracks('a', 60));
+  const stopped = new Error('task stopped');
+  let joined: Promise<PlaylistRead> | null = null;
+  // The first page waits until the second reader has joined the read.
+  spotify.duringNextItemsPage(async () => {
+    joined = reads.tracks('aw', {
+      onProgress: () => {
+        throw stopped;
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  const read = await reads.tracks('aw', { onProgress: () => {} });
+
+  assert.equal(ids(read).length, 60);
+  await assert.rejects(joined as unknown as Promise<PlaylistRead>, stopped);
+});
+
+test('a lone reader that stops ends the read and stores nothing', async (t) => {
+  const { spotify, reads } = setup(t);
+  spotify.set('aw', tracks('a', 120));
+  const stopped = new Error('task stopped');
+
+  await assert.rejects(
+    reads.tracks('aw', {
+      onProgress: () => {
+        throw stopped;
+      },
+    }),
+    stopped,
+  );
+
+  const itemCalls = spotify.take().filter((c) => c.startsWith('items'));
+  assert.deepEqual(itemCalls, ['items aw @0']);
+  const next = await reads.tracks('aw');
+  assert.ok(next.success && !next.cached);
 });
 
 test('slots without a track are kept, with their uri', async (t) => {

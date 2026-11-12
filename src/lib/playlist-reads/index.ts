@@ -115,21 +115,27 @@ export function playlistReads(session: {
       const hit = await memory.playlist(playlistId, snapshot);
       if (hit) return { success: true, items: hit, snapshot, cached: true };
 
-      return memory.once(`${playlistId}\0${snapshot}`, async () => {
-        const read = await fetchItems(gateway, playlistPages(playlistId), opts);
-        if (!read.success) return read;
-        // Store only when the playlist didn't move while it was read.
-        const after = await playlistSnapshot(gateway, playlistId);
-        if (after !== snapshot)
-          return {
-            success: true,
-            items: read.items,
-            snapshot: null,
-            cached: false,
-          };
-        await memory.storePlaylist(playlistId, snapshot, read.items);
-        return { success: true, items: read.items, snapshot, cached: false };
-      });
+      return memory.once(
+        `${playlistId}\0${snapshot}`,
+        opts,
+        async (onProgress) => {
+          const read = await fetchItems(gateway, playlistPages(playlistId), {
+            onProgress,
+          });
+          if (!read.success) return read;
+          // Store only when the playlist didn't move while it was read.
+          const after = await playlistSnapshot(gateway, playlistId);
+          if (after !== snapshot)
+            return {
+              success: true,
+              items: read.items,
+              snapshot: null,
+              cached: false,
+            };
+          await memory.storePlaylist(playlistId, snapshot, read.items);
+          return { success: true, items: read.items, snapshot, cached: false };
+        },
+      );
     },
 
     async likedSongs(opts = {}) {
@@ -143,10 +149,10 @@ export function playlistReads(session: {
           cached: true,
         };
 
-      return memory.once(`liked\0${key}`, async () => {
+      return memory.once(`liked\0${key}`, opts, async (onProgress) => {
         const newest = held?.items[0];
         const read = await fetchItems(gateway, LIKED_PAGES, {
-          ...opts,
+          onProgress,
           stopAt: newest ? (item) => sameItem(item, newest) : undefined,
         });
         if (!read.success) return read;
@@ -157,7 +163,7 @@ export function playlistReads(session: {
           if (items.length + held.items.length === read.total) {
             items = [...items, ...held.items];
           } else {
-            const full = await fetchItems(gateway, LIKED_PAGES, opts);
+            const full = await fetchItems(gateway, LIKED_PAGES, { onProgress });
             if (!full.success) return full;
             items = full.items;
           }
@@ -383,6 +389,22 @@ export function decodeItem(e: Encoded): PlaylistItem {
 
 // ── Memory, shared per user data ─────────────────────────────────────────────
 
+type Progress = (fetched: number, total: number) => void;
+
+/** A caller sharing a read with an `onProgress`; failed alone if it throws. */
+interface Listener {
+  onProgress: Progress;
+  fail: (error: unknown) => void;
+}
+
+interface Inflight {
+  read: Promise<PlaylistRead>;
+  /** Callers on the read, listening or not; the read stops at zero. */
+  waiting: number;
+  listeners: Set<Listener>;
+  lastProgress: [number, number] | null;
+}
+
 interface Held {
   snapshot: string;
   items: PlaylistItem[];
@@ -400,8 +422,35 @@ interface Memory {
   ): Promise<void>;
   liked(): Promise<Held | null>;
   storeLiked(key: string, items: PlaylistItem[]): Promise<void>;
-  /** Run `fn` once per key at a time; concurrent callers share its result. */
-  once(key: string, fn: () => Promise<PlaylistRead>): Promise<PlaylistRead>;
+  /**
+   * Run `fn` once per key at a time; concurrent callers share its result and
+   * its progress, a late caller first hearing where the read already is. A
+   * caller whose `onProgress` throws fails alone with that error; the read
+   * stops only once no caller is left on it.
+   */
+  once(
+    key: string,
+    opts: { onProgress?: Progress },
+    fn: (onProgress: Progress) => Promise<PlaylistRead>,
+  ): Promise<PlaylistRead>;
+}
+
+/** Tells one listener; one that throws leaves the read, failed with its error. */
+function tell(
+  entry: Inflight,
+  listener: Listener,
+  fetched: number,
+  total: number,
+): { thrown: unknown } | null {
+  try {
+    listener.onProgress(fetched, total);
+    return null;
+  } catch (thrown) {
+    entry.listeners.delete(listener);
+    entry.waiting--;
+    listener.fail(thrown);
+    return { thrown };
+  }
 }
 
 const memories = new WeakMap<UserData, Memory>();
@@ -419,7 +468,7 @@ function createMemory(data: UserData, now: () => number): Memory {
   let stored: Promise<Record<string, StoredPlaylistTracks>> | null = null;
   const decoded = new Map<string, Held>();
   let liked: Promise<Held | null> | null = null;
-  const inflight = new Map<string, Promise<PlaylistRead>>();
+  const inflight = new Map<string, Inflight>();
 
   const playlists = () => {
     stored ??= data.load(PLAYLIST_TRACKS).then((v) => v ?? {});
@@ -486,12 +535,36 @@ function createMemory(data: UserData, now: () => number): Memory {
       });
     },
 
-    once(key, fn) {
-      const running = inflight.get(key);
-      if (running) return running;
-      const p = fn().finally(() => inflight.delete(key));
-      inflight.set(key, p);
-      return p;
+    once(key, { onProgress }, fn) {
+      let running = inflight.get(key);
+      if (!running) {
+        const entry: Inflight = {
+          read: null as never,
+          waiting: 0,
+          listeners: new Set(),
+          lastProgress: null,
+        };
+        entry.read = fn((fetched, total) => {
+          entry.lastProgress = [fetched, total];
+          for (const listener of [...entry.listeners]) {
+            const left = tell(entry, listener, fetched, total);
+            // Throwing here ends the fetch: worth it only once nobody wants the items.
+            if (left && entry.waiting === 0) throw left.thrown;
+          }
+        }).finally(() => inflight.delete(key));
+        inflight.set(key, entry);
+        running = entry;
+      }
+      const entry = running;
+      entry.waiting++;
+      // A promise per caller, so one caller can fail without failing the rest.
+      return new Promise<PlaylistRead>((resolve, reject) => {
+        entry.read.then(resolve, reject);
+        if (!onProgress) return;
+        const listener: Listener = { onProgress, fail: reject };
+        entry.listeners.add(listener);
+        if (entry.lastProgress) tell(entry, listener, ...entry.lastProgress);
+      });
     },
   };
 }
