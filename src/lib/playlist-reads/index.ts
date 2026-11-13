@@ -117,8 +117,9 @@ export function playlistReads(session: {
 
       return memory.once(
         `${playlistId}\0${snapshot}`,
-        opts,
-        async (onProgress) => {
+        { gateway, onProgress: opts.onProgress },
+        // The shared gateway, not this caller's: the read outlives its stop.
+        async ({ gateway, onProgress }) => {
           const read = await fetchItems(gateway, playlistPages(playlistId), {
             onProgress,
           });
@@ -149,34 +150,40 @@ export function playlistReads(session: {
           cached: true,
         };
 
-      return memory.once(`liked\0${key}`, opts, async (onProgress) => {
-        const newest = held?.items[0];
-        const read = await fetchItems(gateway, LIKED_PAGES, {
-          onProgress,
-          stopAt: newest ? (item) => sameItem(item, newest) : undefined,
-        });
-        if (!read.success) return read;
+      return memory.once(
+        `liked\0${key}`,
+        { gateway, onProgress: opts.onProgress },
+        async ({ gateway, onProgress }) => {
+          const newest = held?.items[0];
+          const read = await fetchItems(gateway, LIKED_PAGES, {
+            onProgress,
+            stopAt: newest ? (item) => sameItem(item, newest) : undefined,
+          });
+          if (!read.success) return read;
 
-        let items = read.items;
-        if (read.stopped && held) {
-          // The new likes, then what was held, if the count adds up.
-          if (items.length + held.items.length === read.total) {
-            items = [...items, ...held.items];
-          } else {
-            const full = await fetchItems(gateway, LIKED_PAGES, { onProgress });
-            if (!full.success) return full;
-            items = full.items;
+          let items = read.items;
+          if (read.stopped && held) {
+            // The new likes, then what was held, if the count adds up.
+            if (items.length + held.items.length === read.total) {
+              items = [...items, ...held.items];
+            } else {
+              const full = await fetchItems(gateway, LIKED_PAGES, {
+                onProgress,
+              });
+              if (!full.success) return full;
+              items = full.items;
+            }
           }
-        }
 
-        if (key === null)
-          return { success: true, items, snapshot: null, cached: false };
-        const after = await likedSongsKey(gateway);
-        if (after !== key)
-          return { success: true, items, snapshot: null, cached: false };
-        await memory.storeLiked(key, items);
-        return { success: true, items, snapshot: key, cached: false };
-      });
+          if (key === null)
+            return { success: true, items, snapshot: null, cached: false };
+          const after = await likedSongsKey(gateway);
+          if (after !== key)
+            return { success: true, items, snapshot: null, cached: false };
+          await memory.storeLiked(key, items);
+          return { success: true, items, snapshot: key, cached: false };
+        },
+      );
     },
   };
 }
@@ -391,18 +398,24 @@ export function decodeItem(e: Encoded): PlaylistItem {
 
 type Progress = (fetched: number, total: number) => void;
 
-/** A caller sharing a read with an `onProgress`; failed alone if it throws. */
-interface Listener {
-  onProgress: Progress;
+/** What a caller brings to a shared read: its gateway and its progress. */
+interface Joining {
+  gateway: SpotifyGateway;
+  onProgress?: Progress;
+}
+
+/** A caller on a shared read; it leaves alone, failed with its own error. */
+interface Caller extends Joining {
   fail: (error: unknown) => void;
 }
 
 interface Inflight {
   read: Promise<PlaylistRead>;
-  /** Callers on the read, listening or not; the read stops at zero. */
-  waiting: number;
-  listeners: Set<Listener>;
+  /** Callers still on the read; the read stops once none is left. */
+  callers: Set<Caller>;
   lastProgress: [number, number] | null;
+  /** Aborted when the last caller leaves, with that caller's reason. */
+  stop: AbortController;
 }
 
 interface Held {
@@ -425,32 +438,61 @@ interface Memory {
   /**
    * Run `fn` once per key at a time; concurrent callers share its result and
    * its progress, a late caller first hearing where the read already is. A
-   * caller whose `onProgress` throws fails alone with that error; the read
-   * stops only once no caller is left on it.
+   * caller that is stopped, or whose `onProgress` throws, leaves at once and
+   * fails alone with that error; the read stops only once no caller is left.
    */
   once(
     key: string,
-    opts: { onProgress?: Progress },
-    fn: (onProgress: Progress) => Promise<PlaylistRead>,
+    caller: Joining,
+    fn: (shared: {
+      gateway: SpotifyGateway;
+      onProgress: Progress;
+    }) => Promise<PlaylistRead>,
   ): Promise<PlaylistRead>;
 }
 
-/** Tells one listener; one that throws leaves the read, failed with its error. */
+/** Tells one caller its progress; what it throws, if anything. */
 function tell(
-  entry: Inflight,
-  listener: Listener,
+  caller: Caller,
   fetched: number,
   total: number,
 ): { thrown: unknown } | null {
   try {
-    listener.onProgress(fetched, total);
+    caller.onProgress?.(fetched, total);
     return null;
   } catch (thrown) {
-    entry.listeners.delete(listener);
-    entry.waiting--;
-    listener.fail(thrown);
     return { thrown };
   }
+}
+
+/** Fails one caller alone; the last one to leave stops the read. */
+function leave(entry: Inflight, caller: Caller, reason: unknown): void {
+  if (!entry.callers.delete(caller)) return;
+  caller.fail(reason);
+  if (entry.callers.size === 0) entry.stop.abort(reason);
+}
+
+/**
+ * The gateway a shared read runs on. Each call goes through the gateway of a
+ * caller still on the read, so a stopped caller's signal can't end it for the
+ * rest: a call it was carrying is made again through the next caller's.
+ */
+function sharedGateway(entry: Inflight): SpotifyGateway {
+  return {
+    signal: entry.stop.signal,
+    async call(fn, description) {
+      while (true) {
+        entry.stop.signal.throwIfAborted();
+        const [carrier] = entry.callers;
+        try {
+          return await carrier.gateway.call(fn, description);
+        } catch (error) {
+          if (carrier.gateway.signal?.aborted) continue;
+          throw error;
+        }
+      }
+    },
+  };
 }
 
 const memories = new WeakMap<UserData, Memory>();
@@ -535,35 +577,54 @@ function createMemory(data: UserData, now: () => number): Memory {
       });
     },
 
-    once(key, { onProgress }, fn) {
-      let running = inflight.get(key);
-      if (!running) {
-        const entry: Inflight = {
+    once(key, { gateway, onProgress }, fn) {
+      const { signal } = gateway;
+      // Turned away before starting a read it would leave with no caller.
+      if (signal?.aborted) return Promise.reject(signal.reason);
+      let entry = inflight.get(key);
+      // A read everyone has left is only finishing; it takes no new callers.
+      if (!entry || entry.stop.signal.aborted) {
+        const started: Inflight = {
           read: null as never,
-          waiting: 0,
-          listeners: new Set(),
+          callers: new Set(),
           lastProgress: null,
+          stop: new AbortController(),
         };
-        entry.read = fn((fetched, total) => {
-          entry.lastProgress = [fetched, total];
-          for (const listener of [...entry.listeners]) {
-            const left = tell(entry, listener, fetched, total);
-            // Throwing here ends the fetch: worth it only once nobody wants the items.
-            if (left && entry.waiting === 0) throw left.thrown;
-          }
-        }).finally(() => inflight.delete(key));
-        inflight.set(key, entry);
-        running = entry;
+        // Started a turn later, so the caller below is on the read first.
+        started.read = Promise.resolve()
+          .then(() =>
+            fn({
+              gateway: sharedGateway(started),
+              onProgress: (fetched, total) => {
+                started.lastProgress = [fetched, total];
+                for (const caller of [...started.callers]) {
+                  const told = tell(caller, fetched, total);
+                  if (told) leave(started, caller, told.thrown);
+                }
+                // Ends the fetch once nobody is left to want the items.
+                started.stop.signal.throwIfAborted();
+              },
+            }),
+          )
+          .finally(() => {
+            if (inflight.get(key) === started) inflight.delete(key);
+          });
+        inflight.set(key, started);
+        entry = started;
       }
-      const entry = running;
-      entry.waiting++;
+      const joined = entry;
       // A promise per caller, so one caller can fail without failing the rest.
       return new Promise<PlaylistRead>((resolve, reject) => {
-        entry.read.then(resolve, reject);
-        if (!onProgress) return;
-        const listener: Listener = { onProgress, fail: reject };
-        entry.listeners.add(listener);
-        if (entry.lastProgress) tell(entry, listener, ...entry.lastProgress);
+        const caller: Caller = { gateway, onProgress, fail: reject };
+        const stopped = () => leave(joined, caller, signal?.reason);
+        joined.callers.add(caller);
+        signal?.addEventListener('abort', stopped, { once: true });
+        joined.read
+          .then(resolve, reject)
+          .finally(() => signal?.removeEventListener('abort', stopped));
+        if (!joined.lastProgress) return;
+        const told = tell(caller, ...joined.lastProgress);
+        if (told) leave(joined, caller, told.thrown);
       });
     },
   };

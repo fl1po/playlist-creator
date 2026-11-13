@@ -8,6 +8,7 @@ import {
   PRUNE_AFTER_MS,
   playlistReads,
 } from '../lib/playlist-reads/index.js';
+import { TaskAborted } from '../lib/spotify/errors.js';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
 import {
   durableUserData,
@@ -297,14 +298,20 @@ test('a reader that joins a read in flight sees its progress', async (t) => {
   const first: Array<[number, number]> = [];
   const joiner: Array<[number, number]> = [];
   let joined: Promise<PlaylistRead> | null = null;
-  spotify.duringNextItemsPage(() => {
+  const join = async () => {
     joined = reads.tracks('aw', {
       onProgress: (fetched, total) => joiner.push([fetched, total]),
     });
-  });
+    await new Promise((resolve) => setImmediate(resolve));
+  };
 
+  // The second reader joins after the first page has reported, and the
+  // second page waits for it.
   await reads.tracks('aw', {
-    onProgress: (fetched, total) => first.push([fetched, total]),
+    onProgress: (fetched, total) => {
+      first.push([fetched, total]);
+      if (fetched === 50) spotify.duringNextItemsPage(join);
+    },
   });
   await joined;
 
@@ -312,9 +319,11 @@ test('a reader that joins a read in flight sees its progress', async (t) => {
     [50, 60],
     [60, 60],
   ]);
-  // Whenever it joined, it hears where the read is and follows it to the end.
-  assert.deepEqual(joiner.at(-1), [60, 60]);
-  assert.deepEqual(joiner, first.slice(-joiner.length));
+  // It is told where the read already is, then follows it to the end.
+  assert.deepEqual(joiner, [
+    [50, 60],
+    [60, 60],
+  ]);
   const itemCalls = spotify.take().filter((c) => c.startsWith('items'));
   assert.deepEqual(itemCalls, ['items aw @0', 'items aw @50']);
 });
@@ -340,6 +349,71 @@ test('a reader that stops while sharing a read fails alone', async (t) => {
   await assert.rejects(joined as unknown as Promise<PlaylistRead>, stopped);
 });
 
+/** A second view of the same user data, on a gateway its own task can stop. */
+function taskReads(spotify: ReturnType<typeof fakeSpotify>, data: UserData) {
+  const stop = new AbortController();
+  const reads = playlistReads({
+    gateway: fixtureGateway(spotify.api, { signal: stop.signal }),
+    data,
+  });
+  return { reads, stop: () => stop.abort(new TaskAborted()) };
+}
+
+function settledFlag(p: Promise<unknown>): () => boolean {
+  let settled = false;
+  p.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  return () => settled;
+}
+
+test('a reader stopped while sharing a read leaves it at once', async (t) => {
+  const { spotify, reads, data } = setup(t);
+  spotify.set('aw', tracks('a', 60));
+  const task = taskReads(spotify, data);
+  let taskRead: Promise<PlaylistRead> | null = null;
+  let leftWhilePageHeld = false;
+  // The first page hangs, as in a rate-limit wait, until the task has been
+  // stopped and given a turn to leave.
+  spotify.duringNextItemsPage(async () => {
+    taskRead = task.reads.tracks('aw');
+    const settled = settledFlag(taskRead);
+    await new Promise((resolve) => setImmediate(resolve));
+    task.stop();
+    await new Promise((resolve) => setImmediate(resolve));
+    leftWhilePageHeld = settled();
+  });
+
+  const read = await reads.tracks('aw');
+
+  assert.ok(leftWhilePageHeld, 'the stopped reader waited for the page');
+  await assert.rejects(
+    taskRead as unknown as Promise<PlaylistRead>,
+    TaskAborted,
+  );
+  assert.equal(ids(read).length, 60);
+});
+
+test('stopping the reader that started a shared read leaves it to the others', async (t) => {
+  const { spotify, reads, data } = setup(t);
+  spotify.set('aw', tracks('a', 120));
+  const task = taskReads(spotify, data);
+  let routeRead: Promise<PlaylistRead> | null = null;
+  spotify.duringNextItemsPage(async () => {
+    routeRead = reads.tracks('aw');
+    await new Promise((resolve) => setImmediate(resolve));
+    task.stop();
+  });
+
+  await assert.rejects(task.reads.tracks('aw'), TaskAborted);
+  const read = await (routeRead as unknown as Promise<PlaylistRead>);
+
+  assert.equal(ids(read).length, 120);
+  const itemCalls = spotify.take().filter((c) => c.startsWith('items'));
+  assert.deepEqual(itemCalls, ['items aw @0', 'items aw @50', 'items aw @100']);
+});
+
 test('a lone reader that stops ends the read and stores nothing', async (t) => {
   const { spotify, reads } = setup(t);
   spotify.set('aw', tracks('a', 120));
@@ -358,6 +432,82 @@ test('a lone reader that stops ends the read and stores nothing', async (t) => {
   assert.deepEqual(itemCalls, ['items aw @0']);
   const next = await reads.tracks('aw');
   assert.ok(next.success && !next.cached);
+});
+
+test('a lone reader stopped mid-read ends the read and stores nothing', async (t) => {
+  const { spotify, data } = setup(t);
+  spotify.set('aw', tracks('a', 120));
+  const task = taskReads(spotify, data);
+  spotify.duringNextItemsPage(() => task.stop());
+
+  await assert.rejects(task.reads.tracks('aw'), TaskAborted);
+
+  const itemCalls = spotify.take().filter((c) => c.startsWith('items'));
+  assert.deepEqual(itemCalls, ['items aw @0']);
+  const next = await playlistReads({
+    gateway: fixtureGateway(spotify.api),
+    data,
+  }).tracks('aw');
+  assert.ok(next.success && !next.cached);
+});
+
+test('a reader already stopped when it reaches the read fails alone', async (t) => {
+  const { spotify, data } = setup(t);
+  spotify.set('aw', tracks('a', 60));
+  const task = taskReads(spotify, data);
+  task.stop();
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+
+  // A held snapshot skips the live check, so nothing calls Spotify first.
+  await assert.rejects(
+    task.reads.tracks('aw', { snapshot: 'aw@1' }),
+    TaskAborted,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(unhandled, []);
+  assert.deepEqual(spotify.take(), []);
+});
+
+test('a read everyone has left is not joined; the next reader starts afresh', async (t) => {
+  const { spotify, reads, data } = setup(t);
+  spotify.set('aw', tracks('a', 120));
+  const task = taskReads(spotify, data);
+  const turn = () => new Promise((resolve) => setImmediate(resolve));
+  let routeRead: Promise<PlaylistRead> | null = null;
+  let laterRead: Promise<PlaylistRead> | null = null;
+  // The lone task is stopped while its first page is still out, and a route
+  // asks for the same playlist before that page comes back. Once the task's
+  // read has ended, a later reader asks too, while the route's is still out.
+  spotify.duringNextItemsPage(async () => {
+    spotify.duringNextItemsPage(async () => {
+      await turn();
+      await turn();
+      laterRead = reads.tracks('aw');
+      await turn();
+    });
+    task.stop();
+    routeRead = reads.tracks('aw');
+    await turn();
+  });
+
+  await assert.rejects(task.reads.tracks('aw'), TaskAborted);
+  const read = await (routeRead as unknown as Promise<PlaylistRead>);
+  const later = await (laterRead as unknown as Promise<PlaylistRead>);
+
+  assert.equal(ids(read).length, 120);
+  assert.deepEqual(ids(later), ids(read));
+  // The task's one page, then one read shared by the route and the later one.
+  const itemCalls = spotify.take().filter((c) => c.startsWith('items'));
+  assert.deepEqual(itemCalls, [
+    'items aw @0',
+    'items aw @0',
+    'items aw @50',
+    'items aw @100',
+  ]);
 });
 
 test('slots without a track are kept, with their uri', async (t) => {
