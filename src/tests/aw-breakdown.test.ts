@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { groupTracksByWeek } from '../domain/aw-breakdown.js';
+import {
+  describeAwBreakdown,
+  groupTracksByWeek,
+} from '../domain/aw-breakdown.js';
 import type { PlaylistItem } from '../lib/playlist-reads/index.js';
 
 function item(
@@ -68,4 +71,28 @@ test('an album with three or more tracks in a week counts as an album', () => {
   assert.deepEqual(weeks[0].frequentArtists, [
     { label: 'Album Artist (3)', album: 'Album lp' },
   ]);
+});
+
+test('the breakdown line counts the tracks and averages them per week', () => {
+  const items = [
+    item('a', { releaseDate: '2026-01-02' }),
+    item('b', { releaseDate: '2026-01-09' }),
+  ];
+  assert.equal(
+    describeAwBreakdown(items, { cached: false }),
+    'AW breakdown: 2 weeks, 2 tracks, 2m · avg 1 tracks/1m per week',
+  );
+  assert.equal(
+    describeAwBreakdown(items, { cached: true }),
+    'AW breakdown: 2 weeks, 2 tracks, 2m · avg 1 tracks/1m per week (cached)',
+  );
+});
+
+test('the breakdown line names the slots it could not count', () => {
+  const empty: PlaylistItem = { track: null, uri: null, addedAt: null };
+  const items = [item('a', { releaseDate: '2026-01-02' }), empty, empty];
+  assert.equal(
+    describeAwBreakdown(items, { cached: false }),
+    'AW breakdown: 1 weeks, 1 tracks, 1m · avg 1 tracks/1m per week · 2 of 3 slots have no track data',
+  );
 });

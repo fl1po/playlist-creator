@@ -1,5 +1,10 @@
 import type { PlaylistItem } from '../lib/playlist-reads/index.js';
-import { formatDdMmYy, parseDate, toReleaseFriday } from './tracks.js';
+import {
+  formatDdMmYy,
+  formatHm,
+  parseDate,
+  toReleaseFriday,
+} from './tracks.js';
 
 export interface FrequentArtistEntry {
   label: string; // "Artist (N)"
@@ -141,4 +146,27 @@ export function groupTracksByWeek(items: PlaylistItem[]): WeekBreakdownEntry[] {
       frequentArtists,
     };
   });
+}
+
+/**
+ * The breakdown's log line. Slots without track data (local files, episodes,
+ * tracks Spotify didn't describe) can't be counted, so they are named.
+ */
+export function describeAwBreakdown(
+  items: PlaylistItem[],
+  read: { cached: boolean },
+): string {
+  const weeks = groupTracksByWeek(items);
+  const tracks = weeks.reduce((s, w) => s + w.trackCount, 0);
+  const durationMs = weeks.reduce((s, w) => s + w.durationMs, 0);
+  const avgTracks = weeks.length > 0 ? Math.round(tracks / weeks.length) : 0;
+  const avgDuration =
+    weeks.length > 0 ? formatHm(durationMs / weeks.length) : '0m';
+  const empty = items.filter((i) => !i.track).length;
+  return [
+    `AW breakdown: ${weeks.length} weeks, ${tracks} tracks, ${formatHm(durationMs)}`,
+    ` · avg ${avgTracks} tracks/${avgDuration} per week`,
+    empty > 0 ? ` · ${empty} of ${items.length} slots have no track data` : '',
+    read.cached ? ' (cached)' : '',
+  ].join('');
 }

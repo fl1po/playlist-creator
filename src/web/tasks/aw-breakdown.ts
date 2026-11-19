@@ -1,9 +1,9 @@
 import {
+  describeAwBreakdown,
   groupTracksByWeek,
   type WeekBreakdownEntry,
 } from '../../domain/aw-breakdown.js';
-import { formatHm } from '../../domain/tracks.js';
-import { itemsOf, playlistReads } from '../../lib/playlist-reads/index.js';
+import { playlistReads } from '../../lib/playlist-reads/index.js';
 import { AW_BREAKDOWN } from '../../lib/user-data/index.js';
 import type {
   BaseEvents,
@@ -45,28 +45,19 @@ export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
         );
       },
     });
-    const weeks = groupTracksByWeek(itemsOf(read));
-
-    const totalTracks = weeks.reduce((s, w) => s + w.trackCount, 0);
-    const totalDurationMs = weeks.reduce((s, w) => s + w.durationMs, 0);
+    if (!read.success) throw read.error;
+    const { items } = read;
+    const weeks = groupTracksByWeek(items);
 
     const result: AwBreakdownResult = {
-      totalTracks,
-      totalDurationMs,
+      totalTracks: weeks.reduce((s, w) => s + w.trackCount, 0),
+      totalDurationMs: weeks.reduce((s, w) => s + w.durationMs, 0),
       weekCount: weeks.length,
       weeks,
     };
 
     await tc.session.data.save(AW_BREAKDOWN, result);
     tc.emit('awBreakdown:complete', result);
-
-    const avgTracks =
-      weeks.length > 0 ? Math.round(totalTracks / weeks.length) : 0;
-    const avgDuration =
-      weeks.length > 0 ? formatHm(totalDurationMs / weeks.length) : '0m';
-    tc.log(
-      'success',
-      `AW breakdown: ${weeks.length} weeks, ${totalTracks} tracks, ${formatHm(totalDurationMs)} · avg ${avgTracks} tracks/${avgDuration} per week${read.success && read.cached ? ' (cached)' : ''}`,
-    );
+    tc.log('success', describeAwBreakdown(items, { cached: read.cached }));
   },
 };
