@@ -66,8 +66,17 @@ function fakeSpotify() {
   const playlists = new Map<string, { version: number; items: RawItem[] }>();
   let liked: RawItem[] = []; // newest first
   const calls: string[] = [];
-  const failing = { snapshot: false, itemsAtOffset: -1 };
+  const failing = {
+    snapshot: false,
+    itemsAtOffset: -1,
+    /** An item page at this offset comes back one item short. */
+    shortAtOffset: -1,
+    /** Only the next page at `shortAtOffset` comes back short. */
+    shortOnce: false,
+    liked: false,
+  };
   let onItemsPage: (() => void | Promise<void>) | null = null;
+  let onLikedPage: (() => void | Promise<void>) | null = null;
 
   const api = {
     playlists: {
@@ -88,16 +97,20 @@ function fakeSpotify() {
         if (offset === failing.itemsAtOffset) throw new Error('spotify 502');
         await onItemsPage?.();
         const items = playlists.get(id)?.items ?? [];
-        return {
-          total: items.length,
-          items: items.slice(offset, offset + limit),
-        };
+        const page = items.slice(offset, offset + limit);
+        if (offset === failing.shortAtOffset) {
+          page.pop();
+          if (failing.shortOnce) failing.shortAtOffset = -1;
+        }
+        return { total: items.length, items: page };
       },
     },
     currentUser: {
       tracks: {
         async savedTracks(limit: number, offset: number) {
           calls.push(`liked ${limit}@${offset}`);
+          if (failing.liked) throw new Error('spotify 500');
+          await onLikedPage?.();
           return {
             total: liked.length,
             items: liked.slice(offset, offset + limit),
@@ -123,6 +136,13 @@ function fakeSpotify() {
       onItemsPage = () => {
         onItemsPage = null;
         return fn();
+      };
+    },
+    /** Runs `fn` while the next Liked Songs page is fetched. */
+    duringNextLikedPage(fn: () => void) {
+      onLikedPage = () => {
+        onLikedPage = null;
+        fn();
       };
     },
     /** Calls since the last `take`. */
@@ -236,18 +256,27 @@ test('any edit changes the snapshot and the playlist is read again', async (t) =
   ]);
 });
 
-test('an unknown snapshot reads in full and stores nothing', async (t) => {
+test('a failed snapshot check fails the read without reading it', async (t) => {
   const { spotify, reads } = setup(t);
   spotify.set('aw', tracks('a', 3));
   spotify.failing.snapshot = true;
 
   const read = await reads.tracks('aw');
-  assert.ok(read.success);
-  assert.equal(read.snapshot, null);
-  assert.equal(read.items.length, 3);
+  assert.equal(read.success, false);
+  assert.deepEqual(spotify.take(), ['snapshot aw']);
+});
+
+test('a failed snapshot check after the read fails it and stores nothing', async (t) => {
+  const { spotify, reads } = setup(t);
+  spotify.set('aw', tracks('a', 3));
+  spotify.duringNextItemsPage(() => {
+    spotify.failing.snapshot = true;
+  });
+
+  const read = await reads.tracks('aw');
+  assert.equal(read.success, false);
 
   spotify.failing.snapshot = false;
-  spotify.take();
   const next = await reads.tracks('aw');
   assert.ok(next.success && !next.cached);
 });
@@ -266,19 +295,85 @@ test('a failed page fails the read and stores nothing', async (t) => {
   assert.equal(next.items.length, 120);
 });
 
-test('a playlist edited while it is read is returned but not stored', async (t) => {
+test('a playlist edited while it is read is read again', async (t) => {
   const { spotify, reads } = setup(t);
-  spotify.set('aw', tracks('a', 3));
-  spotify.duringNextItemsPage(() => spotify.set('aw', tracks('a', 4)));
+  spotify.set('aw', tracks('a', 120));
+  // Removed while the read is past them: offset paging would skip a track.
+  spotify.duringNextItemsPage(() => {
+    spotify.duringNextItemsPage(() =>
+      spotify.set('aw', tracks('a', 120).slice(10)),
+    );
+  });
 
   const read = await reads.tracks('aw');
-  assert.ok(read.success);
-  assert.equal(read.snapshot, null);
 
+  assert.deepEqual(
+    ids(read),
+    tracks('a', 120)
+      .slice(10)
+      .map((r) => r.track?.id),
+  );
+  assert.ok(read.success);
+  assert.equal(read.snapshot, 'aw@2');
   spotify.take();
   const next = await reads.tracks('aw');
+  assert.ok(next.success && next.cached);
+});
+
+test('a playlist that keeps changing while it is read fails the read', async (t) => {
+  const { spotify, reads } = setup(t);
+  spotify.set('aw', tracks('a', 3));
+  spotify.duringNextItemsPage(() => {
+    spotify.set('aw', tracks('a', 4));
+    spotify.duringNextItemsPage(() => spotify.set('aw', tracks('a', 5)));
+  });
+
+  const read = await reads.tracks('aw');
+  assert.equal(read.success, false);
+  assert.match(String(!read.success && read.error), /changed while/);
+
+  const next = await reads.tracks('aw');
+  assert.equal(ids(next).length, 5);
+});
+
+test('a page that comes back short fails the read and stores nothing', async (t) => {
+  const { spotify, reads } = setup(t);
+  spotify.set('aw', tracks('a', 120));
+  spotify.failing.shortAtOffset = 50;
+
+  const read = await reads.tracks('aw');
+  assert.equal(read.success, false);
+  assert.match(String(!read.success && read.error), /99 of 120/);
+
+  spotify.failing.shortAtOffset = -1;
+  const next = await reads.tracks('aw');
   assert.ok(next.success && !next.cached);
-  assert.equal(next.items.length, 4);
+  assert.equal(next.items.length, 120);
+});
+
+test('a short page once is read again', async (t) => {
+  const { spotify, reads } = setup(t);
+  spotify.set('aw', tracks('a', 120));
+  spotify.failing.shortAtOffset = 50;
+  spotify.failing.shortOnce = true;
+
+  const read = await reads.tracks('aw');
+  assert.equal(ids(read).length, 120);
+});
+
+test('a stale snapshot from the caller is checked live and stored', async (t) => {
+  const { spotify, reads } = setup(t);
+  spotify.set('wk', tracks('w', 3));
+  spotify.set('wk', tracks('x', 2));
+
+  const read = await reads.tracks('wk', { snapshot: 'wk@1' });
+
+  assert.deepEqual(ids(read), ['x0', 'x1']);
+  assert.ok(read.success);
+  assert.equal(read.snapshot, 'wk@2');
+  spotify.take();
+  const next = await reads.tracks('wk');
+  assert.ok(next.success && next.cached);
 });
 
 test('concurrent reads of one playlist share one fetch', async (t) => {
@@ -627,6 +722,32 @@ test('Liked Songs: an unlike shows in the count and costs a full read', async (t
   );
   const pages = spotify.take().filter((c) => c.startsWith('liked 50'));
   assert.deepEqual(pages, ['liked 50@0', 'liked 50@0', 'liked 50@50']);
+});
+
+test('Liked Songs: a failed check fails the read', async (t) => {
+  const { spotify, reads } = setup(t);
+  spotify.setLiked(likes(60));
+  spotify.failing.liked = true;
+
+  const read = await reads.likedSongs();
+  assert.equal(read.success, false);
+});
+
+test('Liked Songs: a like during the read is read again', async (t) => {
+  const { spotify, reads } = setup(t);
+  spotify.setLiked(likes(60));
+  spotify.duringNextLikedPage(() => {
+    spotify.duringNextLikedPage(() => spotify.setLiked(likes(61)));
+  });
+
+  const read = await reads.likedSongs();
+  assert.deepEqual(
+    ids(read),
+    likes(61).map((r) => r.track?.id),
+  );
+  spotify.take();
+  const next = await reads.likedSongs();
+  assert.ok(next.success && next.cached);
 });
 
 // ── User data store: large Redis values ──────────────────────────────────────

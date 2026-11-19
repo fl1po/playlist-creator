@@ -14,6 +14,11 @@ import {
  * for as long as the user's data is open and in the PLAYLIST_TRACKS /
  * LIKED_SONGS_TRACKS datasets between runs. Nothing ever invalidates it: any
  * edit, by the app or anyone else, changes the snapshot.
+ *
+ * Items are paged by offset, so an edit during a read shifts the pages under
+ * it: tracks are skipped or read twice. A read counts only if the snapshot is
+ * the same after it as before and it holds as many items as Spotify says the
+ * playlist has; otherwise it is made once more, then fails.
  */
 
 // ── Interface ────────────────────────────────────────────────────────────────
@@ -49,14 +54,13 @@ export interface PlaylistItem {
 
 /**
  * A complete read, or a failure; never a partial playlist. `snapshot` is the
- * snapshot the items are known to belong to, or null when Spotify couldn't
- * say (such a read is never stored). `cached` says no item page was fetched.
+ * snapshot the items belong to. `cached` says no item page was fetched.
  */
 export type PlaylistRead =
   | {
       success: true;
       items: PlaylistItem[];
-      snapshot: string | null;
+      snapshot: string;
       cached: boolean;
     }
   | { success: false; error: Error; kind: FailureKind };
@@ -64,7 +68,8 @@ export type PlaylistRead =
 export interface PlaylistReadOpts {
   /**
    * A snapshot id the caller already holds (e.g. from the user's playlist
-   * listing). Skips the live snapshot check.
+   * listing). Skips the live snapshot check when the tracks for it are held;
+   * a stale one costs a second read, checked live.
    */
   snapshot?: string;
   /** Liveness while item pages are fetched. */
@@ -102,89 +107,130 @@ export function playlistReads(session: {
 
   return {
     async tracks(playlistId, opts = {}) {
-      const snapshot =
-        opts.snapshot ?? (await playlistSnapshot(gateway, playlistId));
-      if (snapshot === null) {
-        // Unknown snapshot: read in full, store nothing.
-        const read = await fetchItems(gateway, playlistPages(playlistId), opts);
-        return read.success
-          ? { success: true, items: read.items, snapshot: null, cached: false }
-          : read;
-      }
+      let given = opts.snapshot;
+      return attempts(async () => {
+        const snap = given
+          ? { success: true as const, snapshot: given }
+          : await playlistSnapshot(gateway, playlistId);
+        given = undefined;
+        if (!snap.success) return snap;
+        const { snapshot } = snap;
 
-      const hit = await memory.playlist(playlistId, snapshot);
-      if (hit) return { success: true, items: hit, snapshot, cached: true };
+        const hit = await memory.playlist(playlistId, snapshot);
+        if (hit) return { success: true, items: hit, snapshot, cached: true };
 
-      return memory.once(
-        `${playlistId}\0${snapshot}`,
-        { gateway, onProgress: opts.onProgress },
-        // The shared gateway, not this caller's: the read outlives its stop.
-        async ({ gateway, onProgress }) => {
-          const read = await fetchItems(gateway, playlistPages(playlistId), {
-            onProgress,
-          });
-          if (!read.success) return read;
-          // Store only when the playlist didn't move while it was read.
-          const after = await playlistSnapshot(gateway, playlistId);
-          if (after !== snapshot)
+        return memory.once(
+          `${playlistId}\0${snapshot}`,
+          { gateway, onProgress: opts.onProgress },
+          // The shared gateway, not this caller's: the read outlives its stop.
+          async ({ gateway, onProgress }): Promise<Attempt> => {
+            const read = await fetchItems(gateway, playlistPages(playlistId), {
+              onProgress,
+            });
+            if (!read.success) return read;
+            if (read.items.length !== read.lastTotal)
+              return shortRead(read.items.length, read.lastTotal);
+            const after = await playlistSnapshot(gateway, playlistId);
+            if (!after.success) return after;
+            if (after.snapshot !== snapshot) return moved(playlistId);
+            await memory.storePlaylist(playlistId, snapshot, read.items);
             return {
               success: true,
               items: read.items,
-              snapshot: null,
+              snapshot,
               cached: false,
             };
-          await memory.storePlaylist(playlistId, snapshot, read.items);
-          return { success: true, items: read.items, snapshot, cached: false };
-        },
-      );
+          },
+        );
+      });
     },
 
     async likedSongs(opts = {}) {
-      const key = await likedSongsKey(gateway);
-      const held = await memory.liked();
-      if (key !== null && held?.snapshot === key)
-        return {
-          success: true,
-          items: held.items,
-          snapshot: key,
-          cached: true,
-        };
+      return attempts(async () => {
+        const keyed = await likedSongsKey(gateway);
+        if (!keyed.success) return keyed;
+        const { key } = keyed;
+        const held = await memory.liked();
+        if (held?.snapshot === key)
+          return {
+            success: true,
+            items: held.items,
+            snapshot: key,
+            cached: true,
+          };
 
-      return memory.once(
-        `liked\0${key}`,
-        { gateway, onProgress: opts.onProgress },
-        async ({ gateway, onProgress }) => {
-          const newest = held?.items[0];
-          const read = await fetchItems(gateway, LIKED_PAGES, {
-            onProgress,
-            stopAt: newest ? (item) => sameItem(item, newest) : undefined,
-          });
-          if (!read.success) return read;
+        return memory.once(
+          `liked\0${key}`,
+          { gateway, onProgress: opts.onProgress },
+          async ({ gateway, onProgress }): Promise<Attempt> => {
+            const newest = held?.items[0];
+            const read = await fetchItems(gateway, LIKED_PAGES, {
+              onProgress,
+              stopAt: newest ? (item) => sameItem(item, newest) : undefined,
+            });
+            if (!read.success) return read;
 
-          let items = read.items;
-          if (read.stopped && held) {
-            // The new likes, then what was held, if the count adds up.
-            if (items.length + held.items.length === read.total) {
-              items = [...items, ...held.items];
-            } else {
-              const full = await fetchItems(gateway, LIKED_PAGES, {
-                onProgress,
-              });
-              if (!full.success) return full;
-              items = full.items;
+            let items = read.items;
+            if (read.stopped && held) {
+              // The new likes, then what was held, if the count adds up.
+              if (items.length + held.items.length === read.total) {
+                items = [...items, ...held.items];
+              } else {
+                const full = await fetchItems(gateway, LIKED_PAGES, {
+                  onProgress,
+                });
+                if (!full.success) return full;
+                if (full.items.length !== full.lastTotal)
+                  return shortRead(full.items.length, full.lastTotal);
+                items = full.items;
+              }
+            } else if (items.length !== read.lastTotal) {
+              return shortRead(items.length, read.lastTotal);
             }
-          }
 
-          if (key === null)
-            return { success: true, items, snapshot: null, cached: false };
-          const after = await likedSongsKey(gateway);
-          if (after !== key)
-            return { success: true, items, snapshot: null, cached: false };
-          await memory.storeLiked(key, items);
-          return { success: true, items, snapshot: key, cached: false };
-        },
-      );
+            const after = await likedSongsKey(gateway);
+            if (!after.success) return after;
+            if (after.key !== key) return moved('Liked Songs');
+            await memory.storeLiked(key, items);
+            return { success: true, items, snapshot: key, cached: false };
+          },
+        );
+      });
     },
+  };
+}
+
+// ── Attempts ─────────────────────────────────────────────────────────────────
+
+/** A read that didn't add up: made again once, then failed with `error`. */
+interface Retry {
+  retry: Error;
+}
+
+type Attempt = PlaylistRead | Retry;
+
+const moved = (what: string): Retry => ({
+  retry: new Error(`${what} changed while it was read`),
+});
+
+const shortRead = (got: number, total: number): Retry => ({
+  retry: new Error(`Spotify returned ${got} of ${total} items`),
+});
+
+/** Runs `attempt` until it adds up, at most twice. */
+async function attempts(
+  attempt: () => Promise<Attempt>,
+): Promise<PlaylistRead> {
+  let last: Retry | null = null;
+  for (let i = 0; i < 2; i++) {
+    const result = await attempt();
+    if (!('retry' in result)) return result;
+    last = result;
+  }
+  return {
+    success: false,
+    error: (last as Retry).retry,
+    kind: 'unknown',
   };
 }
 
@@ -224,34 +270,58 @@ const LIKED_PAGES: PageSource = {
   description: 'liked songs',
 };
 
+type Failure = { success: false; error: Error; kind: FailureKind };
+
 async function playlistSnapshot(
   gateway: SpotifyGateway,
   playlistId: string,
-): Promise<string | null> {
+): Promise<{ success: true; snapshot: string } | Failure> {
   const r = await gateway.call(
     (api) => api.playlists.getPlaylist(playlistId, undefined, 'snapshot_id'),
     `playlist snapshot ${playlistId}`,
   );
-  return r.success ? (r.data.snapshot_id ?? null) : null;
+  if (!r.success) return { success: false, error: r.error, kind: r.kind };
+  if (!r.data.snapshot_id)
+    return {
+      success: false,
+      error: new Error(`Spotify gave no snapshot for playlist ${playlistId}`),
+      kind: 'unknown',
+    };
+  return { success: true, snapshot: r.data.snapshot_id };
 }
 
 /** Liked Songs' stand-in for a snapshot id: total count + newest addition. */
-async function likedSongsKey(gateway: SpotifyGateway): Promise<string | null> {
+async function likedSongsKey(
+  gateway: SpotifyGateway,
+): Promise<{ success: true; key: string } | Failure> {
   const r = await gateway.call(
     (api) => api.currentUser.tracks.savedTracks(1, 0),
     'liked songs snapshot',
   );
-  if (!r.success) return null;
+  if (!r.success) return { success: false, error: r.error, kind: r.kind };
   const page = r.data as {
     total?: number;
     items?: Array<{ added_at?: string }>;
   };
-  return `${page.total ?? 0}:${page.items?.[0]?.added_at ?? ''}`;
+  return {
+    success: true,
+    key: `${page.total ?? 0}:${page.items?.[0]?.added_at ?? ''}`,
+  };
 }
 
+/**
+ * `total` is what the first page said; `lastTotal` what the last one did. A
+ * read the playlist held still for has exactly `lastTotal` items.
+ */
 type Fetched =
-  | { success: true; items: PlaylistItem[]; total: number; stopped: boolean }
-  | { success: false; error: Error; kind: FailureKind };
+  | {
+      success: true;
+      items: PlaylistItem[];
+      total: number;
+      lastTotal: number;
+      stopped: boolean;
+    }
+  | Failure;
 
 /**
  * Every page, or a failure. With `stopAt`, stops before the first item it
@@ -268,6 +338,7 @@ async function fetchItems(
   const items: PlaylistItem[] = [];
   let offset = 0;
   let total = 0;
+  let lastTotal = 0;
   while (true) {
     gateway.signal?.throwIfAborted();
     const result = await gateway.call(
@@ -278,19 +349,20 @@ async function fetchItems(
       return { success: false, error: result.error, kind: result.kind };
 
     const page = result.data as { items?: unknown[]; total?: number };
-    if (offset === 0) total = page.total ?? 0;
+    lastTotal = page.total ?? 0;
+    if (offset === 0) total = lastTotal;
     const raw = page.items ?? [];
     for (const r of raw) {
       const item = fromSpotify(r);
       if (opts.stopAt?.(item))
-        return { success: true, items, total, stopped: true };
+        return { success: true, items, total, lastTotal, stopped: true };
       items.push(item);
     }
     offset += raw.length;
     opts.onProgress?.(offset, total);
     if (raw.length < PAGE) break;
   }
-  return { success: true, items, total, stopped: false };
+  return { success: true, items, total, lastTotal, stopped: false };
 }
 
 function sameItem(a: PlaylistItem, b: PlaylistItem): boolean {
@@ -410,7 +482,7 @@ interface Caller extends Joining {
 }
 
 interface Inflight {
-  read: Promise<PlaylistRead>;
+  read: Promise<unknown>;
   /** Callers still on the read; the read stops once none is left. */
   callers: Set<Caller>;
   lastProgress: [number, number] | null;
@@ -441,14 +513,14 @@ interface Memory {
    * caller that is stopped, or whose `onProgress` throws, leaves at once and
    * fails alone with that error; the read stops only once no caller is left.
    */
-  once(
+  once<T>(
     key: string,
     caller: Joining,
     fn: (shared: {
       gateway: SpotifyGateway;
       onProgress: Progress;
-    }) => Promise<PlaylistRead>,
-  ): Promise<PlaylistRead>;
+    }) => Promise<T>,
+  ): Promise<T>;
 }
 
 /** Tells one caller its progress; what it throws, if anything. */
@@ -577,7 +649,14 @@ function createMemory(data: UserData, now: () => number): Memory {
       });
     },
 
-    once(key, { gateway, onProgress }, fn) {
+    once<T>(
+      key: string,
+      { gateway, onProgress }: Joining,
+      fn: (shared: {
+        gateway: SpotifyGateway;
+        onProgress: Progress;
+      }) => Promise<T>,
+    ): Promise<T> {
       const { signal } = gateway;
       // Turned away before starting a read it would leave with no caller.
       if (signal?.aborted) return Promise.reject(signal.reason);
@@ -614,12 +693,12 @@ function createMemory(data: UserData, now: () => number): Memory {
       }
       const joined = entry;
       // A promise per caller, so one caller can fail without failing the rest.
-      return new Promise<PlaylistRead>((resolve, reject) => {
+      return new Promise<T>((resolve, reject) => {
         const caller: Caller = { gateway, onProgress, fail: reject };
         const stopped = () => leave(joined, caller, signal?.reason);
         joined.callers.add(caller);
         signal?.addEventListener('abort', stopped, { once: true });
-        joined.read
+        (joined.read as Promise<T>)
           .then(resolve, reject)
           .finally(() => signal?.removeEventListener('abort', stopped));
         if (!joined.lastProgress) return;

@@ -120,6 +120,10 @@ function fixtureCtx(world: FixtureWorld): SpotifyGateway & {
         ];
         return { items: all.slice(offset, offset + limit), total: all.length };
       },
+      // Every removal from a playlist moves its snapshot.
+      getPlaylist: async (playlistId: string) => ({
+        snapshot_id: `${playlistId}@${removed[playlistId]?.length ?? 0}`,
+      }),
       getPlaylistItems: async (
         playlistId: string,
         _market: unknown,

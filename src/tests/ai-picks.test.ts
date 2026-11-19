@@ -31,6 +31,7 @@ function fakeSpotify(playlists: Array<{ name: string; albumIds: string[] }>) {
           total: playlists.length,
         };
       },
+      getPlaylist: async (id: string) => ({ snapshot_id: `${id}@1` }),
       getPlaylistItems: async (
         id: string,
         _m: unknown,

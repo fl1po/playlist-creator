@@ -37,6 +37,8 @@ function fakeContext(opts: {
       },
     },
     playlists: {
+      // Every removal moves the snapshot.
+      getPlaylist: async () => ({ snapshot_id: `p1@${removeCalls}` }),
       getPlaylistItems: async (
         _id: string,
         _m: unknown,
@@ -49,6 +51,7 @@ function fakeContext(opts: {
           items: opts.trackUris
             .slice(offset, offset + limit)
             .map((uri) => ({ track: { uri } })),
+          total: opts.trackUris.length,
         };
       },
       removeItemsFromPlaylist: async (
