@@ -79,11 +79,11 @@ test('the breakdown line counts the tracks and averages them per week', () => {
     item('b', { releaseDate: '2026-01-09' }),
   ];
   assert.equal(
-    describeAwBreakdown(items, { cached: false }),
+    describeAwBreakdown(items, { cached: false, missing: 0 }),
     'AW breakdown: 2 weeks, 2 tracks, 2m · avg 1 tracks/1m per week',
   );
   assert.equal(
-    describeAwBreakdown(items, { cached: true }),
+    describeAwBreakdown(items, { cached: true, missing: 0 }),
     'AW breakdown: 2 weeks, 2 tracks, 2m · avg 1 tracks/1m per week (cached)',
   );
 });
@@ -92,7 +92,15 @@ test('the breakdown line names the slots it could not count', () => {
   const empty: PlaylistItem = { track: null, uri: null, addedAt: null };
   const items = [item('a', { releaseDate: '2026-01-02' }), empty, empty];
   assert.equal(
-    describeAwBreakdown(items, { cached: false }),
+    describeAwBreakdown(items, { cached: false, missing: 0 }),
     'AW breakdown: 1 weeks, 1 tracks, 1m · avg 1 tracks/1m per week · 2 of 3 slots have no track data',
+  );
+});
+
+test('the breakdown line names the tracks Spotify left out', () => {
+  const items = [item('a', { releaseDate: '2026-01-02' })];
+  assert.equal(
+    describeAwBreakdown(items, { cached: false, missing: 9 }),
+    'AW breakdown: 1 weeks, 1 tracks, 1m · avg 1 tracks/1m per week · Spotify left out 9 of 10 tracks',
   );
 });

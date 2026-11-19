@@ -58,6 +58,6 @@ export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
 
     await tc.session.data.save(AW_BREAKDOWN, result);
     tc.emit('awBreakdown:complete', result);
-    tc.log('success', describeAwBreakdown(items, { cached: read.cached }));
+    tc.log('success', describeAwBreakdown(items, read));
   },
 };

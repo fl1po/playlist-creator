@@ -150,11 +150,12 @@ export function groupTracksByWeek(items: PlaylistItem[]): WeekBreakdownEntry[] {
 
 /**
  * The breakdown's log line. Slots without track data (local files, episodes,
- * tracks Spotify didn't describe) can't be counted, so they are named.
+ * tracks Spotify didn't describe) can't be counted, so they are named, and so
+ * are the items Spotify counted in its total but didn't return.
  */
 export function describeAwBreakdown(
   items: PlaylistItem[],
-  read: { cached: boolean },
+  read: { cached: boolean; missing: number },
 ): string {
   const weeks = groupTracksByWeek(items);
   const tracks = weeks.reduce((s, w) => s + w.trackCount, 0);
@@ -167,6 +168,9 @@ export function describeAwBreakdown(
     `AW breakdown: ${weeks.length} weeks, ${tracks} tracks, ${formatHm(durationMs)}`,
     ` · avg ${avgTracks} tracks/${avgDuration} per week`,
     empty > 0 ? ` · ${empty} of ${items.length} slots have no track data` : '',
+    read.missing > 0
+      ? ` · Spotify left out ${read.missing} of ${items.length + read.missing} tracks`
+      : '',
     read.cached ? ' (cached)' : '',
   ].join('');
 }

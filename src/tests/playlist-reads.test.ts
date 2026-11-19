@@ -336,18 +336,39 @@ test('a playlist that keeps changing while it is read fails the read', async (t)
   assert.equal(ids(next).length, 5);
 });
 
-test('a page that comes back short fails the read and stores nothing', async (t) => {
+test('items Spotify keeps leaving out are counted as missing, not stored', async (t) => {
   const { spotify, reads } = setup(t);
   spotify.set('aw', tracks('a', 120));
   spotify.failing.shortAtOffset = 50;
 
   const read = await reads.tracks('aw');
-  assert.equal(read.success, false);
-  assert.match(String(!read.success && read.error), /99 of 120/);
+
+  // The pages after the short one are still read.
+  assert.deepEqual(
+    ids(read),
+    tracks('a', 120)
+      .filter((r) => r.track?.id !== 'a99')
+      .map((r) => r.track?.id),
+  );
+  assert.ok(read.success);
+  assert.equal(read.missing, 1);
+  assert.deepEqual(spotify.take(), [
+    'snapshot aw',
+    'items aw @0',
+    'items aw @50',
+    'items aw @100',
+    'snapshot aw',
+    'snapshot aw',
+    'items aw @0',
+    'items aw @50',
+    'items aw @100',
+    'snapshot aw',
+  ]);
 
   spotify.failing.shortAtOffset = -1;
   const next = await reads.tracks('aw');
   assert.ok(next.success && !next.cached);
+  assert.equal(next.missing, 0);
   assert.equal(next.items.length, 120);
 });
 
@@ -359,6 +380,8 @@ test('a short page once is read again', async (t) => {
 
   const read = await reads.tracks('aw');
   assert.equal(ids(read).length, 120);
+  assert.ok(read.success);
+  assert.equal(read.missing, 0);
 });
 
 test('a stale snapshot from the caller is checked live and stored', async (t) => {
@@ -371,7 +394,12 @@ test('a stale snapshot from the caller is checked live and stored', async (t) =>
   assert.deepEqual(ids(read), ['x0', 'x1']);
   assert.ok(read.success);
   assert.equal(read.snapshot, 'wk@2');
-  spotify.take();
+  // Not held, so checked live before the one read.
+  assert.deepEqual(spotify.take(), [
+    'snapshot wk',
+    'items wk @0',
+    'snapshot wk',
+  ]);
   const next = await reads.tracks('wk');
   assert.ok(next.success && next.cached);
 });

@@ -17,8 +17,10 @@ import {
  *
  * Items are paged by offset, so an edit during a read shifts the pages under
  * it: tracks are skipped or read twice. A read counts only if the snapshot is
- * the same after it as before and it holds as many items as Spotify says the
- * playlist has; otherwise it is made once more, then fails.
+ * the same after it as before; otherwise it is made once more, then fails.
+ * Spotify can also leave items out of a page of a playlist nobody touched. A
+ * read short of Spotify's total is made once more too; if it is short again,
+ * it is returned with how many items are missing, and not stored.
  */
 
 // ── Interface ────────────────────────────────────────────────────────────────
@@ -53,8 +55,10 @@ export interface PlaylistItem {
 }
 
 /**
- * A complete read, or a failure; never a partial playlist. `snapshot` is the
- * snapshot the items belong to. `cached` says no item page was fetched.
+ * A read of one snapshot, or a failure; never one torn by an edit.
+ * `snapshot` is the snapshot the items belong to. `cached` says no item page
+ * was fetched. `missing` is how many items Spotify counted in its total but
+ * didn't return; such a read is never stored.
  */
 export type PlaylistRead =
   | {
@@ -62,6 +66,7 @@ export type PlaylistRead =
       items: PlaylistItem[];
       snapshot: string;
       cached: boolean;
+      missing: number;
     }
   | { success: false; error: Error; kind: FailureKind };
 
@@ -69,7 +74,7 @@ export interface PlaylistReadOpts {
   /**
    * A snapshot id the caller already holds (e.g. from the user's playlist
    * listing). Skips the live snapshot check when the tracks for it are held;
-   * a stale one costs a second read, checked live.
+   * otherwise the live snapshot is checked before reading.
    */
   snapshot?: string;
   /** Liveness while item pages are fetched. */
@@ -107,17 +112,32 @@ export function playlistReads(session: {
 
   return {
     async tracks(playlistId, opts = {}) {
-      let given = opts.snapshot;
+      if (opts.snapshot) {
+        const snapshot = opts.snapshot;
+        const hit = await memory.playlist(playlistId, snapshot);
+        if (hit)
+          return {
+            success: true,
+            items: hit,
+            snapshot,
+            cached: true,
+            missing: 0,
+          };
+      }
       return attempts(async () => {
-        const snap = given
-          ? { success: true as const, snapshot: given }
-          : await playlistSnapshot(gateway, playlistId);
-        given = undefined;
+        const snap = await playlistSnapshot(gateway, playlistId);
         if (!snap.success) return snap;
         const { snapshot } = snap;
 
         const hit = await memory.playlist(playlistId, snapshot);
-        if (hit) return { success: true, items: hit, snapshot, cached: true };
+        if (hit)
+          return {
+            success: true,
+            items: hit,
+            snapshot,
+            cached: true,
+            missing: 0,
+          };
 
         return memory.once(
           `${playlistId}\0${snapshot}`,
@@ -128,18 +148,20 @@ export function playlistReads(session: {
               onProgress,
             });
             if (!read.success) return read;
-            if (read.items.length !== read.lastTotal)
-              return shortRead(read.items.length, read.lastTotal);
             const after = await playlistSnapshot(gateway, playlistId);
             if (!after.success) return after;
             if (after.snapshot !== snapshot) return moved(playlistId);
-            await memory.storePlaylist(playlistId, snapshot, read.items);
-            return {
-              success: true,
+            const missing = read.lastTotal - read.items.length;
+            const result = {
+              success: true as const,
               items: read.items,
               snapshot,
               cached: false,
+              missing,
             };
+            if (missing !== 0) return shortRead(result, read.lastTotal);
+            await memory.storePlaylist(playlistId, snapshot, read.items);
+            return result;
           },
         );
       });
@@ -157,6 +179,7 @@ export function playlistReads(session: {
             items: held.items,
             snapshot: key,
             cached: true,
+            missing: 0,
           };
 
         return memory.once(
@@ -171,6 +194,7 @@ export function playlistReads(session: {
             if (!read.success) return read;
 
             let items = read.items;
+            let total = read.lastTotal;
             if (read.stopped && held) {
               // The new likes, then what was held, if the count adds up.
               if (items.length + held.items.length === read.total) {
@@ -180,19 +204,24 @@ export function playlistReads(session: {
                   onProgress,
                 });
                 if (!full.success) return full;
-                if (full.items.length !== full.lastTotal)
-                  return shortRead(full.items.length, full.lastTotal);
                 items = full.items;
+                total = full.lastTotal;
               }
-            } else if (items.length !== read.lastTotal) {
-              return shortRead(items.length, read.lastTotal);
             }
 
             const after = await likedSongsKey(gateway);
             if (!after.success) return after;
             if (after.key !== key) return moved('Liked Songs');
+            const result = {
+              success: true as const,
+              items,
+              snapshot: key,
+              cached: false,
+              missing: total - items.length,
+            };
+            if (result.missing !== 0) return shortRead(result, total);
             await memory.storeLiked(key, items);
-            return { success: true, items, snapshot: key, cached: false };
+            return result;
           },
         );
       });
@@ -202,9 +231,14 @@ export function playlistReads(session: {
 
 // ── Attempts ─────────────────────────────────────────────────────────────────
 
-/** A read that didn't add up: made again once, then failed with `error`. */
+/**
+ * A read that didn't add up, made again once. If the second one doesn't
+ * either, it fails with `retry`, or, when one of one snapshot came back
+ * short of Spotify's total, that is what Spotify has: `short` is returned.
+ */
 interface Retry {
   retry: Error;
+  short?: PlaylistRead;
 }
 
 type Attempt = PlaylistRead | Retry;
@@ -213,8 +247,12 @@ const moved = (what: string): Retry => ({
   retry: new Error(`${what} changed while it was read`),
 });
 
-const shortRead = (got: number, total: number): Retry => ({
-  retry: new Error(`Spotify returned ${got} of ${total} items`),
+const shortRead = (
+  read: PlaylistRead & { success: true },
+  total: number,
+): Retry => ({
+  retry: new Error(`Spotify returned ${read.items.length} of ${total} items`),
+  short: read,
 });
 
 /** Runs `attempt` until it adds up, at most twice. */
@@ -227,11 +265,8 @@ async function attempts(
     if (!('retry' in result)) return result;
     last = result;
   }
-  return {
-    success: false,
-    error: (last as Retry).retry,
-    kind: 'unknown',
-  };
+  const { retry, short } = last as Retry;
+  return short ?? { success: false, error: retry, kind: 'unknown' };
 }
 
 /** Entries nobody has read for this long leave PLAYLIST_TRACKS. */
@@ -311,7 +346,8 @@ async function likedSongsKey(
 
 /**
  * `total` is what the first page said; `lastTotal` what the last one did. A
- * read the playlist held still for has exactly `lastTotal` items.
+ * read the playlist held still for, with nothing left out, has exactly
+ * `lastTotal` items.
  */
 type Fetched =
   | {
@@ -358,9 +394,10 @@ async function fetchItems(
         return { success: true, items, total, lastTotal, stopped: true };
       items.push(item);
     }
-    offset += raw.length;
-    opts.onProgress?.(offset, total);
-    if (raw.length < PAGE) break;
+    // Spotify's positions: a page it left items out of still covers PAGE.
+    offset += PAGE;
+    opts.onProgress?.(Math.min(offset, total), total);
+    if (raw.length === 0 || offset >= lastTotal) break;
   }
   return { success: true, items, total, lastTotal, stopped: false };
 }
