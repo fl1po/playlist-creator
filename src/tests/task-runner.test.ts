@@ -524,6 +524,7 @@ test('a failure is logged after the task’s own error handler', async () => {
 
   assert.deepEqual(seen, ['onError Error: boom aborted=false']);
   assert.deepEqual(logs(owner), [
+    'info: fill started',
     'info: task-specific',
     'error: fill failed: Error: boom',
   ]);
@@ -544,6 +545,7 @@ test('a stop is logged as a stop, not a failure', async () => {
   }
   await run.done;
   assert.deepEqual(logs(owner), [
+    'info: fill started',
     'warn: Stopping fill...',
     'warn: fill stopped by user',
   ]);
@@ -560,6 +562,22 @@ test('a throwing cleanup still frees the slot', async () => {
   fill.release();
   await run.done;
   assert.deepEqual(runner.statusFor('u1'), { busy: false, mine: false });
+});
+
+test('a start is logged with its own message and the client that asked', async () => {
+  const { runner, connect } = setup();
+  const owner = connect('u1');
+  const task = gatedTask('aw-breakdown', {
+    startMessage: 'AW breakdown calculation started',
+  });
+  const run = started(
+    runner.start(task, session('u1'), {}, { from: 'Safari on iPhone' }),
+  );
+  task.release();
+  await run.done;
+  assert.deepEqual(logs(owner), [
+    'info: AW breakdown calculation started · from Safari on iPhone',
+  ]);
 });
 
 // ── Tagging ──────────────────────────────────────────────────────────────────
@@ -583,6 +601,7 @@ test('everything a task sends is tagged with its name and reaches only its owner
   assert.deepEqual(
     sent.map((m) => [m.type, m.task]),
     [
+      ['log', 'dedup-scan'],
       ['log', 'dedup-scan'],
       ['log', 'dedup-scan'],
     ],

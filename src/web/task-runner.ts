@@ -10,6 +10,7 @@ import type {
 import type { UserConfig } from '../lib/user-config.js';
 import type { UserSession as TaskSession } from '../lib/user-session.js';
 import type { Broadcaster } from './broadcast.js';
+import { describeClient } from './client-label.js';
 import type { UserSession } from './route-context.js';
 
 /** Map from broadcast event name to payload type. */
@@ -79,7 +80,7 @@ export interface TaskDefinition<E extends BaseEvents = BaseEvents> {
   cleanup?: (tc: TaskContext<E>) => void | Promise<void>;
   /** Custom error handler for task-specific error broadcasts. Called before the generic log. */
   onError?: (tc: TaskContext<E>, error: unknown, aborted: boolean) => void;
-  /** Message sent in the immediate HTTP response. */
+  /** The task's first log line, and the immediate HTTP response. */
   startMessage?: string;
 }
 
@@ -108,11 +109,16 @@ export type StartResult =
 export type StopResult = 'stopping' | 'already-stopping' | 'none' | 'not-owner';
 
 export interface TaskRunner {
-  /** Take the server's one task slot and run `def` in the background. */
+  /**
+   * Take the server's one task slot and run `def` in the background. Its
+   * first log line says it started, and from which client when `from` names
+   * one, so a run its owner doesn't remember starting can be traced.
+   */
   start<E extends BaseEvents>(
     def: TaskDefinition<E>,
     session: UserSession,
     body: Record<string, unknown>,
+    opts?: { from?: string },
   ): StartResult;
   stop(userId: string): StopResult;
   statusFor(userId: string | null): TaskStatus;
@@ -250,6 +256,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     def: TaskDefinition<E>,
     session: UserSession,
     body: Record<string, unknown>,
+    opts: { from?: string } = {},
   ): StartResult {
     const invalid = def.validate?.(body);
     if (invalid) return { kind: 'invalid', error: invalid };
@@ -272,6 +279,10 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     publishStatus();
 
     const tc = createTaskContext(def, session, body, run);
+    tc.log(
+      'info',
+      `${def.startMessage ?? `${def.name} started`}${opts.from ? ` · from ${opts.from}` : ''}`,
+    );
     const done = (async () => {
       try {
         await def.run(tc);
@@ -387,6 +398,7 @@ export function mountTask<E extends BaseEvents>(
       def,
       session,
       (req.body as Record<string, unknown>) ?? {},
+      { from: describeClient(req.get('user-agent')) },
     );
     switch (result.kind) {
       case 'invalid':
