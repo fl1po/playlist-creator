@@ -17,11 +17,11 @@ interface FillEvents extends BaseEvents, FillResultEvents {
 export const fillTask: TaskDefinition<FillEvents> = {
   name: 'fill',
   path: '/fill',
-  startMessage: 'Fill started',
+  startMessage: (body) =>
+    body.fresh ? 'Fill started (fresh)' : 'Fill started',
 
   async run(tc: TaskContext<FillEvents>) {
     const freshMode = !!tc.body.fresh;
-    tc.log('info', `Starting playlist fill (fresh=${freshMode})...`);
 
     await runFill({
       ...tc.session,

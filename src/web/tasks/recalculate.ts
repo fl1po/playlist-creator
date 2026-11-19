@@ -25,8 +25,6 @@ export const recalculateTask: TaskDefinition<RecalculateEvents> = {
   startMessage: 'Recalculation started',
 
   async run(tc: TaskContext<RecalculateEvents>) {
-    tc.log('info', 'Starting priority recalculation...');
-
     const result = await recalculate(tc.session, {
       force: !!tc.body.force,
       onProgress: webRecalculationProgress(tc),

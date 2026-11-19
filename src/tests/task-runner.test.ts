@@ -580,6 +580,19 @@ test('a start is logged with its own message and the client that asked', async (
   ]);
 });
 
+test('a start message can depend on what the task was asked', async () => {
+  const { runner, connect } = setup();
+  const owner = connect('u1');
+  const task = gatedTask('fill', {
+    startMessage: (body) =>
+      body.fresh ? 'Fill started (fresh)' : 'Fill started',
+  });
+  const run = started(runner.start(task, session('u1'), { fresh: true }));
+  task.release();
+  await run.done;
+  assert.deepEqual(logs(owner), ['info: Fill started (fresh)']);
+});
+
 // ── Tagging ──────────────────────────────────────────────────────────────────
 
 test('everything a task sends is tagged with its name and reaches only its owner', async () => {

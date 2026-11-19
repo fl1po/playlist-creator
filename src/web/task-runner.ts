@@ -81,7 +81,7 @@ export interface TaskDefinition<E extends BaseEvents = BaseEvents> {
   /** Custom error handler for task-specific error broadcasts. Called before the generic log. */
   onError?: (tc: TaskContext<E>, error: unknown, aborted: boolean) => void;
   /** The task's first log line, and the immediate HTTP response. */
-  startMessage?: string;
+  startMessage?: string | ((body: Record<string, unknown>) => string);
 }
 
 export { TaskAborted };
@@ -281,7 +281,7 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     const tc = createTaskContext(def, session, body, run);
     tc.log(
       'info',
-      `${def.startMessage ?? `${def.name} started`}${opts.from ? ` · from ${opts.from}` : ''}`,
+      `${startMessageOf(def, body)}${opts.from ? ` · from ${opts.from}` : ''}`,
     );
     const done = (async () => {
       try {
@@ -377,6 +377,15 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
   return { start, stop, statusFor };
 }
 
+function startMessageOf(
+  def: Pick<TaskDefinition, 'name' | 'startMessage'>,
+  body: Record<string, unknown>,
+): string {
+  const { startMessage } = def;
+  if (typeof startMessage === 'function') return startMessage(body);
+  return startMessage ?? `${def.name} started`;
+}
+
 // ── Express adapter ─────────────────────────────────────────────────────────
 
 type RequireSession = (
@@ -414,7 +423,7 @@ export function mountTask<E extends BaseEvents>(
       case 'started':
         res.json({
           ok: true,
-          message: def.startMessage ?? `${def.name} started`,
+          message: startMessageOf(def, req.body ?? {}),
         });
     }
   });
