@@ -11,9 +11,11 @@ import type {
   TaskDefinition,
 } from '../task-runner.js';
 
-interface AwBreakdownEvents extends BaseEvents {
+export interface AwBreakdownResults {
+  /** The page shows it, joined with listening time. */
   'awBreakdown:complete': AwBreakdown;
 }
+type AwBreakdownEvents = BaseEvents & AwBreakdownResults;
 
 export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
   name: 'aw-breakdown',

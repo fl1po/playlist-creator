@@ -86,6 +86,14 @@ _Avoid_: job, process (except as the live log's label)
 The lines a task writes, worded once on the server from what the task did, and the same in the CLI, the live log panel and the export. A task's results — what the page reloads or draws from — travel beside it as data, never as text for the page to word.
 _Avoid_: event log, messages
 
+**Task result**:
+The data a task sends for the page to act on — reload something, arm a button, show a measurement — never wording. Sent only once the task's effect has happened, so a stopped or failed task sends none for the part it didn't do.
+_Avoid_: completion event
+
+**Page stream**:
+Everything the server sends one signed-in page: task status, task log lines, task results, session notices and deploy markers. Each kind of message is either transient (never replayed), replayed but not kept, or kept in the history a reconnecting page replays.
+_Avoid_: SSE, event bus, broadcast (that's how the server sends it)
+
 ### Storage
 
 **User data**:

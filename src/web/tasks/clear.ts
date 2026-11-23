@@ -8,7 +8,7 @@ import type {
   TaskDefinition,
 } from '../task-runner.js';
 
-export interface ClearEvents extends BaseEvents {
+export interface ClearResults {
   /**
    * The playlist was emptied and its AI picks forgotten, so the page reloads
    * them; the lines are logged (ADR-0007). A not-found or failed clear keeps
@@ -16,6 +16,7 @@ export interface ClearEvents extends BaseEvents {
    */
   'clear:complete': { name: string; cleared: number };
 }
+type ClearEvents = BaseEvents & ClearResults;
 
 export const clearTask: TaskDefinition<ClearEvents> = {
   name: 'clear',

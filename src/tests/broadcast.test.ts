@@ -1,12 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Response } from 'express';
-import {
-  createBroadcaster,
-  REPLAY_DONE,
-  REPLAY_RESET,
-} from '../web/broadcast.js';
+import { createBroadcaster } from '../web/broadcast.js';
 import { memoryLogStore } from '../web/log-store.js';
+import { REPLAY_DONE, REPLAY_RESET } from '../web/page-stream/index.js';
 
 // ── Fake SSE response ────────────────────────────────────────────────────────
 

@@ -14,7 +14,8 @@ import {
 } from '../lib/spotify/gateway.js';
 import type { SpotifyConfig } from '../lib/types.js';
 import { localUserData } from '../lib/user-data/index.js';
-import { createBroadcaster, REPLAY_DONE } from '../web/broadcast.js';
+import { createBroadcaster } from '../web/broadcast.js';
+import { REPLAY_DONE } from '../web/page-stream/index.js';
 import type { UserSession } from '../web/route-context.js';
 import {
   createTaskRunner,

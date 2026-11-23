@@ -5,13 +5,14 @@ import type {
   TaskDefinition,
 } from '../task-runner.js';
 
-interface DedupScanEvents extends BaseEvents {
+export interface DedupScanResults {
   /** Arms the page's remove button; the lines are logged (ADR-0007). */
   'dedup:scanComplete': {
     playlists: Array<{ name: string; id: string; duplicateCount: number }>;
     totalDuplicates: number;
   };
 }
+type DedupScanEvents = BaseEvents & DedupScanResults;
 
 export const dedupScanTask: TaskDefinition<DedupScanEvents> = {
   name: 'dedup-scan',

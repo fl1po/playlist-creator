@@ -14,10 +14,11 @@ import type {
   TaskDefinition,
 } from '../task-runner.js';
 
-interface RecalculateEvents extends BaseEvents {
+export interface RecalculateResults {
   /** For the page to reload the roster; the lines are logged (ADR-0007). */
   'recalc:complete': TrustedArtistsFile['metadata']['stats'];
 }
+type RecalculateEvents = BaseEvents & RecalculateResults;
 
 export const recalculateTask: TaskDefinition<RecalculateEvents> = {
   name: 'recalculate',

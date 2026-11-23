@@ -10,10 +10,11 @@ import type {
   TaskDefinition,
 } from '../task-runner.js';
 
-interface DedupRemoveEvents extends BaseEvents {
+export interface DedupRemoveResults {
   /** Disarms the page's remove button; the line is logged (ADR-0007). */
   'dedup:complete': { totalRemoved: number };
 }
+type DedupRemoveEvents = BaseEvents & DedupRemoveResults;
 
 /**
  * Removes the duplicates from the playlists a dedup scan reported. Each

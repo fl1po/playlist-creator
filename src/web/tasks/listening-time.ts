@@ -9,9 +9,11 @@ import type {
   TaskDefinition,
 } from '../task-runner.js';
 
-interface ListeningTimeEvents extends BaseEvents {
+export interface ListeningTimeResults {
+  /** The page shows it, joined with the AW breakdown. */
   'listeningTime:complete': ListeningTime;
 }
+type ListeningTimeEvents = BaseEvents & ListeningTimeResults;
 
 export const listeningTimeTask: TaskDefinition<ListeningTimeEvents> = {
   name: 'listening-time',

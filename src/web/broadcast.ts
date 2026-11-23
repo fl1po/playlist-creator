@@ -1,5 +1,14 @@
 import type { Response } from 'express';
 import type { LogStore, StoredEntry } from './log-store.js';
+import {
+  type DeployInfo,
+  HISTORY,
+  REPLAY_DONE,
+  REPLAY_RESET,
+  retentionOf,
+} from './page-stream/index.js';
+
+export type { DeployInfo };
 
 export interface Broadcaster {
   broadcast(type: string, data: unknown): void;
@@ -45,13 +54,6 @@ export interface HistoryMessage {
   task?: string;
 }
 
-/** What this process runs, as the restart marker names it. */
-export interface DeployInfo {
-  commit?: string;
-  message?: string;
-  branch?: string;
-}
-
 export interface BroadcasterOptions {
   /** Where history persists across restarts; none keeps it in memory only. */
   store?: LogStore | null;
@@ -64,8 +66,8 @@ export interface SnapshotMessage {
 }
 
 /** Entries kept in memory for replay; the store holds the full week. */
-const MAX_LOG_HISTORY = 2000;
-const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_LOG_HISTORY = HISTORY.maxEntries;
+const RETENTION_MS = HISTORY.retentionMs;
 /** Ceiling on entries waiting for the store while it keeps failing. */
 const MAX_PENDING = 5000;
 
@@ -80,23 +82,8 @@ function resumeSeq(lastEventId: string | null | undefined): number {
   return Number.isFinite(seq) ? seq : 0;
 }
 
-/** High-frequency or transient types that should not be stored. */
-const SKIP_HISTORY = new Set(['status', 'reload', 'auth']);
-
-/** Replayed, but not worth persisting: rotated tokens pushed to the browser. */
-const SKIP_PERSIST = new Set(['data:save']);
-
-/**
- * Sent after a connecting client's history, so it can tell replayed events
- * (already reflected in what the page loads) from live ones.
- */
-export const REPLAY_DONE = 'replay:done';
-
-/**
- * Sent before a full replay to a client resuming from before its log was
- * cleared: whatever it kept of the old log is gone here too.
- */
-export const REPLAY_RESET = 'replay:reset';
+// Which messages are replayed and persisted is the page stream's history
+// policy, shared with the page's own cache (ADR-0012).
 
 export function createBroadcaster(opts: BroadcasterOptions = {}): Broadcaster {
   const { store = null, now = Date.now } = opts;
@@ -186,13 +173,14 @@ export function createBroadcaster(opts: BroadcasterOptions = {}): Broadcaster {
     // Every message is numbered so a reconnecting client can tell the server
     // where it left off; only the durable ones are kept for replay.
     const entry = { seq: nextSeq(), ts, msg };
-    if (!SKIP_HISTORY.has(type)) {
+    const retention = retentionOf(type);
+    if (retention !== 'transient') {
       const history = getUserHistory(userId);
       if (type === 'data:save') dropStaleSave(userId, history, data, entry);
       history.push(entry);
       if (history.length > MAX_LOG_HISTORY)
         history.splice(0, history.length - MAX_LOG_HISTORY);
-      if (store && !SKIP_PERSIST.has(type)) {
+      if (store && retention === 'kept') {
         pending.set(userId, [...(pending.get(userId) ?? []), entry]);
       }
     }

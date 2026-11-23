@@ -10,9 +10,11 @@ import type {
   TaskDefinition,
 } from '../task-runner.js';
 
-interface FillEvents extends BaseEvents, FillResultEvents {
+export interface FillResults extends FillResultEvents {
+  /** A stopped fill keeps the weeks it finished, so the page reloads them. */
   'fill:stopped': Record<string, never>;
 }
+type FillEvents = BaseEvents & FillResults;
 
 export const fillTask: TaskDefinition<FillEvents> = {
   name: 'fill',
