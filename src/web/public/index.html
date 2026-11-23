@@ -1831,7 +1831,7 @@ function formatDuration(ms) {
 function showListeningTimeResult(data) {
   const el = document.getElementById('ltResult');
   el.style.display = 'block';
-  const avg = data.playlistCount > 0 ? formatDuration(data.totalMs / data.playlistCount) : '0m';
+  const avg = formatDuration(data.averageMs);
   // The last calculation: fills and listens since then aren't in it.
   const asOf = data.computedAt ? ` · as of ${new Date(data.computedAt).toLocaleString()}` : '';
   el.textContent = `${formatDuration(data.totalMs)} across ${data.playlistCount} playlists (${data.totalTracks} tracks) · avg ${avg}/playlist${asOf}`;
@@ -1885,12 +1885,11 @@ async function updateCatchupEstimate() {
 
   const budgetHours = parseFloat(budgetInput.value) || 15;
   const budgetMs = budgetHours * 3600000;
-  const avgWeeklyMs = _ltData.totalMs / _ltData.playlistCount;
+  const avgWeeklyMs = _ltData.averageMs;
 
   let overheadRate = 0;
   if (_awData && _awData.weekCount > 0) {
-    const avgAwWeekMs = _awData.totalDurationMs / _awData.weekCount;
-    overheadRate = avgAwWeekMs / avgWeeklyMs;
+    overheadRate = _awData.averageDurationMs / avgWeeklyMs;
   }
 
   const netReductionMs = budgetMs - avgWeeklyMs;
@@ -2015,9 +2014,9 @@ async function toggleAiWeek(row, date) {
 function showAwBreakdownResult(data) {
   const el = document.getElementById('awResult');
   el.style.display = 'block';
-  const avgTracks = data.weekCount > 0 ? Math.round(data.totalTracks / data.weekCount) : 0;
-  const avgDur = data.weekCount > 0 ? formatDuration(data.totalDurationMs / data.weekCount) : '0m';
-  el.innerHTML = `${data.weekCount} weeks · ${data.totalTracks} tracks · ${formatDuration(data.totalDurationMs)}<br>avg ${avgTracks} tracks / ${avgDur} per week`;
+  // The last breakdown: listens since then aren't in it.
+  const asOf = ` · as of ${esc(new Date(data.computedAt).toLocaleString())}`;
+  el.innerHTML = `${data.weekCount} weeks · ${data.totalTracks} tracks · ${formatDuration(data.totalDurationMs)}<br>avg ${data.averageTracks} tracks / ${formatDuration(data.averageDurationMs)} per week${asOf}`;
 
   const expandBtn = document.getElementById('awExpandBtn');
   const breakdown = document.getElementById('awBreakdown');

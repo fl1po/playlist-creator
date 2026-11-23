@@ -1,4 +1,5 @@
 import type { PlaylistItem } from '../lib/playlist-reads/index.js';
+import type { SpotifyGateway } from '../lib/spotify/gateway.js';
 import { trackKey } from '../lib/track-utils.js';
 
 /*
@@ -77,4 +78,33 @@ export async function removeDuplicates(
     }
   }
   return removed;
+}
+
+/**
+ * `DedupWrites` for one playlist over the Spotify gateway. A failed write
+ * throws, so a removal never goes on past a write it can't be sure of.
+ */
+export function spotifyDedupWrites(
+  gateway: SpotifyGateway,
+  playlistId: string,
+): DedupWrites {
+  return {
+    async removeAll(uri) {
+      const r = await gateway.call(
+        (api) =>
+          api.playlists.removeItemsFromPlaylist(playlistId, {
+            tracks: [{ uri }],
+          }),
+        `remove duplicates from ${playlistId}`,
+      );
+      if (!r.success) throw r.error;
+    },
+    async insert(uri, position) {
+      const r = await gateway.call(
+        (api) => api.playlists.addItemsToPlaylist(playlistId, [uri], position),
+        `restore kept copy in ${playlistId}`,
+      );
+      if (!r.success) throw r.error;
+    },
+  };
 }

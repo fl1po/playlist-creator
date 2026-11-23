@@ -62,6 +62,10 @@ _Avoid_: playlist sync, priority diff, backfill
 A weekly playlist with tracks that is newer than the newest weekly playlist overlapping All Weekly: published, but not yet listened to. Everything older than that cutoff counts as listened. What promotion sync reconciles, dedup scans and listening time measures. Any change to a weekly playlist, whether by the app or by the user in Spotify, counts at once.
 _Avoid_: non-listened playlist
 
+**Unprocessed report**:
+A measurement over the unprocessed weekly playlists — listening time, duplicates — recomputed in memory from playlist reads on every run. A kept last result is only for the page to show with its age, never reused as input.
+_Avoid_: scan cache, stats
+
 **Priority change**:
 One artist crossing the P1/P2 boundary during recalculation — a *promotion* (into P1/P2) or a *demotion* (out of P1/P2). Only boundary crossings drive promotion sync; movement within or below the boundary does not.
 

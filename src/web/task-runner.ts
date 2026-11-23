@@ -1,4 +1,3 @@
-import type { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import type express from 'express';
 import { describeSpotifyEvent } from '../lib/spotify/events.js';
 import { TaskAborted } from '../lib/spotify/gateway.js';
@@ -31,8 +30,6 @@ export type TypedEmit<E extends BroadcastEventMap> = <
   data: E[K],
 ) => void;
 
-type UserProfile = Awaited<ReturnType<SpotifyApi['currentUser']['profile']>>;
-
 export interface TaskContext<E extends BaseEvents = BaseEvents> {
   /**
    * The owner's session. Its gateway is on the background lane: stopping the
@@ -62,8 +59,6 @@ export interface TaskContext<E extends BaseEvents = BaseEvents> {
   ) => Promise<void>;
   /** Memoised user config — first call awaits load(); subsequent calls reuse. */
   userConfig: () => Promise<UserConfig>;
-  /** Memoised current-user profile — first call hits Spotify; subsequent calls reuse. */
-  me: () => Promise<UserProfile>;
 }
 
 export interface TaskDefinition<E extends BaseEvents = BaseEvents> {
@@ -342,7 +337,6 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
     });
 
     let userConfigPromise: Promise<UserConfig> | undefined;
-    let mePromise: Promise<UserProfile> | undefined;
 
     return {
       session: { gateway, userId: session.userId, data: session.data },
@@ -361,15 +355,6 @@ export function createTaskRunner(deps: TaskRunnerDeps): TaskRunner {
       userConfig: () => {
         userConfigPromise ??= session.data.config.load();
         return userConfigPromise;
-      },
-      me: () => {
-        mePromise ??= gateway
-          .call((api) => api.currentUser.profile(), 'user profile')
-          .then((r) => {
-            if (!r.success) throw r.error;
-            return r.data;
-          });
-        return mePromise;
       },
     };
   }

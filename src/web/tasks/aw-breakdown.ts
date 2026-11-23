@@ -1,7 +1,7 @@
 import {
+  type AwBreakdown,
+  awBreakdown,
   describeAwBreakdown,
-  groupTracksByWeek,
-  type WeekBreakdownEntry,
 } from '../../domain/aw-breakdown.js';
 import { playlistReads } from '../../lib/playlist-reads/index.js';
 import { AW_BREAKDOWN } from '../../lib/user-data/index.js';
@@ -11,16 +11,8 @@ import type {
   TaskDefinition,
 } from '../task-runner.js';
 
-/** The last breakdown, kept until the next; the page shows it on load. */
-interface AwBreakdownResult {
-  totalTracks: number;
-  totalDurationMs: number;
-  weekCount: number;
-  weeks: WeekBreakdownEntry[];
-}
-
 interface AwBreakdownEvents extends BaseEvents {
-  'awBreakdown:complete': AwBreakdownResult;
+  'awBreakdown:complete': AwBreakdown;
 }
 
 export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
@@ -46,18 +38,11 @@ export const awBreakdownTask: TaskDefinition<AwBreakdownEvents> = {
       },
     });
     if (!read.success) throw read.error;
-    const { items } = read;
-    const weeks = groupTracksByWeek(items);
+    const result = awBreakdown(read.items);
 
-    const result: AwBreakdownResult = {
-      totalTracks: weeks.reduce((s, w) => s + w.trackCount, 0),
-      totalDurationMs: weeks.reduce((s, w) => s + w.durationMs, 0),
-      weekCount: weeks.length,
-      weeks,
-    };
-
+    // The last breakdown, kept until the next; the page shows it on load.
     await tc.session.data.save(AW_BREAKDOWN, result);
     tc.emit('awBreakdown:complete', result);
-    tc.log('success', describeAwBreakdown(items, read));
+    tc.log('success', describeAwBreakdown(result, read));
   },
 };

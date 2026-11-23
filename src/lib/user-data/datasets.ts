@@ -1,4 +1,6 @@
+import type { AwBreakdown } from '../../domain/aw-breakdown.js';
 import type { PriorityChange } from '../../services/promotion-sync/index.js';
+import type { ListeningTime } from '../../services/unprocessed-reports/index.js';
 import type { AiPicksRecord } from '../../services/week-collection/index.js';
 import type { DeezerTopTrack } from '../deezer-client.js';
 import type {
@@ -59,14 +61,24 @@ export const FILL_HISTORY: Dataset<unknown[]> = {
   isEmpty: (v) => !Array.isArray(v) || v.length === 0,
 };
 
-export const LISTENING_TIME: Dataset<unknown> = {
+/**
+ * Owned by the unprocessed reports module: the last listening time. One kept
+ * before it carried its average is "none yet"; the next run replaces it.
+ */
+export const LISTENING_TIME: Dataset<ListeningTime> = {
   name: 'listeningTime',
   file: 'listening-time-cache.json',
+  isEmpty: (v) => typeof v?.averageMs !== 'number',
 };
 
-export const AW_BREAKDOWN: Dataset<unknown> = {
+/**
+ * The last AW breakdown. One kept before it carried its age and averages is
+ * "none yet"; the next run replaces it.
+ */
+export const AW_BREAKDOWN: Dataset<AwBreakdown> = {
   name: 'awBreakdown',
   file: 'aw-breakdown.json',
+  isEmpty: (v) => typeof v?.computedAt !== 'string',
 };
 
 /**

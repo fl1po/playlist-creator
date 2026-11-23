@@ -1,7 +1,4 @@
-import { itemsOf, playlistReads } from '../../lib/playlist-reads/index.js';
-import { findDuplicates } from '../../services/dedup.js';
-import { spotifyWeeklyPlaylistStore } from '../../services/weekly-playlists/adapters.js';
-import { unprocessedWeeklyPlaylists } from '../../services/weekly-playlists/index.js';
+import { unprocessedReports } from '../../services/unprocessed-reports/index.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -11,12 +8,7 @@ import type {
 interface DedupScanEvents extends BaseEvents {
   /** Arms the page's remove button; the lines are logged (ADR-0007). */
   'dedup:scanComplete': {
-    playlists: Array<{
-      name: string;
-      id: string;
-      duplicateCount: number;
-      trackUris: string[];
-    }>;
+    playlists: Array<{ name: string; id: string; duplicateCount: number }>;
     totalDuplicates: number;
   };
 }
@@ -27,66 +19,38 @@ export const dedupScanTask: TaskDefinition<DedupScanEvents> = {
   startMessage: 'Dedup scan started',
 
   async run(tc: TaskContext<DedupScanEvents>) {
-    const userConfig = await tc.userConfig();
-    const me = await tc.me();
-
-    const { playlists: candidates } = await unprocessedWeeklyPlaylists(
-      {
-        store: spotifyWeeklyPlaylistStore(tc.session),
-        userId: me.id,
-      },
-      userConfig.sourcePlaylists.allWeeklyId,
-      (msg, level) => tc.log(level ?? 'info', msg),
-    );
-
-    const scanResults: Array<{
-      name: string;
-      id: string;
-      duplicateCount: number;
-      trackUris: string[];
-    }> = [];
-    let totalDuplicates = 0;
-
-    const playlists = playlistReads(tc.session);
-    await tc.iter(candidates, async (pl) => {
-      const read = await playlists.tracks(pl.id, { snapshot: pl.snapshotId });
-      const groups = findDuplicates(itemsOf(read));
-      const duplicates = groups.map((g) => ({
-        artist: g.artists,
-        track: g.name,
-        count: g.extra.length + 1,
-      }));
-      const urisToRemove = groups.flatMap((g) => g.extra.map((e) => e.uri));
-
-      if (duplicates.length > 0) {
-        const dupCount = urisToRemove.length;
-        totalDuplicates += dupCount;
-        scanResults.push({
-          name: pl.name,
-          id: pl.id,
-          duplicateCount: dupCount,
-          trackUris: urisToRemove,
-        });
-        const listed = duplicates
-          .map((d) => `${d.artist} — ${d.track} ×${d.count}`)
+    const result = await unprocessedReports(tc.session, {
+      log: (msg, level) => tc.log(level ?? 'info', msg),
+    }).duplicates({
+      onPlaylist: (_done, _total, pl, measured) => {
+        if (measured.duplicateCount === 0) return;
+        const listed = measured.groups
+          .map((g) => `${g.artists} — ${g.name} ×${g.extra.length + 1}`)
           .join(', ');
-        tc.log('info', `${pl.name}: ${dupCount} duplicates (${listed})`);
-      }
+        tc.log(
+          'info',
+          `${pl.name}: ${measured.duplicateCount} duplicates (${listed})`,
+        );
+      },
     });
 
     tc.emit('dedup:scanComplete', {
-      playlists: scanResults,
-      totalDuplicates,
+      playlists: result.playlists.map(({ id, name, duplicateCount }) => ({
+        id,
+        name,
+        duplicateCount,
+      })),
+      totalDuplicates: result.totalDuplicates,
     });
-    if (totalDuplicates === 0) {
+    if (result.totalDuplicates === 0) {
       tc.log(
         'success',
-        `No duplicates found (scanned ${candidates.length} playlists)`,
+        `No duplicates found (scanned ${result.scanned} playlists)`,
       );
     } else {
       tc.log(
         'warn',
-        `Found ${totalDuplicates} duplicate tracks across ${scanResults.length} playlists (scanned ${candidates.length})`,
+        `Found ${result.totalDuplicates} duplicate tracks across ${result.playlists.length} playlists (scanned ${result.scanned})`,
       );
     }
   },

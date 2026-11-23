@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  awBreakdown,
   describeAwBreakdown,
   groupTracksByWeek,
 } from '../domain/aw-breakdown.js';
@@ -79,11 +80,11 @@ test('the breakdown line counts the tracks and averages them per week', () => {
     item('b', { releaseDate: '2026-01-09' }),
   ];
   assert.equal(
-    describeAwBreakdown(items, { cached: false, missing: 0 }),
+    describeAwBreakdown(awBreakdown(items), { cached: false, missing: 0 }),
     'AW breakdown: 2 weeks, 2 tracks, 2m · avg 1 tracks/1m per week',
   );
   assert.equal(
-    describeAwBreakdown(items, { cached: true, missing: 0 }),
+    describeAwBreakdown(awBreakdown(items), { cached: true, missing: 0 }),
     'AW breakdown: 2 weeks, 2 tracks, 2m · avg 1 tracks/1m per week (cached)',
   );
 });
@@ -92,7 +93,7 @@ test('the breakdown line names the slots it could not count', () => {
   const empty: PlaylistItem = { track: null, uri: null, addedAt: null };
   const items = [item('a', { releaseDate: '2026-01-02' }), empty, empty];
   assert.equal(
-    describeAwBreakdown(items, { cached: false, missing: 0 }),
+    describeAwBreakdown(awBreakdown(items), { cached: false, missing: 0 }),
     'AW breakdown: 1 weeks, 1 tracks, 1m · avg 1 tracks/1m per week · 2 of 3 slots have no track data',
   );
 });
@@ -100,7 +101,38 @@ test('the breakdown line names the slots it could not count', () => {
 test('the breakdown line names the tracks Spotify left out', () => {
   const items = [item('a', { releaseDate: '2026-01-02' })];
   assert.equal(
-    describeAwBreakdown(items, { cached: false, missing: 9 }),
+    describeAwBreakdown(awBreakdown(items), { cached: false, missing: 9 }),
     'AW breakdown: 1 weeks, 1 tracks, 1m · avg 1 tracks/1m per week · Spotify left out 9 of 10 tracks',
+  );
+});
+
+test('the breakdown carries its age and its averages, worked out once', () => {
+  const now = new Date('2026-01-10T12:00:00Z');
+  const empty: PlaylistItem = { track: null, uri: null, addedAt: null };
+  const b = awBreakdown(
+    [
+      item('a', { releaseDate: '2026-01-02' }),
+      item('b', { releaseDate: '2026-01-02' }),
+      item('c', { releaseDate: '2026-01-09' }),
+      empty,
+    ],
+    now,
+  );
+
+  assert.equal(b.computedAt, now.toISOString());
+  assert.deepEqual(
+    [b.weekCount, b.totalTracks, b.totalDurationMs],
+    [2, 3, 180_000],
+  );
+  assert.equal(b.averageTracks, 2);
+  assert.equal(b.averageDurationMs, 90_000);
+  assert.deepEqual([b.slots, b.emptySlots], [4, 1]);
+});
+
+test('an empty All Weekly averages to nothing rather than dividing by zero', () => {
+  const b = awBreakdown([]);
+  assert.deepEqual(
+    [b.weekCount, b.averageTracks, b.averageDurationMs],
+    [0, 0, 0],
   );
 });

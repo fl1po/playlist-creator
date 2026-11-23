@@ -6,13 +6,16 @@ import { type TestContext, test } from 'node:test';
 import { DEFAULT_USER_CONFIG } from '../lib/user-config.js';
 import {
   AI_PICKS,
+  AW_BREAKDOWN,
   BATCH_CACHE,
   CONFIG,
   copyUserData,
   DATASETS,
+  type Dataset,
   durableUserData,
   FILL_HISTORY,
   InMemoryRedisPort,
+  LISTENING_TIME,
   localUserData,
   type RedisPort,
   TRUSTED_ARTISTS,
@@ -173,8 +176,16 @@ test('copy: moves every dataset the source holds, from production to local', asy
     dataDir: tempDir(t),
     redis,
   });
+  // A value each dataset keeps; the kept reports refuse one without their
+  // own fields, as they refuse a copy kept before those fields existed.
+  const sample = (dataset: Dataset<unknown>) =>
+    dataset === LISTENING_TIME
+      ? { name: dataset.name, averageMs: 0 }
+      : dataset === AW_BREAKDOWN
+        ? { name: dataset.name, computedAt: '' }
+        : [dataset.name];
   for (const dataset of DATASETS) {
-    await production.save(dataset, [dataset.name]);
+    await production.save(dataset, sample(dataset));
   }
   const local = localUserData(tempDir(t));
 
@@ -185,7 +196,7 @@ test('copy: moves every dataset the source holds, from production to local', asy
     DATASETS.map((d) => d.name),
   );
   for (const dataset of DATASETS) {
-    assert.deepEqual(await local.load(dataset), [dataset.name]);
+    assert.deepEqual(await local.load(dataset), sample(dataset));
   }
 });
 

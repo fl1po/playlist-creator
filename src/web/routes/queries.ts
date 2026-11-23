@@ -306,13 +306,12 @@ export function queryRoutes(ctx: RouteContext): Router {
   );
 
   // A task's last result, as the user's data holds it.
-  function cachedGet(route: string, dataset: Dataset<unknown>) {
+  function cachedGet<T extends object>(route: string, dataset: Dataset<T>) {
     router.get(route, async (req, res) => {
       const session = ctx.requireSession(req, res);
       if (!session) return;
       const cached = await session.data.load(dataset);
-      if (cached)
-        res.json({ ok: true, ...(cached as Record<string, unknown>) });
+      if (cached) res.json({ ok: true, ...cached });
       else res.json({ ok: false });
     });
   }

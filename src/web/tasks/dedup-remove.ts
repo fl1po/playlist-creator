@@ -1,8 +1,8 @@
 import { itemsOf, playlistReads } from '../../lib/playlist-reads/index.js';
 import {
-  type DedupWrites,
   findDuplicates,
   removeDuplicates,
+  spotifyDedupWrites,
 } from '../../services/dedup.js';
 import type {
   BaseEvents,
@@ -42,29 +42,10 @@ export const dedupRemoveTask: TaskDefinition<DedupRemoveEvents> = {
     await tc.iter(playlists, async (pl) => {
       // A live check, not a listing's snapshot: this playlist is edited next.
       const items = itemsOf(await reads.tracks(pl.id));
-      const writes: DedupWrites = {
-        async removeAll(uri) {
-          const r = await gateway.call(
-            (api) =>
-              api.playlists.removeItemsFromPlaylist(pl.id, {
-                tracks: [{ uri }],
-              }),
-            `remove duplicates from ${pl.id}`,
-          );
-          if (!r.success) throw r.error;
-        },
-        async insert(uri, position) {
-          const r = await gateway.call(
-            (api) => api.playlists.addItemsToPlaylist(pl.id, [uri], position),
-            `restore kept copy in ${pl.id}`,
-          );
-          if (!r.success) throw r.error;
-        },
-      };
       totalRemoved += await removeDuplicates(
         items,
         findDuplicates(items),
-        writes,
+        spotifyDedupWrites(gateway, pl.id),
       );
     });
 

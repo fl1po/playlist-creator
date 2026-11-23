@@ -149,27 +149,63 @@ export function groupTracksByWeek(items: PlaylistItem[]): WeekBreakdownEntry[] {
 }
 
 /**
- * The breakdown's log line. Slots without track data (local files, episodes,
- * tracks Spotify didn't describe) can't be counted, so they are named, and so
- * are the items Spotify counted in its total but didn't return.
+ * All Weekly's breakdown, as the page shows it and the user data keeps it:
+ * the weeks, their totals and averages, worked out once. `slots` counts every
+ * playlist slot read; `emptySlots` those without track data (local files,
+ * episodes, tracks Spotify didn't describe), which no week can count.
+ */
+export interface AwBreakdown {
+  /** When it was worked out (ISO); listens since then aren't in it. */
+  computedAt: string;
+  weekCount: number;
+  totalTracks: number;
+  totalDurationMs: number;
+  /** Tracks per week, rounded. */
+  averageTracks: number;
+  averageDurationMs: number;
+  slots: number;
+  emptySlots: number;
+  weeks: WeekBreakdownEntry[];
+}
+
+export function awBreakdown(
+  items: PlaylistItem[],
+  now: Date = new Date(),
+): AwBreakdown {
+  const weeks = groupTracksByWeek(items);
+  const totalTracks = weeks.reduce((s, w) => s + w.trackCount, 0);
+  const totalDurationMs = weeks.reduce((s, w) => s + w.durationMs, 0);
+  const n = weeks.length;
+  return {
+    computedAt: now.toISOString(),
+    weekCount: n,
+    totalTracks,
+    totalDurationMs,
+    averageTracks: n > 0 ? Math.round(totalTracks / n) : 0,
+    averageDurationMs: n > 0 ? totalDurationMs / n : 0,
+    slots: items.length,
+    emptySlots: items.filter((i) => !i.track).length,
+    weeks,
+  };
+}
+
+/**
+ * The breakdown's log line. Slots without track data can't be counted, so
+ * they are named, and so are the items Spotify counted in its total but
+ * didn't return.
  */
 export function describeAwBreakdown(
-  items: PlaylistItem[],
+  b: AwBreakdown,
   read: { cached: boolean; missing: number },
 ): string {
-  const weeks = groupTracksByWeek(items);
-  const tracks = weeks.reduce((s, w) => s + w.trackCount, 0);
-  const durationMs = weeks.reduce((s, w) => s + w.durationMs, 0);
-  const avgTracks = weeks.length > 0 ? Math.round(tracks / weeks.length) : 0;
-  const avgDuration =
-    weeks.length > 0 ? formatHm(durationMs / weeks.length) : '0m';
-  const empty = items.filter((i) => !i.track).length;
   return [
-    `AW breakdown: ${weeks.length} weeks, ${tracks} tracks, ${formatHm(durationMs)}`,
-    ` · avg ${avgTracks} tracks/${avgDuration} per week`,
-    empty > 0 ? ` · ${empty} of ${items.length} slots have no track data` : '',
+    `AW breakdown: ${b.weekCount} weeks, ${b.totalTracks} tracks, ${formatHm(b.totalDurationMs)}`,
+    ` · avg ${b.averageTracks} tracks/${formatHm(b.averageDurationMs)} per week`,
+    b.emptySlots > 0
+      ? ` · ${b.emptySlots} of ${b.slots} slots have no track data`
+      : '',
     read.missing > 0
-      ? ` · Spotify left out ${read.missing} of ${items.length + read.missing} tracks`
+      ? ` · Spotify left out ${read.missing} of ${b.slots + read.missing} tracks`
       : '',
     read.cached ? ' (cached)' : '',
   ].join('');
