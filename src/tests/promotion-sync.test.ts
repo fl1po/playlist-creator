@@ -6,13 +6,14 @@ import { spotifyPlaylistWrites } from '../services/promotion-sync/adapters.js';
 import {
   type PlaylistWrites,
   type PriorityChange,
-  type PromotionReads,
   type PromotionSyncInput,
   type PromotionSyncPorts,
   type SyncDecision,
   syncPriorityChanges,
 } from '../services/promotion-sync/index.js';
 import { fixedPopularitySource } from '../services/week-collection/adapters.js';
+import type { ReleaseReads } from '../services/week-collection/index.js';
+import { memoryPlaylists } from './fixtures/memory-playlists.js';
 import {
   type Catalog,
   fixtureReads,
@@ -60,12 +61,19 @@ function input(
   };
 }
 
+/** The catalog's weekly playlists are read through in-memory playlist reads. */
 function ports(
-  reads: PromotionReads,
+  catalog: Catalog,
+  reads: ReleaseReads,
   writes: PlaylistWrites,
   scores: Record<string, number> = {},
 ): PromotionSyncPorts {
-  return { reads, popularity: fixedPopularitySource(scores), writes };
+  return {
+    reads,
+    playlists: memoryPlaylists(catalog.playlists ?? []).reads,
+    popularity: fixedPopularitySource(scores),
+    writes,
+  };
 }
 
 const playlistList = (catalog: Catalog) =>
@@ -116,7 +124,7 @@ test('removal: a demoted artist album is removed, a P1/P2-featured album stays',
       // Beta is still P1/P2; Alpha is gone.
       trustedArtists: trusted({ Beta: ac(1, 100, 'art-beta') }),
     }),
-    ports(reads, writes),
+    ports(catalog, reads, writes),
   );
 
   assert.deepEqual(writes.removed.get('pl1'), ['a1', 'a2']);
@@ -163,7 +171,7 @@ test('removal: the P1/P2 check ignores capitalisation differences between roster
       unprocessedPlaylists: playlistList(catalog),
       trustedArtists: trusted({ Beta: ac(1, 100, 'art-beta') }),
     }),
-    ports(fixtureReads(catalog), writes),
+    ports(catalog, fixtureReads(catalog), writes),
   );
 
   assert.equal(writes.removed.size, 0);
@@ -219,7 +227,7 @@ test('addition: backfills the in-window release, excluding AW and existing track
       awTrackIds: new Set(['t3']),
       trustedArtists: trusted({ Delta: ac(1, 100, 'art-d') }),
     }),
-    ports(reads, writes, { 'alb-x': 70 }),
+    ports(catalog, reads, writes, { 'alb-x': 70 }),
   );
 
   assert.deepEqual(writes.added.get('pl1'), ['t1']); // out-of-window, t2, t3 all excluded
@@ -272,7 +280,7 @@ test('addition: a release whose tracks are all already in the playlist is not re
       unprocessedPlaylists: playlistList(catalog),
       trustedArtists: trusted({ Delta: ac(1, 100, 'art-d') }),
     }),
-    ports(fixtureReads(catalog), writes, { 'alb-x': 70 }),
+    ports(catalog, fixtureReads(catalog), writes, { 'alb-x': 70 }),
   );
 
   assert.equal(writes.added.size, 0);
@@ -328,7 +336,10 @@ test('addition: a single is not added when its song is already in the playlist f
       unprocessedPlaylists: playlistList(catalog),
       trustedArtists: trusted({ Delta: ac(1, 100, 'art-d') }),
     }),
-    ports(fixtureReads(catalog), writes, { 'alb-x': 70, 'sgl-two': 70 }),
+    ports(catalog, fixtureReads(catalog), writes, {
+      'alb-x': 70,
+      'sgl-two': 70,
+    }),
   );
 
   assert.equal(writes.added.size, 0);
@@ -369,7 +380,10 @@ test('addition: releases dropped by the popularity or variant filters show only 
       unprocessedPlaylists: playlistList(catalog),
       trustedArtists: trusted({ Delta: ac(1, 100, 'art-d') }),
     }),
-    ports(fixtureReads(catalog), writes, { 'alb-low': 10, 'alb-sped': 70 }),
+    ports(catalog, fixtureReads(catalog), writes, {
+      'alb-low': 10,
+      'alb-sped': 70,
+    }),
   );
 
   assert.equal(writes.added.size, 0);
@@ -409,7 +423,7 @@ test('addition: the lenient minPopularity bar decides whether a release survives
         trustedArtists: trusted({ Delta: ac(1, 100, 'art-d') }),
         minPopularity,
       }),
-      ports(fixtureReads(catalog), writes, { 'alb-mid': 40 }),
+      ports(catalog, fixtureReads(catalog), writes, { 'alb-mid': 40 }),
     );
     return { result, writes };
   };
@@ -431,7 +445,7 @@ test('no P1/P2 boundary crossings: nothing is read or written', async () => {
   const result = await syncPriorityChanges(
     [{ artist: 'Within', from: 3, to: 4 }], // both outside P1/P2
     input({ unprocessedPlaylists: playlistList(catalog) }),
-    ports(fixtureReads(catalog), writes),
+    ports(catalog, fixtureReads(catalog), writes),
   );
   assert.equal(result.added, 0);
   assert.equal(result.removed, 0);

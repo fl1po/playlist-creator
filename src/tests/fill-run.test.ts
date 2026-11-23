@@ -4,9 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { formatDateISO, formatDdMmYy } from '../domain/tracks.js';
+import { itemsOf, type PlaylistReads } from '../lib/playlist-reads/index.js';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
 import { type SpotifyGateway, TaskAborted } from '../lib/spotify/gateway.js';
-import type { SimplePlaylist, TrustedArtistsFile } from '../lib/types.js';
+import type { TrustedArtistsFile } from '../lib/types.js';
 import { DEFAULT_USER_CONFIG, type UserConfig } from '../lib/user-config.js';
 import {
   AI_PICKS,
@@ -25,9 +26,9 @@ import {
   type FillRun,
   runFill,
 } from '../services/playlist-filler/fill-run.js';
-import type {
-  RecalculationPorts,
-  SourceReads,
+import {
+  type RecalculationPorts,
+  scanPositions,
 } from '../services/recalculation/index.js';
 import {
   fixedPopularitySource,
@@ -42,7 +43,11 @@ import type {
   TasteJudgeRequest,
 } from '../services/week-collection/index.js';
 import { rememberingReads } from '../services/week-collection/remembering-reads.js';
-import { memoryWeeklyPlaylistStore } from '../services/weekly-playlists/adapters.js';
+import {
+  type MemoryPlaylist,
+  type MemoryPlaylists,
+  memoryPlaylists,
+} from './fixtures/memory-playlists.js';
 import {
   type Catalog,
   fixtureReads,
@@ -199,13 +204,14 @@ const USER_CONFIG: UserConfig = {
 function world(
   t: { after: (fn: () => void) => void },
   ctx: SpotifyGateway,
-  sources?: SourceReads,
+  sources?: PlaylistReads,
 ) {
   const cache = localUserData(tmpDataDir(t));
   const session = { gateway: ctx, userId: 'user-1', data: cache };
   // No Anthropic key: these fills never build AI ports.
   const ports = fillPorts(session, {});
-  if (sources) ports.recalculation = { ...ports.recalculation, sources };
+  if (sources)
+    ports.recalculation = { ...ports.recalculation, playlists: sources };
   return { cache, fill: filler(session, ports, { fresh: true }) };
 }
 
@@ -341,30 +347,18 @@ test('an abort during sync propagates instead of being swallowed', async (t) => 
 });
 
 test('a fill aborted after a mid-fill recalculation leaves the sync for the next fill', async (t) => {
-  // AW changed since the last recalculation, and the artist's plays dropped.
-  const sources: SourceReads = {
-    async snapshots() {
-      return { aw: 'aw-2', boaw: 'boaw-1' };
+  // AW changed since the last recalculation, and the artist's plays dropped:
+  // one play, long ago, out of a thousand.
+  const sources = memoryPlaylists([
+    {
+      id: 'aw-playlist',
+      tracks: [
+        'old-0',
+        { id: 'demoted-old', artistNames: ['Demoted Artist'] },
+        ...Array.from({ length: 998 }, (_, i) => `old-${i + 1}`),
+      ],
     },
-    async scan() {
-      return {
-        artistData: new Map([
-          [
-            'Demoted Artist',
-            {
-              primaryCount: 1,
-              featuredCount: 0,
-              latestPosition: 1,
-              featuredAtLatest: false,
-              id: null,
-            },
-          ],
-        ]),
-        totalTracks: 1000,
-        cached: false,
-      };
-    },
-  };
+  ]).reads;
   const abortError = new TaskAborted();
 
   const first = world(t, demotionCtx({ unfilled: true }), sources);
@@ -431,18 +425,10 @@ const ALPHA_P1 = trusted({ Alpha: { priority: 1, score: 100 } });
 
 function unchangedRecalculation(
   catalog: Catalog,
-  calls: string[],
+  playlists: MemoryPlaylists,
 ): RecalculationPorts {
   return {
-    sources: {
-      async snapshots() {
-        return { aw: 'aw-1', boaw: 'boaw-1' };
-      },
-      async scan() {
-        calls.push('scan');
-        return { artistData: new Map(), totalTracks: 0, cached: false };
-      },
-    },
+    playlists: playlists.reads,
     unprocessed: {
       async find() {
         return { playlists: [], awTrackIds: new Set() };
@@ -450,15 +436,16 @@ function unchangedRecalculation(
     },
     sync: {
       reads: fixtureReads(catalog),
+      playlists: playlists.reads,
       popularity: fixedPopularitySource({}),
       writes: recordingWrites(),
     },
   };
 }
 
-function memoryPorts(catalog: Catalog, weeklies: SimplePlaylist[]) {
+function memoryPorts(catalog: Catalog, weeklies: MemoryPlaylist[]) {
   const calls: string[] = [];
-  const weekly = memoryWeeklyPlaylistStore(weeklies, calls);
+  const weekly = memoryPlaylists(weeklies, calls);
   const checkpoints = memoryCheckpoints();
   const reads = fixtureReads(catalog);
   const ports: FillPorts = {
@@ -467,23 +454,22 @@ function memoryPorts(catalog: Catalog, weeklies: SimplePlaylist[]) {
       popularity: fixedPopularitySource({ 'alb-x': 70, 'alb-y': 70 }),
       checkpoints,
     },
-    weekly,
-    history: {
-      async playlistTrackIds() {
-        return [];
-      },
-    },
-    recalculation: unchangedRecalculation(catalog, calls),
+    weekly: weekly.store,
+    playlists: weekly.reads,
+    recalculation: unchangedRecalculation(catalog, weekly),
   };
   return { ports, reads, weekly, checkpoints, calls };
 }
 
-/** A roster the mid-fill recalculation will keep: both sources unchanged. */
+/**
+ * A roster the mid-fill recalculation will keep: both sources unchanged
+ * since it was scored (the memory playlists' first snapshots).
+ */
 async function seedRoster(cache: UserData, roster: TrustedArtistsFile) {
   await cache.save(TRUSTED_ARTISTS, roster);
   await cache.save(RECALCULATION_STATE, {
-    allWeeklySnapshot: 'aw-1',
-    bestOfAllWeeklySnapshot: 'boaw-1',
+    allWeeklySnapshot: 'aw-playlist@0',
+    bestOfAllWeeklySnapshot: 'boaw-playlist@0',
   });
 }
 
@@ -653,10 +639,9 @@ test('a fill resumes a checkpointed week: searched artists are skipped and repor
 });
 
 test('a checkpointed week keeps the roster it started with: no mid-search recalculation', async (t) => {
-  const { ports, calls, weekly, checkpoints } = memoryPorts(
-    alphaBetaCatalog(),
-    [{ id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 }],
-  );
+  const { ports, weekly, checkpoints } = memoryPorts(alphaBetaCatalog(), [
+    { id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 },
+  ]);
   checkpoints.current = {
     week: THIS_FRIDAY,
     artistsSearched: 1,
@@ -670,9 +655,10 @@ test('a checkpointed week keeps the roster it started with: no mid-search recalc
     bestOfAllWeeklySnapshot: 'boaw-0',
   });
 
-  await w.fill();
+  const ev = recordingEvents();
+  await w.fill({ onEvent: ev.onEvent });
 
-  assert.ok(!calls.includes('scan'), 'the sources were re-scanned mid-search');
+  assert.deepEqual(ev.of('recalculating'), [], 're-scored mid-search');
   assert.deepEqual(weekly.added.get('pl-1'), ['t2']);
 });
 
@@ -727,7 +713,7 @@ test('a failed write leaves the completed search checkpoint in place', async (t)
 });
 
 test('a completed checkpoint resumes the week with no search and no recalculation', async (t) => {
-  const { ports, reads, calls, weekly, checkpoints } = memoryPorts(
+  const { ports, reads, weekly, checkpoints } = memoryPorts(
     alphaBetaCatalog(),
     [{ id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 }],
   );
@@ -765,10 +751,11 @@ test('a completed checkpoint resumes the week with no search and no recalculatio
     bestOfAllWeeklySnapshot: 'boaw-0',
   });
 
-  await w.fill();
+  const ev = recordingEvents();
+  await w.fill({ onEvent: ev.onEvent });
 
   assert.deepEqual(reads.searchCalls, []);
-  assert.ok(!calls.includes('scan'), 'the sources were re-scanned');
+  assert.deepEqual(ev.of('recalculating'), [], 're-scored mid-search');
   assert.deepEqual(weekly.added.get('pl-1'), ['t1', 't2']);
   assert.equal(checkpoints.current, null);
 });
@@ -876,7 +863,7 @@ const PICK_RECORD_G: AiPicksRecord = {
 /** Memory fill ports with fixture AI ports on the week. */
 function aiPorts(
   outcome: TasteJudgeOutcome | ((r: TasteJudgeRequest) => TasteJudgeOutcome),
-  weeklies: SimplePlaylist[] = [
+  weeklies: MemoryPlaylist[] = [
     { id: 'pl-last', name: LAST_FRIDAY, trackCount: 3 },
   ],
 ) {
@@ -1253,18 +1240,16 @@ test('the production fill ports read All Weekly once for history, recalculation 
     data: localUserData(tmpDataDir(t)),
   };
   const ports = fillPorts(session, {});
-  const sources = {
-    ...DEFAULT_USER_CONFIG.sourcePlaylists,
-    allWeeklyId: 'aw',
-    useLikedSongs: false,
-  };
 
-  await ports.history.playlistTrackIds('aw');
-  const scan = await ports.recalculation.sources.scan('aw', sources, () => {});
+  await ports.playlists.tracks('aw');
+  const read = await ports.recalculation.playlists.tracks('aw');
   const found = await ports.recalculation.unprocessed.find('aw', () => {});
 
   assert.deepEqual(awPages, [0, 50]);
-  assert.equal(scan.cached, true);
-  assert.equal(scan.artistData.get('Steady')?.primaryCount, 60);
+  assert.ok(read.success && read.cached);
+  assert.equal(
+    scanPositions(itemsOf(read)).artistData.get('Steady')?.primaryCount,
+    60,
+  );
   assert.equal(found.awTrackIds.size, 60);
 });

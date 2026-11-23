@@ -1,4 +1,10 @@
 import type {
+  PlaylistItem,
+  PlaylistRead,
+  PlaylistReads,
+} from '../../lib/playlist-reads/index.js';
+import type {
+  PlaylistArtistData,
   PlaylistScanResult,
   SimplePlaylist,
   TrustedArtistsFile,
@@ -35,33 +41,6 @@ import { scoreRoster } from './score.js';
 
 export type Source = 'aw' | 'boaw';
 
-export type SourcePlaylists = UserConfig['sourcePlaylists'];
-
-/** Live snapshot ids; `undefined` when Spotify couldn't say. */
-export interface SourceSnapshots {
-  aw?: string;
-  boaw?: string;
-}
-
-/** A source's scan; `cached` when its tracks came without fetching a page. */
-export interface SourceScan extends PlaylistScanResult {
-  cached: boolean;
-}
-
-/**
- * The two source playlists (BoAW may be Liked Songs, per `useLikedSongs`).
- * `snapshots` decides whether to re-score at all; `scan` reads a source's
- * tracks through playlist reads (ADR-0011), so an unchanged source is cheap.
- */
-export interface SourceReads {
-  snapshots(sources: SourcePlaylists): Promise<SourceSnapshots>;
-  scan(
-    source: Source,
-    sources: SourcePlaylists,
-    onProgress: (fetched: number, total: number) => void,
-  ): Promise<SourceScan>;
-}
-
 /**
  * The unprocessed weekly playlists promotion sync reconciles. Always current:
  * a sync's own writes show up in the next `find` with nothing to invalidate.
@@ -73,18 +52,26 @@ export interface UnprocessedPlaylists {
   ): Promise<{ playlists: SimplePlaylist[]; awTrackIds: Set<string> }>;
 }
 
+/**
+ * The two source playlists, All Weekly and BoAW (Liked Songs when the user
+ * says so), are read through playlist reads itself (ADR-0013): an unchanged
+ * source costs one snapshot call and no item pages.
+ */
 export interface RecalculationPorts {
-  sources: SourceReads;
+  playlists: PlaylistReads;
   unprocessed: UnprocessedPlaylists;
   sync: PromotionSyncPorts;
 }
 
 // ── Progress + results ───────────────────────────────────────────────────────
 
-/** Liveness only — results come back as data. */
+/**
+ * Liveness only — results come back as data. Both sources are read before
+ * recalculation knows whether to re-score, so a read reports only its pages
+ * and its end; `recalculating` and each source's `scan-done` follow only
+ * when it does re-score. An unchanged run says nothing.
+ */
 export type RecalculationProgress =
-  | { phase: 'recalculating' }
-  | { phase: 'scan-start'; source: Source; name: string }
   | {
       phase: 'scan-progress';
       source: Source;
@@ -92,6 +79,9 @@ export type RecalculationProgress =
       fetched: number;
       total: number;
     }
+  /** A source's read ended, fetched or not. */
+  | { phase: 'scan-read'; source: Source; name: string }
+  | { phase: 'recalculating' }
   | {
       phase: 'scan-done';
       source: Source;
@@ -99,6 +89,8 @@ export type RecalculationProgress =
       artists: number;
       tracks: number;
       cached: boolean;
+      /** Items Spotify counted but left out; the source is scored again next run. */
+      missing: number;
     };
 
 export type SyncProgress =
@@ -133,13 +125,81 @@ function byTier(a: PriorityChange, b: PriorityChange): number {
 }
 
 /**
- * A source counts as changed unless its stored snapshot is known and matches
- * the live one. A cold state, or a live snapshot Spotify couldn't report,
- * counts as changed: re-scoring is cheap once playlist reads hold the tracks.
+ * Per-artist counts and latest position over a source's items. Positions run
+ * oldest to newest (higher is more recent) and count every slot; the track's
+ * first artist is its primary one. `newestFirst` flips Liked Songs, which
+ * Spotify lists newest first.
  */
-function sourceChanged(stored: string | undefined, live: string | undefined) {
-  return !(stored && live) || live !== stored;
+export function scanPositions(
+  items: PlaylistItem[],
+  newestFirst = false,
+): PlaylistScanResult {
+  const artistData = new Map<string, PlaylistArtistData>();
+  const total = items.length;
+  items.forEach((item, position) => {
+    if (!item.track) return;
+    const logicalPosition = newestFirst ? total - 1 - position : position;
+    item.track.artists.forEach((artist, index) => {
+      const isFeatured = index !== 0;
+      let data = artistData.get(artist.name);
+      if (!data) {
+        data = {
+          primaryCount: 0,
+          featuredCount: 0,
+          latestPosition: -1,
+          featuredAtLatest: false,
+          id: artist.id,
+        };
+        artistData.set(artist.name, data);
+      }
+      if (isFeatured) data.featuredCount++;
+      else data.primaryCount++;
+      if (logicalPosition > data.latestPosition) {
+        data.latestPosition = logicalPosition;
+        data.featuredAtLatest = isFeatured;
+      }
+    });
+  });
+  return { artistData, totalTracks: total };
 }
+
+type SourceRead = Extract<PlaylistRead, { success: true }>;
+
+/** Read one source through playlist reads; a failed read throws. */
+async function readSource(
+  source: Source,
+  userConfig: UserConfig,
+  playlists: PlaylistReads,
+  onProgress: (e: RecalculationProgress) => void,
+): Promise<SourceRead> {
+  const name = sourceName(source, userConfig);
+  const progress = (fetched: number, total: number) =>
+    onProgress({ phase: 'scan-progress', source, name, fetched, total });
+  const ids = userConfig.sourcePlaylists;
+  const read = isLikedSongs(source, userConfig)
+    ? await playlists.likedSongs({ onProgress: progress })
+    : await playlists.tracks(
+        source === 'aw' ? ids.allWeeklyId : ids.bestOfAllWeeklyId,
+        { onProgress: progress },
+      );
+  onProgress({ phase: 'scan-read', source, name });
+  if (!read.success) throw read.error;
+  return read;
+}
+
+const sourceName = (source: Source, userConfig: UserConfig) =>
+  source === 'aw' ? 'All Weekly' : secondarySourceName(userConfig);
+
+const isLikedSongs = (source: Source, userConfig: UserConfig) =>
+  source === 'boaw' && userConfig.sourcePlaylists.useLikedSongs;
+
+/**
+ * The snapshot to record as scored. A short read is scored but never
+ * recorded, so the next recalculation reads and scores the source again
+ * (ADR-0013), the way playlist reads never stores one.
+ */
+const scoredSnapshot = (read: SourceRead) =>
+  read.missing > 0 ? undefined : read.snapshot;
 
 function diffPriorities(
   prior: TrustedArtistsFile,
@@ -181,27 +241,21 @@ function mergePending(
     .sort(byTier);
 }
 
-async function scanSource(
+function scanSource(
   source: Source,
+  read: SourceRead,
   userConfig: UserConfig,
-  reads: SourceReads,
   onProgress: (e: RecalculationProgress) => void,
-): Promise<PlaylistScanResult> {
-  const name = source === 'aw' ? 'All Weekly' : secondarySourceName(userConfig);
-  onProgress({ phase: 'scan-start', source, name });
-  const scan = await reads.scan(
-    source,
-    userConfig.sourcePlaylists,
-    (fetched, total) =>
-      onProgress({ phase: 'scan-progress', source, name, fetched, total }),
-  );
+): PlaylistScanResult {
+  const scan = scanPositions(read.items, isLikedSongs(source, userConfig));
   onProgress({
     phase: 'scan-done',
     source,
-    name,
+    name: sourceName(source, userConfig),
     artists: scan.artistData.size,
     tracks: scan.totalTracks,
-    cached: scan.cached,
+    cached: read.cached,
+    missing: read.missing,
   });
   return scan;
 }
@@ -224,15 +278,24 @@ export async function recalculate(
   const userConfig = await data.config.load();
   const onProgress = opts.onProgress ?? (() => {});
 
-  const [state, prior, pending, live] = await Promise.all([
+  const [state, prior, pending] = await Promise.all([
     data.load(RECALCULATION_STATE).then((v) => v ?? {}),
     data.load(TRUSTED_ARTISTS),
     data.load(PENDING_PRIORITY_CHANGES),
-    ports.sources.snapshots(userConfig.sourcePlaylists),
   ]);
+  // Both sources are read first: an unchanged one is held by playlist reads,
+  // so this costs one snapshot call each. Changed means "not the snapshot
+  // recalculation last scored", never just "not held" (ADR-0013).
+  const aw = await readSource('aw', userConfig, ports.playlists, onProgress);
+  const boaw = await readSource(
+    'boaw',
+    userConfig,
+    ports.playlists,
+    onProgress,
+  );
   const changed =
-    sourceChanged(state.allWeeklySnapshot, live.aw) ||
-    sourceChanged(state.bestOfAllWeeklySnapshot, live.boaw);
+    aw.snapshot !== state.allWeeklySnapshot ||
+    boaw.snapshot !== state.bestOfAllWeeklySnapshot;
 
   if (prior && !(opts.force || changed)) {
     return {
@@ -244,13 +307,8 @@ export async function recalculate(
   }
 
   onProgress({ phase: 'recalculating' });
-  const awScan = await scanSource('aw', userConfig, ports.sources, onProgress);
-  const boawScan = await scanSource(
-    'boaw',
-    userConfig,
-    ports.sources,
-    onProgress,
-  );
+  const awScan = scanSource('aw', aw, userConfig, onProgress);
+  const boawScan = scanSource('boaw', boaw, userConfig, onProgress);
   const roster = scoreRoster(awScan, boawScan, userConfig);
 
   // With no prior roster this is a baseline, not a set of crossings.
@@ -264,8 +322,8 @@ export async function recalculate(
   else await data.delete(PENDING_PRIORITY_CHANGES);
   await data.save(TRUSTED_ARTISTS, roster);
   await data.save(RECALCULATION_STATE, {
-    allWeeklySnapshot: live.aw,
-    bestOfAllWeeklySnapshot: live.boaw,
+    allWeeklySnapshot: scoredSnapshot(aw),
+    bestOfAllWeeklySnapshot: scoredSnapshot(boaw),
   });
 
   return { outcome: 'recalculated', roster, changes, pending: nextPending };

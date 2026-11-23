@@ -4,178 +4,153 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
-import type { PlaylistScanResult, SimplePlaylist } from '../lib/types.js';
+import type { SimplePlaylist } from '../lib/types.js';
 import { DEFAULT_USER_CONFIG, type UserConfig } from '../lib/user-config.js';
 import {
   localUserData,
   PENDING_PRIORITY_CHANGES,
+  RECALCULATION_STATE,
+  TRUSTED_ARTISTS,
   type UserData,
 } from '../lib/user-data/index.js';
 import type { UserSession } from '../lib/user-session.js';
-import type {
-  PlaylistTrackWithArtists,
-  PlaylistWrites,
-} from '../services/promotion-sync/index.js';
+import type { PlaylistTrackWithArtists } from '../services/promotion-sync/index.js';
 import {
+  describeRecalculation,
   describeRecalculationResult,
   describeSync,
 } from '../services/recalculation/describe.js';
 import {
   type RecalculateOptions,
   type RecalculationPorts,
+  type RecalculationProgress,
   recalculate,
-  type Source,
-  type SourceReads,
   type SyncProgress,
   syncPending,
 } from '../services/recalculation/index.js';
 import { fixedPopularitySource } from '../services/week-collection/adapters.js';
+import type { ReleaseReads } from '../services/week-collection/index.js';
+import {
+  LIKED_SONGS,
+  type MemoryTrack,
+  memoryPlaylists,
+} from './fixtures/memory-playlists.js';
 
-// ── Fixture: the two source playlists ───────────────────────────────────────
-// Each artist appears `count` times as primary, most recently at the very end
-// of the playlist — so an AW-only artist scores `2 * count + 20` under the
-// default weights: 1 → 22 (P3), 3 → 26 (P2), 20 → 60 (P1).
+// ── Fixture: the source and weekly playlists ────────────────────────────────
+// Each artist appears `count` times as primary, all at the very end of the
+// playlist (the last tenth of it) — so an AW-only artist scores
+// `2 * count + 20` under the default weights: 1 → 22 (P3), 3 → 26 (P2),
+// 20 → 60 (P1).
 
 type Plays = Record<string, number>;
 
-function scanOf(plays: Plays): PlaylistScanResult {
-  const total = Math.max(1, ...Object.values(plays)) * 10;
-  return {
-    artistData: new Map(
-      Object.entries(plays).map(([name, count]) => [
-        name,
-        {
-          primaryCount: count,
-          featuredCount: 0,
-          latestPosition: total,
-          featuredAtLatest: false,
-          id: null,
-        },
-      ]),
-    ),
-    totalTracks: total,
-  };
+function sourceTracks(plays: Plays): MemoryTrack[] {
+  const played = Object.entries(plays).flatMap(([name, count]) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: `${name}-${i}`,
+      artistNames: [name],
+    })),
+  );
+  const filler = Array.from({ length: played.length * 9 || 10 }, (_, i) => ({
+    id: `filler-${i}`,
+  }));
+  return [...filler, ...played];
 }
-
-/** Mutable source playlists; bump a snapshot id by changing its plays. */
-function fixtureSources(initial: { aw: Plays; boaw?: Plays }) {
-  const world = {
-    aw: initial.aw,
-    boaw: initial.boaw ?? {},
-    awVersion: 1,
-    boawVersion: 1,
-    scans: { aw: 0, boaw: 0 },
-  };
-  // Like playlist reads: a source's tracks are fetched only when its
-  // version moved; `scans` counts those fetches.
-  const held: Record<Source, number> = { aw: 0, boaw: 0 };
-  const reads: SourceReads = {
-    async snapshots() {
-      return { aw: `aw-${world.awVersion}`, boaw: `boaw-${world.boawVersion}` };
-    },
-    async scan(source: Source) {
-      const version = source === 'aw' ? world.awVersion : world.boawVersion;
-      const cached = held[source] === version;
-      if (!cached) {
-        world.scans[source]++;
-        held[source] = version;
-      }
-      return { ...scanOf(world[source]), cached };
-    },
-  };
-  return {
-    reads,
-    world,
-    setAw(plays: Plays) {
-      world.aw = plays;
-      world.awVersion++;
-    },
-  };
-}
-
-// ── Fixture: the unprocessed weekly playlists promotion sync reconciles ─────
 
 type WeeklyTrack = Omit<PlaylistTrackWithArtists, 'uri'>;
 
-function fixtureWeeklies(input: Array<{ id: string; tracks: WeeklyTrack[] }>) {
-  const playlists = input.map((p) => ({
-    id: p.id,
-    tracks: p.tracks.map((t) => ({ ...t, uri: `spotify:track:${t.id}` })),
-  }));
-  const removed: Record<string, string[]> = {};
+/**
+ * All Weekly, BoAW and the unprocessed weekly playlists, in one set of
+ * in-memory playlists: what promotion sync removes, the next read sees.
+ */
+function fixtureWorld(initial: {
+  aw: Plays;
+  boaw?: Plays;
+  weeklies?: Array<{ id: string; tracks: WeeklyTrack[] }>;
+}) {
+  const weeklies = initial.weeklies ?? [];
+  const playlists = memoryPlaylists([
+    { id: 'aw', tracks: sourceTracks(initial.aw) },
+    { id: 'boaw', tracks: sourceTracks(initial.boaw ?? {}) },
+    ...weeklies.map((w) => ({ id: w.id, name: w.id, tracks: w.tracks })),
+  ]);
   let failWrites = false;
-  const writes: PlaylistWrites = {
-    async addTracks() {},
-    async removeTracks(playlistId, trackIds) {
-      if (failWrites) throw new Error('spotify 500');
-      removed[playlistId] = [...(removed[playlistId] ?? []), ...trackIds];
-      for (const pl of playlists) {
-        if (pl.id === playlistId)
-          pl.tracks = pl.tracks.filter((t) => !trackIds.includes(t.id));
-      }
-    },
-  };
-  return {
-    removed,
-    failWrites(fail: boolean) {
-      failWrites = fail;
-    },
+  const ports: RecalculationPorts = {
+    playlists: playlists.reads,
     unprocessed: {
       async find() {
         return {
-          playlists: playlists.map(
-            (p) =>
-              ({
-                id: p.id,
-                name: p.id,
-                trackCount: p.tracks.length,
-              }) as SimplePlaylist,
+          playlists: weeklies.map(
+            (w): SimplePlaylist => ({
+              id: w.id,
+              name: w.id,
+              trackCount: playlists.trackIds(w.id).length,
+            }),
           ),
           awTrackIds: new Set<string>(),
         };
       },
     },
     sync: {
-      reads: {
-        // Demotion-only scenarios: the addition phase never reads releases.
-        async searchArtist() {
-          return null;
-        },
-        async searchByUpc() {
-          return null;
-        },
-        async artistAlbums() {
-          return [];
-        },
-        async albumDetails() {
-          return null;
-        },
-        async albumTracks() {
-          return [];
-        },
-        async playlistAlbums() {
-          return new Map();
-        },
-        async userPlaylists() {
-          return [];
-        },
-        async artistProfile() {
-          return null;
-        },
-        async playlistTracksWithArtists(id: string) {
-          return playlists.find((p) => p.id === id)?.tracks ?? [];
-        },
-        async playlistTrackIds(id: string) {
-          return (playlists.find((p) => p.id === id)?.tracks ?? []).map(
-            (t) => t.id,
-          );
+      reads: noReleaseReads,
+      playlists: playlists.reads,
+      popularity: fixedPopularitySource({}),
+      writes: {
+        addTracks: playlists.writes.addTracks,
+        async removeTracks(playlistId, trackIds) {
+          if (failWrites) throw new Error('spotify 500');
+          await playlists.writes.removeTracks(playlistId, trackIds);
         },
       },
-      popularity: fixedPopularitySource({}),
-      writes,
+    },
+  };
+  return {
+    ports,
+    playlists,
+    /** How many times each source's items were fetched. */
+    scans() {
+      const reads = playlists.trackReads;
+      return {
+        aw: reads.filter((id) => id === 'aw').length,
+        boaw: reads.filter((id) => id === 'boaw').length,
+      };
+    },
+    setAw(plays: Plays) {
+      playlists.edit('aw', sourceTracks(plays));
+    },
+    failWrites(fail: boolean) {
+      failWrites = fail;
     },
   };
 }
+
+/** Demotion-only scenarios: the addition phase never reads releases. */
+const noReleaseReads: ReleaseReads = {
+  async searchArtist() {
+    return null;
+  },
+  async searchByUpc() {
+    return null;
+  },
+  async artistAlbums() {
+    return [];
+  },
+  async albumDetails() {
+    return null;
+  },
+  async albumTracks() {
+    return [];
+  },
+  async playlistAlbums() {
+    return new Map();
+  },
+  async userPlaylists() {
+    return [];
+  },
+  async artistProfile() {
+    return null;
+  },
+};
 
 function tmpCache(t: { after: (fn: () => void) => void }): {
   cache: UserData;
@@ -191,18 +166,13 @@ function tmpCache(t: { after: (fn: () => void) => void }): {
 
 function setup(
   t: { after: (fn: () => void) => void },
-  sources: ReturnType<typeof fixtureSources>,
-  weeklies = fixtureWeeklies([]),
+  world: ReturnType<typeof fixtureWorld>,
 ) {
   const { cache, dir } = tmpCache(t);
   const deps: Deps = {
     // The fixture ports make every Spotify read, so the gateway is never called.
     session: { gateway: unusedGateway, userId: 'user-1', data: cache },
-    ports: {
-      sources: sources.reads,
-      unprocessed: weeklies.unprocessed,
-      sync: weeklies.sync,
-    },
+    ports: world.ports,
   };
   return { deps, cache, dir };
 }
@@ -255,48 +225,48 @@ const priorityOf = (
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 test('a cold cache recalculates from scratch and records no pending changes', async (t) => {
-  const sources = fixtureSources({ aw: { Steady: 3 } });
-  const { deps } = setup(t, sources);
+  const world = fixtureWorld({ aw: { Steady: 3 } });
+  const { deps } = setup(t, world);
 
   const result = await recalc(config(), deps);
 
   assert.equal(result.outcome, 'recalculated');
-  assert.deepEqual(sources.world.scans, { aw: 1, boaw: 1 });
+  assert.deepEqual(world.scans(), { aw: 1, boaw: 1 });
   assert.equal(priorityOf(result, 'Steady'), 2);
   // No prior roster to compare against: a baseline, not a crossing.
   assert.deepEqual(result.pending, []);
 });
 
 test('unchanged snapshots skip the scan and leave nothing pending', async (t) => {
-  const sources = fixtureSources({ aw: { Steady: 3 } });
-  const { deps } = setup(t, sources);
+  const world = fixtureWorld({ aw: { Steady: 3 } });
+  const { deps } = setup(t, world);
   await recalc(config(), deps);
 
   const result = await recalc(config(), deps);
 
   assert.equal(result.outcome, 'unchanged');
-  assert.deepEqual(sources.world.scans, { aw: 1, boaw: 1 });
+  assert.deepEqual(world.scans(), { aw: 1, boaw: 1 });
   assert.equal(priorityOf(result, 'Steady'), 2);
   assert.deepEqual(result.changes, []);
   assert.deepEqual(result.pending, []);
 });
 
 test('only the source whose snapshot moved is re-scanned', async (t) => {
-  const sources = fixtureSources({ aw: { Steady: 3 }, boaw: { Loved: 5 } });
-  const { deps } = setup(t, sources);
+  const world = fixtureWorld({ aw: { Steady: 3 }, boaw: { Loved: 5 } });
+  const { deps } = setup(t, world);
   await recalc(config(), deps);
 
-  sources.setAw({ Steady: 3, Newcomer: 1 });
+  world.setAw({ Steady: 3, Newcomer: 1 });
   const result = await recalc(config(), deps);
 
   assert.equal(result.outcome, 'recalculated');
-  assert.deepEqual(sources.world.scans, { aw: 2, boaw: 1 });
+  assert.deepEqual(world.scans(), { aw: 2, boaw: 1 });
   assert.equal(priorityOf(result, 'Loved'), 2); // from the reused BoAW scan
 });
 
 test('the user’s thresholds decide the tiers, not the defaults', async (t) => {
-  const sources = fixtureSources({ aw: { Steady: 3 } }); // score 26
-  const { deps } = setup(t, sources);
+  const world = fixtureWorld({ aw: { Steady: 3 } }); // score 26
+  const { deps } = setup(t, world);
 
   const result = await recalc(
     config({ priorityThresholds: { p1: 90, p2: 50, p3: 20, p4: 1 } }),
@@ -307,30 +277,32 @@ test('the user’s thresholds decide the tiers, not the defaults', async (t) => 
 });
 
 test('a P2 → P3 crossing is pending until promotion sync removes its album', async (t) => {
-  const sources = fixtureSources({ aw: { Fading: 3, Anchor: 20 } });
-  const weeklies = fixtureWeeklies([
-    {
-      id: 'pl-1',
-      tracks: [
-        {
-          id: 'fading-1',
-          name: 'x',
-          artistNames: ['Fading'],
-          albumId: 'alb-1',
-        },
-        {
-          id: 'anchor-1',
-          name: 'y',
-          artistNames: ['Anchor'],
-          albumId: 'alb-2',
-        },
-      ],
-    },
-  ]);
-  const { deps } = setup(t, sources, weeklies);
+  const world = fixtureWorld({
+    aw: { Fading: 3, Anchor: 20 },
+    weeklies: [
+      {
+        id: 'pl-1',
+        tracks: [
+          {
+            id: 'fading-1',
+            name: 'x',
+            artistNames: ['Fading'],
+            albumId: 'alb-1',
+          },
+          {
+            id: 'anchor-1',
+            name: 'y',
+            artistNames: ['Anchor'],
+            albumId: 'alb-2',
+          },
+        ],
+      },
+    ],
+  });
+  const { deps } = setup(t, world);
   await recalc(config(), deps);
 
-  sources.setAw({ Fading: 1, Anchor: 20 });
+  world.setAw({ Fading: 1, Anchor: 20 });
   const result = await recalc(config(), deps);
 
   assert.deepEqual(result.changes, [{ artist: 'Fading', from: 2, to: 3 }]);
@@ -352,7 +324,7 @@ test('a P2 → P3 crossing is pending until promotion sync removes its album', a
   });
 
   assert.equal(sync?.removed, 1);
-  assert.deepEqual(weeklies.removed, { 'pl-1': ['fading-1'] });
+  assert.deepEqual(world.playlists.removed.get('pl-1'), ['fading-1']);
   // Each playlist's removals, and the result exactly once.
   assert.ok(
     lines.includes('  Synced "pl-1": −1 +0 (removed Fading)'),
@@ -363,32 +335,34 @@ test('a P2 → P3 crossing is pending until promotion sync removes its album', a
 });
 
 test('a failed sync stays pending and the next sync applies it', async (t) => {
-  const sources = fixtureSources({ aw: { Fading: 3 } });
-  const weeklies = fixtureWeeklies([
-    {
-      id: 'pl-1',
-      tracks: [
-        {
-          id: 'fading-1',
-          name: 'x',
-          artistNames: ['Fading'],
-          albumId: 'alb-1',
-        },
-      ],
-    },
-  ]);
-  const { deps, cache } = setup(t, sources, weeklies);
+  const world = fixtureWorld({
+    aw: { Fading: 3 },
+    weeklies: [
+      {
+        id: 'pl-1',
+        tracks: [
+          {
+            id: 'fading-1',
+            name: 'x',
+            artistNames: ['Fading'],
+            albumId: 'alb-1',
+          },
+        ],
+      },
+    ],
+  });
+  const { deps, cache } = setup(t, world);
   await recalc(config(), deps);
-  sources.setAw({ Fading: 1 });
+  world.setAw({ Fading: 1 });
   await recalc(config(), deps);
 
-  weeklies.failWrites(true);
+  world.failWrites(true);
   await assert.rejects(syncNow(config(), deps), /spotify 500/);
   assert.deepEqual(await cache.load(PENDING_PRIORITY_CHANGES), [
     { artist: 'Fading', from: 2, to: 3 },
   ]);
 
-  weeklies.failWrites(false);
+  world.failWrites(false);
   const sync = await syncNow(config(), deps);
 
   assert.equal(sync?.removed, 1);
@@ -396,17 +370,107 @@ test('a failed sync stays pending and the next sync applies it', async (t) => {
 });
 
 test('a promotion undone before any sync nets out to nothing pending', async (t) => {
-  const sources = fixtureSources({ aw: { Flicker: 1 } }); // P3
-  const { deps } = setup(t, sources);
+  const world = fixtureWorld({ aw: { Flicker: 1 } }); // P3
+  const { deps } = setup(t, world);
   await recalc(config(), deps);
 
-  sources.setAw({ Flicker: 3 }); // P2
+  world.setAw({ Flicker: 3 }); // P2
   const promoted = await recalc(config(), deps);
   assert.deepEqual(promoted.pending, [{ artist: 'Flicker', from: 3, to: 2 }]);
 
-  sources.setAw({ Flicker: 1 }); // P3 again
+  world.setAw({ Flicker: 1 }); // P3 again
   const undone = await recalc(config(), deps);
 
   assert.deepEqual(undone.changes, [{ artist: 'Flicker', from: 2, to: 3 }]);
   assert.deepEqual(undone.pending, []);
+});
+
+test('an unchanged run says nothing about its scans', async (t) => {
+  const world = fixtureWorld({ aw: { Steady: 3 } });
+  const { deps } = setup(t, world);
+  await recalc(config(), deps);
+
+  const events: RecalculationProgress['phase'][] = [];
+  await recalc(config(), deps, { onProgress: (e) => events.push(e.phase) });
+
+  // Both sources were read (and their reads ended), but nothing re-scored.
+  assert.deepEqual(events, ['scan-read', 'scan-read']);
+});
+
+test('a source read by someone else since the last recalculation still counts as changed', async (t) => {
+  const world = fixtureWorld({ aw: { Steady: 3 } });
+  const { deps } = setup(t, world);
+  await recalc(config(), deps);
+
+  world.setAw({ Steady: 3, Newcomer: 1 });
+  // e.g. the unprocessed listing reads All Weekly first, so it's held.
+  await world.playlists.reads.tracks('aw');
+  const result = await recalc(config(), deps);
+
+  assert.equal(result.outcome, 'recalculated');
+  assert.equal(priorityOf(result, 'Newcomer'), 3);
+});
+
+test('a short read is scored but not recorded, so the next run scores it again', async (t) => {
+  const world = fixtureWorld({ aw: { Steady: 3 } });
+  const { deps, cache } = setup(t, world);
+  world.playlists.short('aw', 2);
+
+  const lines: string[] = [];
+  const first = await recalc(config(), deps, {
+    onProgress: (e) => {
+      for (const l of describeRecalculation(e)) lines.push(l.message);
+    },
+  });
+  assert.equal(first.outcome, 'recalculated');
+  assert.ok(
+    lines.includes(
+      'All Weekly: Spotify left out 2 track(s); scored again next recalculation',
+    ),
+    String(lines),
+  );
+  assert.equal(
+    (await cache.load(RECALCULATION_STATE))?.allWeeklySnapshot,
+    undefined,
+  );
+
+  const second = await recalc(config(), deps);
+
+  assert.equal(second.outcome, 'recalculated');
+  assert.equal(priorityOf(second, 'Steady'), 2);
+  const third = await recalc(config(), deps);
+  assert.equal(third.outcome, 'unchanged');
+});
+
+test('a failed source read fails the recalculation and keeps the roster', async (t) => {
+  const world = fixtureWorld({ aw: { Steady: 3 } });
+  const { deps, cache } = setup(t, world);
+  const before = await recalc(config(), deps);
+
+  world.setAw({ Steady: 20 });
+  world.playlists.fail('aw', new Error('spotify 502'));
+
+  await assert.rejects(recalc(config(), deps), /spotify 502/);
+  assert.deepEqual(await cache.load(TRUSTED_ARTISTS), before.roster);
+});
+
+test('Liked Songs as the second source is read newest first', async (t) => {
+  const world = fixtureWorld({ aw: { Steady: 3 } });
+  const { deps } = setup(t, world);
+  // Liked Songs lists the newest like first: Recent was liked last.
+  world.playlists.edit(LIKED_SONGS, [
+    { id: 'r1', artistNames: ['Recent'] },
+    ...Array.from({ length: 9 }, (_, i) => `filler-${i}`),
+    { id: 'o1', artistNames: ['Old'] },
+  ]);
+  const liked = config();
+  liked.sourcePlaylists = { ...liked.sourcePlaylists, useLikedSongs: true };
+
+  const result = await recalc(liked, deps);
+
+  const recent = result.roster.artistCounts.Recent;
+  const old = result.roster.artistCounts.Old;
+  assert.ok(recent && old);
+  assert.ok(recent.recencyBonusBoAW > old.recencyBonusBoAW);
+  assert.deepEqual(world.scans(), { aw: 1, boaw: 0 });
 });

@@ -8,13 +8,20 @@ import type { RecalculationProgress } from './index.js';
 export function consoleRecalculationProgress(): (
   e: RecalculationProgress,
 ) => void {
+  let fetching = false;
   return (e) => {
     // The terminal's progress, as the web's is its bar.
     if (e.phase === 'scan-progress') {
-      process.stdout.write(`\r  Fetched ${e.fetched}/${e.total} tracks`);
+      fetching = true;
+      process.stdout.write(
+        `\r  ${e.name}: fetched ${e.fetched}/${e.total} tracks`,
+      );
       return;
     }
-    if (e.phase === 'scan-done' && !e.cached) process.stdout.write('\n');
+    if (e.phase === 'scan-read' && fetching) {
+      fetching = false;
+      process.stdout.write('\n');
+    }
     printLines(describeRecalculation(e));
   };
 }
@@ -29,9 +36,6 @@ export function webRecalculationProgress(opts: {
   const { log, progress, checkAbort } = opts;
   return (e) => {
     switch (e.phase) {
-      case 'scan-start':
-        checkAbort();
-        break;
       case 'scan-progress':
         checkAbort();
         progress.bar(
@@ -41,7 +45,7 @@ export function webRecalculationProgress(opts: {
           `${e.name}: ${e.fetched}/${e.total}`,
         );
         break;
-      case 'scan-done':
+      case 'scan-read':
         progress.clearBar('recalc');
         break;
     }

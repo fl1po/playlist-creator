@@ -1,4 +1,8 @@
 import { filterByPriority } from '../../domain/artists.js';
+import {
+  type PlaylistReads,
+  trackIdsOf,
+} from '../../lib/playlist-reads/index.js';
 import { sleep } from '../../lib/spotify/clock.js';
 import { isAbort, SpotifyAuthLost } from '../../lib/spotify/gateway.js';
 import type { DateResult, TrustedArtistsFile } from '../../lib/types.js';
@@ -6,10 +10,7 @@ import type { UserConfig } from '../../lib/user-config.js';
 import { TRUSTED_ARTISTS } from '../../lib/user-data/index.js';
 import type { UserSession } from '../../lib/user-session.js';
 import { saveAiPicks } from '../ai-picks.js';
-import type {
-  PriorityChange,
-  PromotionReads,
-} from '../promotion-sync/index.js';
+import type { PriorityChange } from '../promotion-sync/index.js';
 import {
   type RecalculationPorts,
   recalculate,
@@ -44,8 +45,8 @@ export interface FillPorts {
   week: WeekCollectionPorts;
   /** Weekly playlist listing, creation and track writes. */
   weekly: WeeklyPlaylistStore;
-  /** The listening history (All Weekly) read, for dedup. */
-  history: Pick<PromotionReads, 'playlistTrackIds'>;
+  /** Playlist reads (ADR-0013): All Weekly, the listening history for dedup. */
+  playlists: PlaylistReads;
   /** Mid-fill recalculation and the trailing promotion sync. */
   recalculation: RecalculationPorts;
   /**
@@ -272,8 +273,8 @@ export async function runFill(
   // ── Listening history for dedup ──────────────────────────────────────────
   log('Loading All Weekly tracks for duplicate checking...');
   const listeningHistory = new Set(
-    await ports.history.playlistTrackIds(
-      userConfig.sourcePlaylists.allWeeklyId,
+    trackIdsOf(
+      await ports.playlists.tracks(userConfig.sourcePlaylists.allWeeklyId),
     ),
   );
   log(`Loaded ${listeningHistory.size} tracks from All Weekly`);

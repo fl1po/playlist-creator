@@ -42,16 +42,22 @@ export function describeRecalculation(e: RecalculationProgress): LogLine[] {
   switch (e.phase) {
     case 'recalculating':
       return [line('Recalculating artist priorities...')];
-    case 'scan-start':
-      return [line(`Scanning ${e.name}...`)];
     case 'scan-progress':
+    case 'scan-read':
       return [];
-    case 'scan-done':
+    case 'scan-done': {
+      const scanned = line(
+        `${e.cached ? `${e.name} (cached)` : e.name}: ${e.artists} artists, ${e.tracks} tracks`,
+      );
+      if (e.missing === 0) return [scanned];
       return [
+        scanned,
         line(
-          `${e.cached ? `${e.name} (cached)` : e.name}: ${e.artists} artists, ${e.tracks} tracks`,
+          `${e.name}: Spotify left out ${e.missing} track(s); scored again next recalculation`,
+          'warn',
         ),
       ];
+    }
   }
 }
 

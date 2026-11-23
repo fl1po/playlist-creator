@@ -103,7 +103,11 @@ export function unprocessedReports(
   ): Promise<{ playlists: SimplePlaylist[]; measured: M[] }> {
     const config = await session.data.config.load();
     const { playlists } = await unprocessedWeeklyPlaylists(
-      { store: spotifyWeeklyPlaylistStore(session), userId: session.userId },
+      {
+        store: spotifyWeeklyPlaylistStore(session),
+        playlists: reads,
+        userId: session.userId,
+      },
       config.sourcePlaylists.allWeeklyId,
       log,
     );

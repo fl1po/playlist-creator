@@ -3,24 +3,23 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { type TestContext, test } from 'node:test';
+import { playlistReads } from '../lib/playlist-reads/index.js';
 import { fixtureGateway } from '../lib/spotify/fixture.js';
 import { localUserData } from '../lib/user-data/index.js';
-import {
-  memoryWeeklyPlaylistStore,
-  spotifyWeeklyPlaylistStore,
-} from '../services/weekly-playlists/adapters.js';
+import { spotifyWeeklyPlaylistStore } from '../services/weekly-playlists/adapters.js';
 import {
   findWeeklyPlaylist,
   unprocessedWeeklyPlaylists,
   weeklyPlaylists,
 } from '../services/weekly-playlists/index.js';
+import { memoryPlaylists } from './fixtures/memory-playlists.js';
 
 // ── The weekly playlist for a date ──────────────────────────────────────────
 
 const USER = 'user-1';
 
 test("a date's weekly playlist is found by its date", async () => {
-  const store = memoryWeeklyPlaylistStore([
+  const { store } = memoryPlaylists([
     { id: 'pl-a', name: '26.12.25', trackCount: 4 },
     { id: 'pl-b', name: '02.01.26', trackCount: 7 },
   ]);
@@ -31,7 +30,7 @@ test("a date's weekly playlist is found by its date", async () => {
 });
 
 test('a date with no weekly playlist finds none', async () => {
-  const store = memoryWeeklyPlaylistStore([
+  const { store } = memoryPlaylists([
     { id: 'pl-a', name: '26.12.25', trackCount: 4 },
   ]);
 
@@ -39,7 +38,7 @@ test('a date with no weekly playlist finds none', async () => {
 });
 
 test('a playlist whose name only looks like the date is not its weekly playlist', async () => {
-  const store = memoryWeeklyPlaylistStore([
+  const { store } = memoryPlaylists([
     { id: 'pl-long', name: '02.01.2026', trackCount: 3 },
     { id: 'pl-short', name: '2.1.26', trackCount: 3 },
     { id: 'pl-suffix', name: '02.01.26 (copy)', trackCount: 3 },
@@ -49,7 +48,7 @@ test('a playlist whose name only looks like the date is not its weekly playlist'
 });
 
 test('a date that is not a weekly name finds nothing, even a same-named playlist', async () => {
-  const store = memoryWeeklyPlaylistStore([
+  const { store } = memoryPlaylists([
     { id: 'pl-x', name: '2026-01-02', trackCount: 3 },
   ]);
 
@@ -63,7 +62,7 @@ const AW = 'aw';
 /**
  * Four weekly playlists, newest last; All Weekly holds a track of 05.09.25, so
  * that's the cutoff and the two after it are unprocessed. 26.09.25 is empty.
- * Runs the production store over a fake Spotify whose snapshot ids change on
+ * Runs the production store and playlist reads over a fake Spotify whose snapshot ids change on
  * every edit; `trackReads` lists each playlist whose items were fetched.
  */
 function listeningWorld(t: TestContext) {
@@ -139,15 +138,14 @@ function listeningWorld(t: TestContext) {
       },
     },
   };
-  const store = spotifyWeeklyPlaylistStore({
-    gateway: fixtureGateway(api),
-    data,
-  });
+  const gateway = fixtureGateway(api);
+  const store = spotifyWeeklyPlaylistStore({ gateway });
+  const reads = playlistReads({ gateway, data });
 
   const unprocessed = async () => {
     trackReads.length = 0;
     const { playlists } = await unprocessedWeeklyPlaylists(
-      { store, userId: USER },
+      { store, playlists: reads, userId: USER },
       AW,
     );
     return playlists.map((p) => p.name);

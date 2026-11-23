@@ -98,6 +98,11 @@ export function itemsOf(read: PlaylistRead): PlaylistItem[] {
   return read.items;
 }
 
+/** Every track id on a read playlist, in order; throws if the read failed. */
+export function trackIdsOf(read: PlaylistRead): string[] {
+  return itemsOf(read).flatMap((i) => (i.track ? [i.track.id] : []));
+}
+
 /**
  * The session's playlist reads over its gateway. Everything held is shared by
  * every playlist reads built over the same `data` (a route's and a task's

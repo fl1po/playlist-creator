@@ -1,4 +1,8 @@
 import { generateFridayDates, parseDate } from '../../domain/tracks.js';
+import {
+  type PlaylistReads,
+  trackIdsOf,
+} from '../../lib/playlist-reads/index.js';
 import type { SimplePlaylist } from '../../lib/types.js';
 
 /**
@@ -12,9 +16,9 @@ import type { SimplePlaylist } from '../../lib/types.js';
 // ── Ports (the seam) ─────────────────────────────────────────────────────────
 
 /**
- * The playlist reads and writes a weekly playlist needs. Prod adapter wraps
- * the session's gateway and playlist reads; test adapter is an in-memory
- * listing.
+ * The listing and writes a weekly playlist needs; its tracks are read
+ * through playlist reads (ADR-0013). Prod adapter wraps the session's
+ * gateway; test adapter is the in-memory playlists fixture.
  *
  * Error contract: `create` and `addTracks` throw on any failure, auth
  * failures included (the fill re-auths and retries the date). A throw from
@@ -32,11 +36,6 @@ export interface WeeklyPlaylistStore {
   ): Promise<SimplePlaylist[]>;
   create(userId: string, name: string): Promise<{ id: string; url: string }>;
   addTracks(playlistId: string, trackIds: string[]): Promise<void>;
-  /**
-   * Every track id on a playlist, all pages. Pass the `snapshotId` the
-   * listing gave, so an unchanged playlist is answered without a call.
-   */
-  trackIds(playlistId: string, snapshotId?: string): Promise<string[]>;
 }
 
 // ── Naming ───────────────────────────────────────────────────────────────────
@@ -184,6 +183,7 @@ export function weeklyPlaylists(deps: WeeklyPlaylistsDeps): WeeklyPlaylists {
 
 export interface UnprocessedWeeklyPlaylistsDeps {
   store: WeeklyPlaylistStore;
+  playlists: PlaylistReads;
   userId: string;
 }
 
@@ -194,17 +194,17 @@ export interface UnprocessedWeeklyPlaylistsDeps {
  *
  * Always current, with nothing to invalidate: All Weekly and the playlist
  * listing are checked fresh every time, and each weekly playlist's tracks are
- * read with the snapshot id the listing gave, so the store rereads only a
- * playlist that changed (ADR-0009, ADR-0011).
+ * read with the snapshot id the listing gave, so playlist reads rereads only
+ * a playlist that changed (ADR-0009, ADR-0011).
  */
 export async function unprocessedWeeklyPlaylists(
   deps: UnprocessedWeeklyPlaylistsDeps,
   allWeeklyId: string,
   log: (message: string, level?: 'info' | 'debug') => void = () => {},
 ): Promise<{ playlists: SimplePlaylist[]; awTrackIds: Set<string> }> {
-  const { store, userId } = deps;
+  const { store, playlists, userId } = deps;
 
-  const awTrackIds = new Set(await store.trackIds(allWeeklyId));
+  const awTrackIds = new Set(trackIdsOf(await playlists.tracks(allWeeklyId)));
   log(`Loaded ${awTrackIds.size} tracks from All Weekly`);
 
   const weeklies = (await store.list(userId))
@@ -214,7 +214,9 @@ export async function unprocessedWeeklyPlaylists(
 
   const unprocessed: SimplePlaylist[] = [];
   for (const pl of weeklies) {
-    const trackIds = await store.trackIds(pl.id, pl.snapshotId);
+    const trackIds = trackIdsOf(
+      await playlists.tracks(pl.id, { snapshot: pl.snapshotId }),
+    );
     if (trackIds.some((id) => awTrackIds.has(id))) {
       log(`  ${pl.name} — AW overlap found, cutoff reached`, 'debug');
       break;

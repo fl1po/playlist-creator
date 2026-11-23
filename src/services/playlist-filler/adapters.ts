@@ -1,9 +1,9 @@
 import { anthropicKeyFromEnv } from '../../lib/anthropic-key.js';
+import { playlistReads } from '../../lib/playlist-reads/index.js';
 import type { BatchCache } from '../../lib/types.js';
 import type { UserSession } from '../../lib/user-session.js';
 import { claudeTasteJudge } from '../ai-finds/claude-taste-judge.js';
 import { deezerCandidateSource } from '../ai-finds/deezer-candidate-source.js';
-import { promotionReads } from '../promotion-sync/adapters.js';
 import { spotifyRecalculationPorts } from '../recalculation/adapters.js';
 import { deezerPopularitySource } from '../week-collection/adapters.js';
 import type { CheckpointStore } from '../week-collection/index.js';
@@ -73,7 +73,7 @@ export function fillPorts(
       checkpoints: batchCacheCheckpoints(new DurableFillStorage(data)),
     },
     weekly: spotifyWeeklyPlaylistStore(session),
-    history: promotionReads(session, reads),
+    playlists: playlistReads(session),
     recalculation: spotifyRecalculationPorts(session, { reads }),
     ai:
       apiKey === undefined

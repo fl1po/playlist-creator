@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { FileConfigStore } from '../lib/config.js';
+import { itemsOf, playlistReads } from '../lib/playlist-reads/index.js';
 import { createCliGateway } from '../lib/spotify/gateway.js';
 import type { TrustedArtistsFile } from '../lib/types.js';
 import { secondarySourceName } from '../lib/user-config.js';
@@ -9,7 +10,7 @@ import {
   renderReport,
   simulate,
 } from '../services/featured-simulation.js';
-import { spotifySourceReads } from '../services/recalculation/adapters.js';
+import { scanPositions } from '../services/recalculation/index.js';
 
 const rawArg = process.argv[2];
 const multiplier = rawArg === undefined ? 0.5 : Number(rawArg);
@@ -23,7 +24,9 @@ if (!Number.isFinite(multiplier) || multiplier < 0 || multiplier > 1) {
 const ctx = createCliGateway({ configStore: new FileConfigStore() });
 const data = localUserData('.');
 const userConfig = await data.config.load();
-const sources = spotifySourceReads({ gateway: ctx, data });
+const playlists = playlistReads({ gateway: ctx, data });
+const { allWeeklyId, bestOfAllWeeklyId, useLikedSongs } =
+  userConfig.sourcePlaylists;
 const secondaryName = secondarySourceName(userConfig);
 
 console.log('=== Featured-artist gain simulation (read-only) ===');
@@ -34,20 +37,26 @@ const progressFor = (name: string) => (fetched: number, total: number) => {
 };
 
 console.log('Scanning All Weekly...');
-const awScan = await sources.scan(
-  'aw',
-  userConfig.sourcePlaylists,
-  progressFor('All Weekly'),
+const awScan = scanPositions(
+  itemsOf(
+    await playlists.tracks(allWeeklyId, {
+      onProgress: progressFor('All Weekly'),
+    }),
+  ),
 );
 console.log(
   `\n  ${awScan.artistData.size} artists in ${awScan.totalTracks} tracks`,
 );
 
 console.log(`Scanning ${secondaryName}...`);
-const boawScan = await sources.scan(
-  'boaw',
-  userConfig.sourcePlaylists,
-  progressFor(secondaryName),
+const onProgress = progressFor(secondaryName);
+const boawScan = scanPositions(
+  itemsOf(
+    useLikedSongs
+      ? await playlists.likedSongs({ onProgress })
+      : await playlists.tracks(bestOfAllWeeklyId, { onProgress }),
+  ),
+  useLikedSongs,
 );
 console.log(
   `\n  ${boawScan.artistData.size} artists in ${boawScan.totalTracks} tracks\n`,

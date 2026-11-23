@@ -1,17 +1,16 @@
 import type { AlbumTrack, PlaylistAlbumInfo } from '../../lib/types.js';
+import type { PlaylistWrites } from '../../services/promotion-sync/index.js';
 import type {
-  PlaylistTrackWithArtists,
-  PlaylistWrites,
-  PromotionReads,
-} from '../../services/promotion-sync/index.js';
-import type { ArtistProfile } from '../../services/week-collection/index.js';
+  ArtistProfile,
+  ReleaseReads,
+} from '../../services/week-collection/index.js';
 
 // ── Fixture catalog ──────────────────────────────────────────────────────────
 // An in-memory Spotify: artists with their albums, optional editorial
-// playlist contents, artist profiles, and weekly playlists. One adapter
-// satisfies both ReleaseReads (week collection, fill) and PromotionReads
-// (promotion sync), so every module that shares the release engine shares
-// this fixture too.
+// playlist contents, artist profiles, and weekly playlists. The adapter
+// satisfies ReleaseReads, so every module that shares the release engine
+// (week collection, fill, promotion sync) shares this fixture too. Weekly
+// playlists' tracks are read through `memoryPlaylists` (ADR-0013).
 
 export interface FixtureAlbum {
   id: string;
@@ -50,11 +49,11 @@ export interface Catalog {
   playlistAlbums?: Record<string, string[]>;
   /** Artist id → profile, for the editorial gate. */
   profiles?: Record<string, ArtistProfile>;
-  /** Weekly playlists with their tracks, for promotion sync's two reads. */
+  /** Weekly playlists with their tracks; seed `memoryPlaylists` with them. */
   playlists?: FixturePlaylist[];
 }
 
-export function fixtureReads(catalog: Catalog): PromotionReads & {
+export function fixtureReads(catalog: Catalog): ReleaseReads & {
   searchCalls: string[];
   upcCalls: string[];
   playlistCalls: string[];
@@ -68,9 +67,6 @@ export function fixtureReads(catalog: Catalog): PromotionReads & {
     }
     return null;
   };
-  const playlist = (id: string) =>
-    catalog.playlists?.find((p) => p.id === id) ?? null;
-
   return {
     searchCalls: [],
     upcCalls: [],
@@ -152,21 +148,6 @@ export function fixtureReads(catalog: Catalog): PromotionReads & {
     async artistProfile(artistId) {
       this.profileCalls.push(artistId);
       return catalog.profiles?.[artistId] ?? null;
-    },
-    async playlistTracksWithArtists(playlistId) {
-      const pl = playlist(playlistId);
-      return (pl?.tracks ?? []).map(
-        (t): PlaylistTrackWithArtists => ({
-          uri: `spotify:track:${t.id}`,
-          id: t.id,
-          name: t.name,
-          artistNames: t.artistNames,
-          albumId: t.albumId ?? '',
-        }),
-      );
-    },
-    async playlistTrackIds(playlistId) {
-      return (playlist(playlistId)?.tracks ?? []).map((t) => t.id);
     },
   };
 }

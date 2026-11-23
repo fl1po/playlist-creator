@@ -1,5 +1,10 @@
 import { filterByPriority } from '../../domain/artists.js';
 import { getValidDates, parseDate } from '../../domain/tracks.js';
+import {
+  itemsOf,
+  type PlaylistItem,
+  type PlaylistReads,
+} from '../../lib/playlist-reads/index.js';
 import { trackKey } from '../../lib/track-utils.js';
 import type {
   FoundRelease,
@@ -42,21 +47,6 @@ export interface PlaylistTrackWithArtists {
 }
 
 /**
- * The reads a promotion sync needs: every release read (shared with week
- * collection via the engine) plus the two playlist-track reads the removal and
- * addition phases use. Prod adapter wraps the session's playlist reads; test
- * adapter is an in-memory fixture catalog.
- */
-export interface PromotionReads extends ReleaseReads {
-  /** Playlist tracks with their artist names + album id (removal phase). */
-  playlistTracksWithArtists(
-    playlistId: string,
-  ): Promise<PlaylistTrackWithArtists[]>;
-  /** Playlist track ids, to exclude what's already present (addition phase). */
-  playlistTrackIds(playlistId: string): Promise<string[]>;
-}
-
-/**
  * Playlist mutation. The adapter owns Spotify's 100-item chunking and the
  * `spotify:track:` uri formatting; the module just hands over track ids.
  */
@@ -65,8 +55,15 @@ export interface PlaylistWrites {
   removeTracks(playlistId: string, trackIds: string[]): Promise<void>;
 }
 
+/**
+ * Release reads are shared with week collection via the engine. Playlist
+ * tracks come from playlist reads itself (ADR-0013), always with a live
+ * snapshot check: the removal phase edits the very playlists the addition
+ * phase reads next, so a listing's snapshot would be stale.
+ */
 export interface PromotionSyncPorts {
-  reads: PromotionReads;
+  reads: ReleaseReads;
+  playlists: PlaylistReads;
   popularity: PopularitySource;
   writes: PlaylistWrites;
 }
@@ -127,6 +124,23 @@ export interface PromotionSyncResult {
 
 const isP1P2 = (p: number | null) => p === 1 || p === 2;
 
+/** A playlist's tracks with their artist names and album id; slots without a track are skipped. */
+function tracksWithArtists(items: PlaylistItem[]): PlaylistTrackWithArtists[] {
+  return items.flatMap(({ track }) =>
+    track
+      ? [
+          {
+            uri: `spotify:track:${track.id}`,
+            id: track.id,
+            name: track.name,
+            artistNames: track.artists.map((a) => a.name),
+            albumId: track.album.id,
+          },
+        ]
+      : [],
+  );
+}
+
 /**
  * Reconcile already-published weekly playlists with a recalculation's priority
  * changes: remove the tracks of artists demoted out of P1/P2, and backfill
@@ -144,7 +158,9 @@ export async function syncPriorityChanges(
   ports: PromotionSyncPorts,
   onProgress?: (e: PromotionProgressEvent) => void,
 ): Promise<PromotionSyncResult> {
-  const { reads, popularity, writes } = ports;
+  const { reads, playlists, popularity, writes } = ports;
+  const tracksOf = async (playlistId: string) =>
+    tracksWithArtists(itemsOf(await playlists.tracks(playlistId)));
   const { unprocessedPlaylists, awTrackIds, trustedArtists, minPopularity } =
     input;
 
@@ -189,7 +205,7 @@ export async function syncPriorityChanges(
     const demotedNames = new Set(demoted.map((d) => d.artist.toLowerCase()));
 
     for (const pl of unprocessedPlaylists) {
-      const tracks = await reads.playlistTracksWithArtists(pl.id);
+      const tracks = await tracksOf(pl.id);
       const albumGroups = new Map<string, PlaylistTrackWithArtists[]>();
       for (const t of tracks) {
         const key = t.albumId || t.id;
@@ -277,7 +293,7 @@ export async function syncPriorityChanges(
 
       // By key too: a single of a song the playlist already holds from its
       // album has its own track id.
-      const existing = await reads.playlistTracksWithArtists(pl.id);
+      const existing = await tracksOf(pl.id);
       const { collected } = await collect(run, kept, {
         ids: new Set([...awTrackIds, ...existing.map((t) => t.id)]),
         keys: new Set(existing.map((t) => trackKey(t.artistNames, t.name))),
