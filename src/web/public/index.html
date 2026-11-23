@@ -1122,17 +1122,23 @@ for (const key of ['trustedArtists', 'batchCache', 'fillHistory', 'durationSnaps
 
 // ── State ────────────────────────────────────────────────────────
 let activeFilters = new Set([1, 2]);
-let busy = false;
-let runningTask = null;
-let ownTask = false;
-let stopping = false;
 let streamConnected = false;
+
+// ── Page stream ─────────────────────────────────────────────────
+// What every message means is decided by the page stream module (ADR-0012);
+// this page only carries out its effects. `stream` is its state: the task
+// slot as this user may see it, the marked artists, the armed dedup scan.
+let PageStream = null;
+let stream = null;
+const pageStreamLoaded = import('/modules/web/page-stream/index.js').then((m) => {
+  PageStream = m;
+  stream = m.initialState;
+});
+const taskView = () => stream?.task ?? { busy: false, mine: false, name: null, stopping: false };
 
 // ── Task progress ───────────────────────────────────────────────
 // The running task's progress arrives in the owner's status (ADR-0006);
 // nothing here is rebuilt from the log.
-let searchedArtists = new Set();
-let currentSearchArtist = null;
 let rateLimitTimer = null;
 
 function startRateLimitCountdown(wakeTime) {
@@ -1154,25 +1160,25 @@ function clearRateLimitCountdown() {
   if (rateLimitTimer) { clearInterval(rateLimitTimer); rateLimitTimer = null; }
 }
 
+// Bars a task may report, by key (PageStream.PROGRESS_BARS):
+// `${key}ProgressText`, and `${key}Progress` where the card has a bar.
 function setFetching(active) {
   const methods = active ? 'add' : 'remove';
-  document.getElementById('fillCurrentProgress').classList[methods]('fetching');
+  for (const key of PageStream.PROGRESS_BARS) {
+    document.getElementById(`${key}Progress`)?.classList[methods]('fetching');
+  }
   document.getElementById('fillSegBar').classList[methods]('fetching');
-  document.getElementById('recalcProgress').classList[methods]('fetching');
 }
 
-// Bars a task may report, by key: `${key}ProgressText`, and `${key}Progress`
-// where the card has a bar.
-const PROGRESS_BARS = ['fillCurrent', 'recalc', 'lt', 'aw'];
 const shownBars = new Set();
 let shownSteps = '';
 let stepsHideTimer = null;
 let shownWaitUntil = null;
 
-/** Draw the owner's progress, or none when `p` is absent. */
+/** Draw the owner's progress, or none when `p` is null. */
 function renderProgress(p) {
   const bars = new Map((p?.bars ?? []).map(b => [b.key, b]));
-  for (const key of PROGRESS_BARS) {
+  for (const key of PageStream.PROGRESS_BARS) {
     const b = bars.get(key);
     if (b) {
       showProgress(key, b.value, b.total, b.text);
@@ -1183,18 +1189,6 @@ function renderProgress(p) {
     }
   }
   renderSteps(p?.steps ?? [], bars.get('fillCurrent'));
-
-  if (!p || p.marked) {
-    clearArtistMarks();
-    searchedArtists = new Set(p?.marked ?? []);
-    currentSearchArtist = null;
-    for (const name of searchedArtists) markArtistRow(name, 'done');
-  }
-  for (const name of p?.markedAdded ?? []) {
-    searchedArtists.add(name);
-    currentSearchArtist = name;
-    markArtistRow(name, 'searched');
-  }
 
   const waitUntil = p?.waitUntil ?? null;
   if (waitUntil !== shownWaitUntil) {
@@ -1247,14 +1241,11 @@ function renderSteps(steps, current) {
 }
 
 // ── SSE Connection ──────────────────────────────────────────────
-// True while the first connection replays history. The page loads artists,
-// picks and stats itself on startup, so replayed completions needn't reload
-// them; a reconnect's replay carries events the page missed, so those do.
-let initialReplay = true;
 const pendingReloads = new Set();
-// Coalesce reloads so a burst of completions costs one fetch each.
+// Coalesce reloads so a burst of completions costs one fetch each. Which
+// results reload what, and not during the first replay, is the page
+// stream's rule.
 function reloadSoon(...what) {
-  if (initialReplay) return;
   if (!pendingReloads.size) {
     setTimeout(() => {
       const due = [...pendingReloads];
@@ -1277,12 +1268,8 @@ function setStatusText(text) {
 // The history events a page was sent are kept in IndexedDB, so a reload
 // replays them locally and asks the server only for what came after them.
 // Raw events rather than rendered lines, replayed through handleMessage
-// just as the server's replay is.
-const LOG_CACHE_MAX = 2000; // the server's MAX_LOG_HISTORY
-const LOG_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // the server's retention
-// The server's SKIP_HISTORY: transient, never part of a replay. data:save is
-// left out too, since replaying an old save would undo a newer one.
-const LOG_CACHE_SKIP = new Set(['status', 'reload', 'auth', 'data:save']);
+// just as the server's replay is. What is kept, and for how long, is the
+// page stream's history policy, the same one the server follows.
 const LogCache = {
   dbPromise: null,
   queue: [],
@@ -1319,9 +1306,10 @@ const LogCache = {
       const store = tx.objectStore('events');
       const req = store.getAll(this.range(user));
       req.onsuccess = () => {
-        const cutoff = Date.now() - LOG_CACHE_AGE_MS;
+        const { maxEntries, retentionMs } = PageStream.HISTORY;
+        const cutoff = Date.now() - retentionMs;
         const all = req.result;
-        const kept = all.filter(r => r.ts >= cutoff).slice(-LOG_CACHE_MAX);
+        const kept = all.filter(r => r.ts >= cutoff).slice(-maxEntries);
         if (kept.length < all.length) {
           // Kept records are the newest, so everything older goes.
           const firstKept = kept[0]?.seq ?? Infinity;
@@ -1405,126 +1393,65 @@ async function connect() {
     handleMessage(msg);
     const numbered = e.lastEventId && e.lastEventId !== lastId;
     lastId = e.lastEventId;
-    if (user && numbered && !LOG_CACHE_SKIP.has(msg.type)) {
+    if (user && numbered && PageStream.retentionOf(msg.type) === 'kept') {
       LogCache.add(user, Number(e.lastEventId), msg.ts, e.data);
     }
   };
 }
 
-// Every line the page logs from the stream carries the message's own time
-// and process, so replayed history keeps when and where the work happened.
-function handleMessage({ type, data, ts, task }) {
-  switch (type) {
-    case 'replay:done':
-      initialReplay = false;
+// Every message goes through the page stream module; the page only carries
+// out what it says. A logged line keeps the message's own time and task.
+function handleMessage(msg) {
+  const { state, effects } = PageStream.receive(stream, msg, {
+    sessionExpired: tokenExpired,
+    tokens: Store.getTokens(),
+    loginPending: !!authPopup && !authPopup.closed,
+  });
+  stream = state;
+  for (const effect of effects) runEffect(effect);
+}
+
+function runEffect(e) {
+  switch (e.kind) {
+    case 'log':
+      log(e.level, e.message, e.ts, e.task);
       break;
-    // The log was cleared since this page's cache; a full replay follows.
-    case 'replay:reset':
+    case 'reload':
+      reloadSoon(...e.targets);
+      break;
+    case 'task':
+      updateButtons();
+      setStatusText(e.statusText);
+      break;
+    case 'progress':
+      renderProgress(e.progress);
+      break;
+    case 'marks':
+      if (e.reset) {
+        clearArtistMarks();
+        for (const name of e.done) markArtistRow(name, 'done');
+      }
+      for (const name of e.searched) markArtistRow(name, 'searched');
+      break;
+    case 'dedupArmed':
+      document.getElementById('dedupRemoveBtn').disabled = !e.armed;
+      break;
+    case 'show':
+      if (e.result === 'listeningTime') showListeningTimeResult(e.data);
+      else showAwBreakdownResult(e.data);
+      break;
+    case 'resetLog':
       resetLogPanel();
       LogCache.clear(Store.getUserId());
       break;
-    case 'status':
-      // Only the owner learns which task is running (ADR-0003).
-      busy = data.busy;
-      ownTask = !!data.mine;
-      runningTask = data.task ?? null;
-      stopping = !!data.stopping;
-      updateButtons();
-      if (data.task) setStatusText(`Running: ${data.task}`);
-      else if (data.busy) setStatusText('Busy: another user’s task');
-      else setStatusText('Connected');
-      renderProgress(data.progress);
+    case 'storeTokens':
+      Store.setTokens(e.tokens);
       break;
-
-    case 'log': {
-      // Server broadcasts logs as either a {level, message, ts} object or a
-      // bare string (e.g. playlist-scan progress); normalize both shapes.
-      const p = typeof data === 'string' ? { message: data } : data;
-      log(p.level || 'info', p.message, p.ts ?? ts, task);
+    case 'showSessionExpired':
+      tokenExpired = true;
+      document.getElementById('tokenBanner').classList.add('visible');
       break;
-    }
-
-    // Task results: their lines arrive as log messages (ADR-0007).
-    case 'fill:complete':
-      reloadSoon('artists', 'aiPicks', 'stats');
-      break;
-    case 'fill:stopped':
-      // A stopped fill keeps the weeks it finished.
-      reloadSoon('artists', 'aiPicks', 'stats');
-      break;
-    // Marks a deploy in the replayed log: whatever ran before it was cut off.
-    case 'server:restarted': {
-      const deployed = data?.commit
-        ? ` — deployed ${data.commit}${data.message ? ` "${data.message}"` : ''}${data.branch ? ` (${data.branch})` : ''}`
-        : '';
-      log('warn', `Server restarted${deployed}. Anything running before this was cut off`, ts, task);
-      break;
-    }
-    case 'fill:recalculated':
-      reloadSoon('artists');
-      break;
-    case 'recalc:complete':
-      reloadSoon('artists', 'stats');
-      break;
-    // A cleared weekly playlist's AI picks are forgotten with it.
-    case 'clear:complete':
-      reloadSoon('aiPicks');
-      break;
-
-    // Dedup
-    case 'dedup:scanComplete':
-      // A replayed scan may be days old; removing by it could take out
-      // tracks added since, so only a scan seen live arms the button.
-      if (!initialReplay) {
-        dedupScanResult = data;
-        if (data.totalDuplicates > 0) document.getElementById('dedupRemoveBtn').disabled = false;
-      }
-      break;
-    case 'dedup:complete':
-      dedupScanResult = null;
-      document.getElementById('dedupRemoveBtn').disabled = true;
-      break;
-
-    // Listening Time
-    case 'listeningTime:complete':
-      showListeningTimeResult(data);
-      break;
-
-    // AW Breakdown
-    case 'awBreakdown:complete':
-      showAwBreakdownResult(data);
-      break;
-
-    // Auth
-    case 'auth':
-      if (data.authenticated) {
-        // This window's own login completes via the popup's postMessage (it
-        // must store the new tokens first); other tabs of the user just reload.
-        if (authPopup && !authPopup.closed) break;
-        location.reload();
-      } else {
-        // Show the inline session banner (manual Refresh) rather than the
-        // full auth overlay, so the page stays usable.
-        tokenExpired = true;
-        document.getElementById('tokenBanner').classList.add('visible');
-      }
-      break;
-
-    // Rotated bearer tokens (server -> client localStorage)
-    case 'data:save':
-      if (data.key === 'tokens' && data.value) {
-        const current = Store.getTokens();
-        const changed = current?.accessToken !== data.value.accessToken
-          || current?.refreshToken !== data.value.refreshToken;
-        Store.setTokens(data.value);
-        // Another device refreshed while this one was showing the expired
-        // prompt: reload onto the new pair, as a local refresh would. Only on
-        // a change, so a replayed push of the same pair can't loop.
-        if (changed && tokenExpired) location.reload();
-      }
-      break;
-
-    case 'reload':
+    case 'reloadPage':
       location.reload();
       break;
   }
@@ -1553,7 +1480,7 @@ async function stopTask() {
   btn.textContent = 'Stopping...';
   const res = await api('POST', '/api/stop');
   if (!res.ok) {
-    log('error', res.error || 'Failed to stop', undefined, runningTask ?? undefined);
+    log('error', res.error || 'Failed to stop', undefined, taskView().name ?? undefined);
     updateButtons();
   }
 }
@@ -1803,10 +1730,8 @@ async function clearPlaylist() {
 }
 
 // ── Dedup ────────────────────────────────────────────────────────
-let dedupScanResult = null;
-
+// The scan removal acts on is stream.dedupScan: only a live scan arms it.
 async function dedupScan() {
-  dedupScanResult = null;
   document.getElementById('dedupRemoveBtn').disabled = true;
   shouldScrollToLog = true;
   const res = await api('POST', '/api/dedup-scan');
@@ -1814,6 +1739,7 @@ async function dedupScan() {
 }
 
 async function dedupRemove() {
+  const dedupScanResult = stream?.dedupScan;
   if (!dedupScanResult || !dedupScanResult.playlists.length) return;
   if (!confirm(`Remove ${dedupScanResult.totalDuplicates} duplicate tracks from ${dedupScanResult.playlists.length} playlists?`)) return;
   shouldScrollToLog = true;
@@ -2082,8 +2008,8 @@ async function loadArtists() {
   for (const a of artists) {
     const tr = document.createElement('tr');
     tr.dataset.artist = a.name;
-    if (searchedArtists.has(a.name)) tr.classList.add('artist-searched');
-    if (currentSearchArtist === a.name) { tr.classList.remove('artist-searched'); tr.classList.add('artist-active'); }
+    if (stream?.marked.has(a.name)) tr.classList.add('artist-searched');
+    if (stream?.current === a.name) { tr.classList.remove('artist-searched'); tr.classList.add('artist-active'); }
     const pClass = a.priority <= 3 ? `p${a.priority}` : '';
     const sl = secondaryLabel();
     const scoreTooltip = `(AW ${a.allWeekly} × 2) + (${sl} ${a.bestOfAllWeekly} × 3) + recency AW +${a.recencyBonusAW} + recency ${sl} +${a.recencyBonusBoAW} = ${a.score}`;
@@ -2161,6 +2087,7 @@ function hideProgress(prefix) {
 }
 
 function updateButtons() {
+  const { busy, mine, stopping } = taskView();
   const disabled = busy || !streamConnected;
   document.getElementById('fillBtn').disabled = disabled;
   document.getElementById('recalcBtn').disabled = disabled;
@@ -2171,7 +2098,7 @@ function updateButtons() {
   document.getElementById('awBreakdownBtn').disabled = disabled;
   if (disabled) document.getElementById('dedupRemoveBtn').disabled = true;
   const stopBtn = document.getElementById('stopBtn');
-  stopBtn.style.display = busy && ownTask ? '' : 'none';
+  stopBtn.style.display = busy && mine ? '' : 'none';
   stopBtn.disabled = stopping;
   stopBtn.textContent = stopping ? 'Stopping...' : 'Stop';
 }
@@ -3234,7 +3161,7 @@ layoutPins();
 // ── Init ─────────────────────────────────────────────────────────
 // The stream needs the tokens a mobile redirect brings, but not the auth
 // check (a Spotify round trip) or the data sync, so it opens alongside them.
-completeRedirectAuth().then(() => {
+Promise.all([completeRedirectAuth(), pageStreamLoaded]).then(() => {
   connect();
   return checkAuth();
 }).then(() => {

@@ -15,3 +15,4 @@ The same collection decision used to be turned into text in four places: `fill-r
 - During the search the live line says "Discovered"; a `release-found` decision says "Added" after the week (CONTEXT.md: *found* means landed).
 - Which results stay in history is unchanged. Making the ones that only drive live behaviour transient is part of the replay protocol, not this decision.
 - `broadcastEvents` and the fill's and clearer's event maps are gone. `ServiceEmitter` stays for artist lookup, which isn't a task.
+- ADR-0012 types the results too. Each task declares its own `…Results` next to itself, and the page reads every result through one exhaustive `receive` in the page stream module. Which messages stay in history is now that module's history policy.

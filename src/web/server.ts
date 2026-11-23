@@ -120,6 +120,16 @@ const publicDir = fs.existsSync(path.join(__dirname, '../../src/web/public'))
   ? path.join(__dirname, '../../src/web/public')
   : path.join(__dirname, 'public');
 app.use(express.static(publicDir));
+// The page loads the page stream module as tsc compiled it (ADR-0012). Only
+// that module and its one value import are served from the build. no-cache
+// revalidates by ETag, so a deploy reaches an open page on its next load.
+const buildRoot = path.join(__dirname, '..');
+for (const file of ['web/page-stream/index.js', 'lib/task-progress.js']) {
+  app.get(`/modules/${file}`, (_req, res) => {
+    res.set('Cache-Control', 'no-cache');
+    res.type('text/javascript').sendFile(path.join(buildRoot, file));
+  });
+}
 
 // Auth routes handle raw tokens themselves; everything else under /api must
 // prove a Bearer token belongs to the X-User-Id it claims.
