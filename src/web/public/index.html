@@ -1466,6 +1466,10 @@ function handleMessage({ type, data, ts, task }) {
     case 'recalc:complete':
       reloadSoon('artists', 'stats');
       break;
+    // A cleared weekly playlist's AI picks are forgotten with it.
+    case 'clear:complete':
+      reloadSoon('aiPicks');
+      break;
 
     // Dedup
     case 'dedup:scanComplete':
