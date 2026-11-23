@@ -6,7 +6,12 @@ import {
 import type { SimplePlaylist } from '../../lib/types.js';
 import { LISTENING_TIME } from '../../lib/user-data/index.js';
 import type { UserSession } from '../../lib/user-session.js';
-import { type DuplicateGroup, findDuplicates } from '../dedup.js';
+import {
+  type DuplicateGroup,
+  findDuplicates,
+  removeDuplicates as removeGroups,
+  spotifyDedupWrites,
+} from '../dedup.js';
 import { spotifyWeeklyPlaylistStore } from '../weekly-playlists/adapters.js';
 import { unprocessedWeeklyPlaylists } from '../weekly-playlists/index.js';
 
@@ -15,7 +20,9 @@ import { unprocessedWeeklyPlaylists } from '../weekly-playlists/index.js';
  * playlists, recomputed in memory from playlist reads on every run. Each run
  * lists the unprocessed weekly playlists afresh (ADR-0009) and reads each one
  * with the listing's snapshot, so an unchanged playlist costs no call
- * (ADR-0011).
+ * (ADR-0011). The duplicates report arms one action, removing them, and it
+ * lists afresh too: it touches only the playlists asked for that are still
+ * unprocessed weekly playlists when it runs.
  */
 
 export interface PlaylistListeningTime {
@@ -56,6 +63,18 @@ export interface Duplicates {
   playlists: PlaylistDuplicates[];
 }
 
+export interface DuplicatesRemoved {
+  totalRemoved: number;
+  /** Per playlist duplicates were removed from, oldest first. */
+  perPlaylist: Array<{ id: string; name: string; removed: number }>;
+  /**
+   * Ids asked for that aren't unprocessed weekly playlists now, in the order
+   * asked: All Weekly, a playlist listened to since the scan, any other.
+   * Left alone.
+   */
+  refused: string[];
+}
+
 /**
  * Called after each playlist is measured: how many are done of how many, the
  * playlist, and that playlist's own measurement.
@@ -76,6 +95,16 @@ export interface UnprocessedReports {
   duplicates(opts?: {
     onPlaylist?: OnPlaylist<PlaylistDuplicates>;
   }): Promise<Duplicates>;
+  /**
+   * Remove the duplicates from those of `playlistIds` that are unprocessed
+   * weekly playlists now, by the rule the scan used; every first copy stays.
+   * Each playlist is read live, since it is edited next. `onPlaylist` gets
+   * how many tracks left each one.
+   */
+  removeDuplicates(
+    playlistIds: string[],
+    opts?: { onPlaylist?: OnPlaylist<number> },
+  ): Promise<DuplicatesRemoved>;
 }
 
 export interface UnprocessedReportsOpts {
@@ -96,11 +125,8 @@ export function unprocessedReports(
   const { log, now = () => new Date() } = opts;
   const reads = playlistReads(session);
 
-  /** Each unprocessed weekly playlist's read, measured in turn. */
-  async function measureEach<M>(
-    measure: (pl: SimplePlaylist, items: PlaylistItem[], cached: boolean) => M,
-    onPlaylist?: OnPlaylist<M>,
-  ): Promise<{ playlists: SimplePlaylist[]; measured: M[] }> {
+  /** The unprocessed weekly playlists, listed afresh, oldest first. */
+  async function unprocessed(): Promise<SimplePlaylist[]> {
     const config = await session.data.config.load();
     const { playlists } = await unprocessedWeeklyPlaylists(
       {
@@ -111,6 +137,15 @@ export function unprocessedReports(
       config.sourcePlaylists.allWeeklyId,
       log,
     );
+    return playlists;
+  }
+
+  /** Each unprocessed weekly playlist's read, measured in turn. */
+  async function measureEach<M>(
+    measure: (pl: SimplePlaylist, items: PlaylistItem[], cached: boolean) => M,
+    onPlaylist?: OnPlaylist<M>,
+  ): Promise<{ playlists: SimplePlaylist[]; measured: M[] }> {
+    const playlists = await unprocessed();
     const measured: M[] = [];
     for (const pl of playlists) {
       session.gateway.signal?.throwIfAborted();
@@ -173,6 +208,34 @@ export function unprocessedReports(
           0,
         ),
         playlists: withDuplicates,
+      };
+    },
+
+    async removeDuplicates(playlistIds, { onPlaylist } = {}) {
+      const requested = new Set(playlistIds);
+      const targets = (await unprocessed()).filter((pl) =>
+        requested.has(pl.id),
+      );
+      const allowed = new Set(targets.map((pl) => pl.id));
+      const refused = [...requested].filter((id) => !allowed.has(id));
+
+      const perPlaylist: DuplicatesRemoved['perPlaylist'] = [];
+      for (const pl of targets) {
+        session.gateway.signal?.throwIfAborted();
+        // A live check, not the listing's snapshot: this playlist is edited next.
+        const items = itemsOf(await reads.tracks(pl.id));
+        const removed = await removeGroups(
+          items,
+          findDuplicates(items),
+          spotifyDedupWrites(session.gateway, pl.id),
+        );
+        perPlaylist.push({ id: pl.id, name: pl.name, removed });
+        onPlaylist?.(perPlaylist.length, targets.length, pl, removed);
+      }
+      return {
+        totalRemoved: perPlaylist.reduce((s, p) => s + p.removed, 0),
+        perPlaylist,
+        refused,
       };
     },
   };

@@ -63,7 +63,7 @@ A weekly playlist with tracks that is newer than the newest weekly playlist over
 _Avoid_: non-listened playlist
 
 **Unprocessed report**:
-A measurement over the unprocessed weekly playlists — listening time, duplicates — recomputed in memory from playlist reads on every run. A kept last result is only for the page to show with its age, never reused as input.
+A measurement over the unprocessed weekly playlists — listening time, duplicates — recomputed in memory from playlist reads on every run. A kept last result is only for the page to show with its age, never reused as input. The duplicates report is the only one that arms an action: removing those duplicates, from the playlists the user confirmed that are still unprocessed when the removal runs — never from any other playlist.
 _Avoid_: scan cache, stats
 
 **Priority change**:

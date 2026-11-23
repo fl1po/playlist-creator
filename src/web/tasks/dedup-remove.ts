@@ -1,9 +1,4 @@
-import { itemsOf, playlistReads } from '../../lib/playlist-reads/index.js';
-import {
-  findDuplicates,
-  removeDuplicates,
-  spotifyDedupWrites,
-} from '../../services/dedup.js';
+import { unprocessedReports } from '../../services/unprocessed-reports/index.js';
 import type {
   BaseEvents,
   TaskContext,
@@ -16,10 +11,23 @@ export interface DedupRemoveResults {
 }
 type DedupRemoveEvents = BaseEvents & DedupRemoveResults;
 
+/** The playlist ids the page sent: the ones its dedup scan reported. */
+function requestedIds(body: Record<string, unknown>): string[] | null {
+  const playlists = body.playlists;
+  if (!Array.isArray(playlists) || playlists.length === 0) return null;
+  const ids = playlists.map((p) =>
+    p && typeof p === 'object' ? (p as { id?: unknown }).id : undefined,
+  );
+  return ids.every((id): id is string => typeof id === 'string' && id !== '')
+    ? ids
+    : null;
+}
+
 /**
- * Removes the duplicates from the playlists a dedup scan reported. Each
- * playlist is read again live, so what goes is decided by the playlist as it
- * is now, by the same rule the scan used, not by a list the page kept.
+ * Removes the duplicates from the playlists the user confirmed, through the
+ * unprocessed reports: only those still unprocessed weekly playlists when it
+ * runs are touched, each read live, by the rule the scan used. Any other id
+ * is left alone.
  */
 export const dedupRemoveTask: TaskDefinition<DedupRemoveEvents> = {
   name: 'dedup-remove',
@@ -27,30 +35,24 @@ export const dedupRemoveTask: TaskDefinition<DedupRemoveEvents> = {
   startMessage: 'Dedup removal started',
 
   validate(body) {
-    const playlists = body.playlists;
-    if (!(playlists && Array.isArray(playlists)) || playlists.length === 0) {
-      return 'playlists array is required';
-    }
-    return undefined;
+    return requestedIds(body)
+      ? undefined
+      : 'playlists array of ids is required';
   },
 
   async run(tc: TaskContext<DedupRemoveEvents>) {
-    const playlists = tc.body.playlists as Array<{ id: string }>;
-    const reads = playlistReads(tc.session);
-    const { gateway } = tc.session;
-    let totalRemoved = 0;
-
-    await tc.iter(playlists, async (pl) => {
-      // A live check, not a listing's snapshot: this playlist is edited next.
-      const items = itemsOf(await reads.tracks(pl.id));
-      totalRemoved += await removeDuplicates(
-        items,
-        findDuplicates(items),
-        spotifyDedupWrites(gateway, pl.id),
-      );
+    const ids = requestedIds(tc.body) ?? [];
+    const result = await unprocessedReports(tc.session, {
+      log: (msg, level) => tc.log(level ?? 'info', msg),
+    }).removeDuplicates(ids, {
+      onPlaylist: (_done, _total, pl, removed) =>
+        tc.log('info', `${pl.name}: removed ${removed} duplicate tracks`),
     });
 
-    tc.emit('dedup:complete', { totalRemoved });
-    tc.log('success', `Removed ${totalRemoved} duplicate tracks`);
+    for (const id of result.refused) {
+      tc.log('warn', `${id}: not an unprocessed weekly playlist, left alone`);
+    }
+    tc.emit('dedup:complete', { totalRemoved: result.totalRemoved });
+    tc.log('success', `Removed ${result.totalRemoved} duplicate tracks`);
   },
 };

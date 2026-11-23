@@ -37,7 +37,9 @@ interface Weekly {
  * A user whose playlists are `weeklies` (ids `pl-0`, `pl-1`, … in order) and
  * All Weekly holding `allWeekly`, served by a fake Spotify whose snapshot ids
  * change on every edit. `itemReads` lists each playlist whose items were
- * fetched; `failReadOf` makes one playlist's item fetch fail.
+ * fetched; `failReadOf` makes one playlist's item fetch fail. Removing a uri
+ * takes every copy of it, as Spotify does; `written` lists each playlist a
+ * write touched, and `edit` stands in for a change made outside the app.
  */
 function world(
   t: TestContext,
@@ -61,13 +63,22 @@ function world(
   const versions = new Map<string, number>();
   const snapshot = (id: string) => `${id}@${versions.get(id) ?? 0}`;
   const itemReads: string[] = [];
+  const written: string[] = [];
   const state = { failReadOf: '' };
+  const uriOf = (s: Slot) => `spotify:${s.local ? 'local' : 'track'}:${s.id}`;
+  const slotByUri = new Map(
+    [...contents.values()].flat().map((s) => [uriOf(s), s]),
+  );
+  const edit = (id: string, slots: Slot[]) => {
+    contents.set(id, slots);
+    versions.set(id, (versions.get(id) ?? 0) + 1);
+  };
 
   const rawItem = (s: Slot) => ({
     added_at: '2025-09-01T00:00:00Z',
     track: {
       id: s.local ? null : s.id,
-      uri: `spotify:${s.local ? 'local' : 'track'}:${s.id}`,
+      uri: uriOf(s),
       name: s.title ?? s.id,
       type: 'track',
       is_local: !!s.local,
@@ -108,6 +119,27 @@ function world(
           items: slots.slice(offset, offset + limit).map(rawItem),
         };
       },
+      async removeItemsFromPlaylist(
+        id: string,
+        body: { tracks: Array<{ uri: string }> },
+      ) {
+        written.push(id);
+        const gone = new Set(body.tracks.map((t) => t.uri));
+        edit(
+          id,
+          (contents.get(id) ?? []).filter((s) => !gone.has(uriOf(s))),
+        );
+      },
+      async addItemsToPlaylist(id: string, uris: string[], position: number) {
+        written.push(id);
+        const slots = [...(contents.get(id) ?? [])];
+        slots.splice(
+          position,
+          0,
+          ...uris.map((u) => slotByUri.get(u) ?? { id: u }),
+        );
+        edit(id, slots);
+      },
     },
   };
 
@@ -122,8 +154,12 @@ function world(
     session,
     reports,
     itemReads,
+    written,
     state,
     api,
+    edit,
+    /** A playlist's track ids as they stand. */
+    trackIds: (id: string) => (contents.get(id) ?? []).map((s) => s.id),
     async ready() {
       await data.config.save({
         ...DEFAULT_USER_CONFIG,
@@ -314,6 +350,117 @@ test('every scanned playlist is reported as it is scanned, with or without dupli
   });
 
   assert.deepEqual(seen, ['12.09.25:1', '19.09.25:0']);
+});
+
+// ── Removing duplicates ─────────────────────────────────────────────────────
+
+/** 05.09.25 is past the cutoff; 12.09.25 and 19.09.25 both hold duplicates. */
+const DUPLICATED: Weekly[] = [
+  { name: '05.09.25', tracks: [{ id: 'a1' }, { id: 'a2' }, { id: 'a2' }] },
+  {
+    name: '12.09.25',
+    tracks: [
+      { id: 'b1', title: 'Song', artist: 'X' },
+      { id: 'b2' },
+      { id: 'b3', title: 'Song', artist: 'X' },
+      { id: 'b1', title: 'Song', artist: 'X' },
+    ],
+  },
+  { name: '19.09.25', tracks: [{ id: 'c1' }, { id: 'c1' }, { id: 'c2' }] },
+];
+
+test('removal takes out exactly what the scan reported, keeping each first copy', async (t) => {
+  const w = world(t, DUPLICATED, ['a1']);
+  await w.ready();
+  const scan = await w.reports().duplicates();
+
+  const result = await w
+    .reports()
+    .removeDuplicates(scan.playlists.map((p) => p.id));
+
+  assert.equal(result.totalRemoved, scan.totalDuplicates);
+  assert.deepEqual(result.perPlaylist, [
+    { id: 'pl-1', name: '12.09.25', removed: 2 },
+    { id: 'pl-2', name: '19.09.25', removed: 1 },
+  ]);
+  assert.deepEqual(result.refused, []);
+  assert.deepEqual(w.trackIds('pl-1'), ['b1', 'b2']);
+  assert.deepEqual(w.trackIds('pl-2'), ['c1', 'c2']);
+  assert.equal((await w.reports().duplicates()).totalDuplicates, 0);
+});
+
+test('only the playlists asked for are touched', async (t) => {
+  const w = world(t, DUPLICATED, ['a1']);
+  await w.ready();
+
+  const result = await w.reports().removeDuplicates(['pl-2']);
+
+  assert.equal(result.totalRemoved, 1);
+  assert.deepEqual([...new Set(w.written)], ['pl-2']);
+});
+
+test('a playlist that is not an unprocessed weekly playlist is refused and left alone', async (t) => {
+  const w = world(t, DUPLICATED, ['a1', 'x1', 'x1']);
+  await w.ready();
+
+  // All Weekly, a weekly playlist past the cutoff, and an unknown id.
+  const result = await w
+    .reports()
+    .removeDuplicates([AW, 'pl-0', 'pl-zz', 'pl-1']);
+
+  assert.deepEqual(result.refused, [AW, 'pl-0', 'pl-zz']);
+  assert.deepEqual(
+    result.perPlaylist.map((p) => p.id),
+    ['pl-1'],
+  );
+  assert.deepEqual([...new Set(w.written)], ['pl-1']);
+  assert.deepEqual(w.trackIds(AW), ['a1', 'x1', 'x1']);
+  assert.deepEqual(w.trackIds('pl-0'), ['a1', 'a2', 'a2']);
+});
+
+test('a playlist listened to since the scan is refused', async (t) => {
+  const w = world(t, DUPLICATED, ['a1']);
+  await w.ready();
+  const scan = await w.reports().duplicates();
+
+  // The user listens through 12.09.25: it's past the cutoff now.
+  w.edit(AW, [{ id: 'a1' }, { id: 'b2' }]);
+  const result = await w
+    .reports()
+    .removeDuplicates(scan.playlists.map((p) => p.id));
+
+  assert.deepEqual(result.refused, ['pl-1']);
+  assert.deepEqual(w.trackIds('pl-1'), ['b1', 'b2', 'b3', 'b1']);
+  assert.deepEqual(w.trackIds('pl-2'), ['c1', 'c2']);
+});
+
+test('each playlist is reported as its duplicates are removed', async (t) => {
+  const w = world(t, DUPLICATED, ['a1']);
+  await w.ready();
+  const seen: string[] = [];
+
+  await w.reports().removeDuplicates(['pl-1', 'pl-2'], {
+    onPlaylist: (done, total, pl, removed) =>
+      seen.push(`${done}/${total} ${pl.name}:${removed}`),
+  });
+
+  assert.deepEqual(seen, ['1/2 12.09.25:2', '2/2 19.09.25:1']);
+});
+
+test('a stop ends the removal before its next playlist', async (t) => {
+  const stop = new AbortController();
+  const w = world(t, DUPLICATED, ['a1'], { signal: stop.signal });
+  await w.ready();
+
+  await assert.rejects(
+    w.reports().removeDuplicates(['pl-1', 'pl-2'], {
+      onPlaylist: (done) => {
+        if (done === 1) stop.abort(new Error('stopped'));
+      },
+    }),
+    /stopped/,
+  );
+  assert.deepEqual(w.trackIds('pl-2'), ['c1', 'c1', 'c2']);
 });
 
 // ── Dedup writes over Spotify ───────────────────────────────────────────────
