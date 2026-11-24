@@ -398,6 +398,14 @@
   .ai-pick-conf { color: #1DB954; font-size: 12px; margin-left: 6px; font-variant-numeric: tabular-nums; }
   .ai-pick-reason { color: #999; font-size: 12px; margin-top: 2px; }
   .ai-week-note { color: #666; font-size: 12px; margin-top: 6px; }
+  /* Older weeks: folded away, and scroll in place when shown, so the card
+     stays the same height however many weeks build up. */
+  #aiPicksEarlier {
+    display: none; max-height: 240px; overflow-y: auto;
+    border-top: 1px solid #282828; overscroll-behavior: contain;
+  }
+  #aiPicksEarlier.open { display: block; }
+  #aiPicksEarlierBtn { margin-top: 6px; font-size: 12px; }
 
   /* External source fields */
   .ext-source {
@@ -841,6 +849,8 @@
     <div class="card" id="aiPicksCard" style="display:none">
       <h2>AI Picks</h2>
       <div id="aiPicksList"></div>
+      <div id="aiPicksEarlier"></div>
+      <button id="aiPicksEarlierBtn" class="secondary" style="display:none" aria-expanded="false" aria-controls="aiPicksEarlier" onclick="toggleAiEarlier()"></button>
       <p class="hint">Albums AI finds added to each week. Prune misses in Spotify; expanding a week reads its playlist to show the picks still there.</p>
     </div>
 
@@ -1868,6 +1878,9 @@ const AI_SKIP_LABELS = {
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 // Rows by date, kept across refreshes so an open row stays as it was.
 const aiPickRows = new Map();
+// Newest weeks always shown; the rest wait behind "Show earlier weeks".
+const AI_RECENT_WEEKS = 4;
+let aiEarlierOpen = false;
 
 async function loadAiPicks() {
   const res = await api('GET', '/api/ai-picks');
@@ -1875,12 +1888,13 @@ async function loadAiPicks() {
   document.getElementById('aiPicksCard').style.display =
     res.enabled || res.weeks.length ? '' : 'none';
   const list = document.getElementById('aiPicksList');
+  const earlier = document.getElementById('aiPicksEarlier');
   list.innerHTML = '';
+  earlier.innerHTML = '';
   if (!res.weeks.length) {
     list.innerHTML = '<p class="ai-week-note">No AI picks yet — they appear after the next fill.</p>';
-    return;
   }
-  for (const { date, record } of res.weeks) {
+  res.weeks.forEach(({ date, record }, i) => {
     const key = JSON.stringify(record);
     let row = aiPickRows.get(date);
     if (!row || row.dataset.record !== key) {
@@ -1888,8 +1902,27 @@ async function loadAiPicks() {
       row.dataset.record = key;
       aiPickRows.set(date, row);
     }
-    list.appendChild(row);
-  }
+    (i < AI_RECENT_WEEKS ? list : earlier).appendChild(row);
+  });
+  const older = Math.max(0, res.weeks.length - AI_RECENT_WEEKS);
+  if (!older) aiEarlierOpen = false;
+  document.getElementById('aiPicksEarlierBtn').style.display = older ? '' : 'none';
+  renderAiEarlier(older);
+}
+
+function renderAiEarlier(older) {
+  const earlier = document.getElementById('aiPicksEarlier');
+  const btn = document.getElementById('aiPicksEarlierBtn');
+  earlier.classList.toggle('open', aiEarlierOpen);
+  btn.setAttribute('aria-expanded', String(aiEarlierOpen));
+  btn.textContent = aiEarlierOpen
+    ? 'Hide earlier weeks'
+    : `Show ${plural(older, 'earlier week')}`;
+}
+
+function toggleAiEarlier() {
+  aiEarlierOpen = !aiEarlierOpen;
+  renderAiEarlier(document.getElementById('aiPicksEarlier').children.length);
 }
 
 function aiPickRow(date, record) {
